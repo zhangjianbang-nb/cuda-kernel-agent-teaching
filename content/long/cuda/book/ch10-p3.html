@@ -5,7 +5,7 @@
 <p>其中 <span>$\tau_{\text{abs}}$</span> 按 dtype 的机器 epsilon 与累加长度 <span>$K$</span> 缩放（FP32 顺序累加的误差上界随 <span>$K$</span> 增长，树形归约则随 <span>$\log K$</span>），<span>$\tau_p$</span> 是 99 分位相对误差，防止均值达标而尾部爆炸。代价是显存：FP64 参考输出让显存占用翻倍，对大 tensor 要分块比对，比对本身引入一次额外的 H2D/D2H 往返，时延不可忽略。具体例子：LayerNorm 的候选 kernel 用 TF32 做均值方差，FP32 参考在 <span>$K=8192$</span> 时逐元素误差可能落在 1e-3 量级，若阈值只按 1e-5 设，正确 kernel 会被误杀；反之若只比均值，一个在尾部元素上系统性偏移的 kernel 会漏网。双轨加双阈值是把“误杀”和“漏网”同时压下去的最低成本手段。</p>
 
 <h3>二 · 隐藏 shape 与分布：把过拟合打回原形</h3>
-<p>公开 shape 集合一旦进入训练或提示词，agent 就会朝这些 shape 特化——手写 unroll 因子、按 <span>$M=N=4096$</span> 选 tile、甚至 if-else 硬编码分支。harness 必须持有<strong>隐藏集</strong>：一组未公开的 shape、dtype 组合与数据分布，只在评测时注入。隐藏集的构造要有维度覆盖而非随机撒点：小 shape（<span>$M{<}128$</span>，测 launch 开销与尾块浪费）、非 2 的幂（测 padding 与边界分支）、极端长宽比（<span>$M \gg N$</span>，测 tile 选择）、非连续 stride（测 layout 假设）、以及数值分布偏移（大幅值导致溢出、接近零导致下溢、含 NaN/Inf 的鲁棒性用例）。</p>
+<p>公开 shape 集合一旦进入训练或提示词，agent 就会朝这些 shape 特化——手写 unroll 因子、按 <span>$M=N=4096$</span> 选 tile、甚至 if-else 硬编码分支。harness 必须持有<strong>隐藏集</strong>：一组未公开的 shape、dtype 组合与数据分布，只在评测时注入。隐藏集的构造要有维度覆盖而非随机撒点：小 shape（<span>$M{&lt;}128$</span>，测 launch 开销与尾块浪费）、非 2 的幂（测 padding 与边界分支）、极端长宽比（<span>$M \gg N$</span>，测 tile 选择）、非连续 stride（测 layout 假设）、以及数值分布偏移（大幅值导致溢出、接近零导致下溢、含 NaN/Inf 的鲁棒性用例）。</p>
 <p>分布维度常被忽略：同一 shape 下，输入若全为正数，softmax 的 max-subtraction 分支可能被优化掉而不暴露数值问题；输入若方差极小，归约的相对误差判据会失真。因此隐藏集要按“分布标签”分组，每组独立算通过率，而不是把所有用例混成一个总分——混总分会让 agent 用大量简单用例淹没少数致命用例。</p>
 <p>代价在编译时间与 token：隐藏 shape 意味着不能提前做 shape 特化编译，JIT 路径的编译时延进入测量窗口，必须与 steady-state 时延分开统计，否则一个编译慢但稳态快的 kernel 会被冤枉。对 agent 侧，隐藏集不能进上下文，评测反馈只回传“通过/失败 + 误差量级 + 失败 shape 的类别标签”，不回传具体数值，避免多轮迭代把隐藏集反推出来。具体例子：一个 reduction kernel 在公开的 4096 长度上跑到接近 SOL，但在隐藏的 4097 长度上因尾块处理退化为标量循环，吞吐掉一个量级——这正是隐藏集要抓的形态。</p>
 

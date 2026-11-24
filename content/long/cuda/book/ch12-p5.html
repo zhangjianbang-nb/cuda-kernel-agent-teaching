@@ -1,0 +1,39 @@
+<h3>一 · 脚手架的四个工位：coder、judge、profiler、search 的职责边界</h3>
+<p>把 agent 脚手架拆成四个工位，不是为了画组织图，而是为了让每个工位承担一种可被单独审计的失败模式。coder 只负责把自然语言意图与已有 kernel 上下文翻译成候选实现（CUDA C++、Triton、CuTe DSL 或 PTX 片段），它的产出必须附带编译假设：目标架构、dtype、tile 形状、是否假设对齐、是否假设输入连续。judge 不写 kernel，只做裁决：编译是否通过、数值是否落在 oracle 容差内、是否触发越界或未定义行为、是否在边界形状上退化。profiler 不判断对错，只把执行反馈变成结构化信号：NCU 的 achieved occupancy、DRAM throughput、L2 hit rate、stall reason 分布，以及 SASS 层面的指令混合与寄存器压力。search 则是策略层，决定下一轮把预算花在改 tile、改访存布局、改流水深度，还是换一种表达（例如从 Triton 退到 CUDA C++ 手写 warp 特化）。</p>
+<p>这四个工位的分工原则是“单一裁决权”：judge 拥有正确性的一票否决，profiler 拥有性能归因的解释权，coder 拥有实现自由度，search 拥有预算分配权。任何一方越权都会污染反馈信号——让 coder 自己判断“我的 kernel 是对的”，等于把正确性 oracle 交给最有利害关系的一方；让 profiler 直接决定“这个版本更好”，则会把噪声当成收敛信号。工程上落地为一条接口约定：coder 输出 <code>{source, build_flags, assumptions}</code>，judge 输出 <code>{compiled, correct, violation_kind}</code>，profiler 输出 <code>{latency, sol_score, bottleneck_class, sass_flags}</code>，search 只读取后三者的结构化字段，不读原始日志。</p>
+<p>代价在这里非常具体：多工位意味着多一次进程边界与序列化。一个候选 kernel 从生成到拿到 profile 反馈，需要经历编译（秒级到分钟级，模板重的 CuTe 代码更久）、正确性跑批（毫秒到秒级，取决于形状集合）、NCU 采集（单次 replay 会放大时延，采集多个 metric set 往往要把 kernel 重放数遍）。这些开销不进 kernel 本身的时延，却直接吃掉 agent 的 token 预算与墙钟预算。一个具体例子：对同一个 reduction kernel，coder 一轮生成 8 个候选，judge 因一个候选在非 2 的幂形状上越界而整批回退，profiler 只对通过 judge 的 3 个候选采集 NCU，search 据此把下一轮预算从“改 tile”转向“改尾部处理”——如果四个工位混在一个 prompt 里，越界候选会污染性能归因，search 会把“尾部处理慢”误读成“tile 太小”。</p>
+
+<h3>二 · 执行反馈的三种粒度：编译、数值、性能，各自喂给谁</h3>
+<p>执行反馈不是一条笼统的“跑通了/没跑通”，它至少有三个粒度，且每个粒度的消费者不同。编译反馈是布尔加诊断文本：nvcc/ptxas 的报错行、寄存器溢出警告、共享内存超限。它只应回灌给 coder，且要裁剪——把完整编译日志塞回上下文会挤占 token 并诱导模型复读报错。数值反馈是 judge 的产物，形态是“在形状集合 S 上，最大相对误差与绝对误差是否超过容差 τ”，以及失败样本的最小复现形状。性能反馈是 profiler 的产物，形态是相对 roofline 的 SOL 分数与瓶颈分类。</p>
+<div class="formula">$$\text{SOL}=\min\left(\frac{\text{bytes moved}}{\text{peak BW}\cdot t},\ \frac{\text{FLOPs}}{\text{peak FLOPS}\cdot t}\right)$$</div>
+<p>这个式子的工程含义是：SOL 分数把“时延”翻译成“离硬件上限还有多远”，但它对测量方式极度敏感。同一 kernel 在 NCU 下 replay 采集与在端到端 harness 里计时，得到的 t 不是同一个量。因此 profiler 的输出必须携带采集口径（是否含 launch 开销、是否锁频、是否单独 replay），否则 search 会把口径差异当成优化收益。正确性代价同样要标定：容差 τ 收紧会提高 judge 的拒绝率，拒绝率上升意味着更多候选被丢弃、更多 token 花在重写上；τ 放宽则可能放过数值退化但“看起来快”的实现，把风险推到生产端。这是一个显式的权衡，不是默认值。</p>
+<p>具体例子：一个 softmax kernel 的候选在 judge 处以 fp32 累加通过了 τ=1e-5 的检验，但 profiler 显示 DRAM throughput 接近峰值而 SM 利用率低，瓶颈分类为“访存受限”。search 读到这个分类后，不应再让 coder 去调 unroll 因子，而应要求改数据布局或做融合。反过来，若 profiler 报告 stall reason 集中在 long scoreboard 且 L2 hit rate 低，search 应把预算转向分块与预取，而不是继续压寄存器。三种粒度各自喂给正确的工位，是脚手架不空转的前提。</p>
+
+<h3>三 · NCU 与 SASS：把“慢”拆成可执行的修改项</h3>
+<p>NCU 提供的是计数器层面的证据，SASS 提供的是指令层面的证据，两者必须配对使用。NCU 告诉你“哪里堵”，SASS 告诉你“为什么堵”。典型配对：NCU 报告 achieved occupancy 低于理论 occupancy，SASS 显示寄存器数量把 occupancy 压死，或共享内存分配超出预期；NCU 报告 memory pipe 利用率高但 DRAM throughput 不高，SASS 显示大量非合并访问或 bank conflict 的 LDS/STS 序列；NCU 报告 branch divergence 相关的 stall，SASS 显示 warp 内分支路径分裂。</p>
+<p>把这对证据转成修改项，需要一个归因表而不是一段散文。工程上让 profiler 输出一个受限的瓶颈分类枚举，例如 <code>occupancy_limited</code>、<code>memory_latency_limited</code>、<code>memory_bandwidth_limited</code>、<code>compute_limited</code>、<code>sync_limited</code>、<code>tail_limited</code>，每个分类绑定一组允许的修改动作。search 只能在这些动作里选，coder 只能按选定动作改写。这避免了“让模型自由发挥”导致的语义漂移：模型很容易在收到“occupancy 低”之后去删掉必要的边界检查，用正确性换占用率。</p>
+<p>代价必须写进流程：NCU 采集本身有开销，多 metric set 采集要把 kernel 重放多次，profile 一个候选的墙钟成本可能数倍于它的执行时延；SASS 反汇编与指令统计增加的是分析时间与 token——把整段 SASS 塞进上下文既贵又低效，正确做法是只回灌聚合统计（指令数、寄存器数、访存指令占比、分支指令占比）与少量关键片段。一个具体例子：一个 GEMM 候选被分类为 <code>memory_bandwidth_limited</code>，SASS 显示每个线程的全局加载指令数偏高且地址步长不规则，search 据此选择“改 shared memory 分块与向量化加载”，coder 重写后 judge 复验边界形状，profiler 复测 SOL 分数——整条链路每一步都有明确输入输出，而不是“再试一次”。</p>
+
+<h3>四 · 多轮修正的状态机：何时重写、何时回退、何时停</h3>
+<p>多轮修正最容易被写成“循环直到变好”，这在工程上是不可控的。可控的做法是显式状态机：每个候选携带 <code>(source, assumptions, verdict, bottleneck_class, round)</code>，search 依据状态转移规则决定动作。规则至少包括：judge 判错且错误类型为越界/未定义行为时，禁止在同一实现上做性能微调，必须先修正确性；profiler 分类在两轮之间来回跳变时，判定为测量噪声主导，停止对该候选的优化并换基线；连续若干轮 SOL 分数提升低于阈值时，触发“换表达”而非“继续调参”。</p>
+<p>状态机需要一条硬约束：正确性判定不可被性能收益覆盖。也就是说，任何一轮中若候选在扩展形状集合上失败，它的性能数据一律作废，不得进入 search 的收益比较。这条约束的代价是吞吐——它会让一些“快但脆”的候选被丢弃，agent 的有效候选率下降，token 花在修复而非探索上。但不设这条约束，多轮修正会收敛到“在测试形状上过拟合、在真实形状上崩溃”的局部最优，而这正是生产端最贵的失败。</p>
+<p>具体例子：一个 layernorm 候选在第一轮通过 judge，profiler 报 <code>sync_limited</code>；第二轮 coder 减少同步点后 SOL 上升，但 judge 在隐藏维度不是 32 倍数的形状上失败；状态机据此把该候选标记为“正确性回退”，search 不得用它的性能数据更新收益估计，而是要求 coder 在保留同步优化的同时补上尾部处理。这里的关键不是“多轮”，而是每一轮的状态转移有据可查、可复现，且错误类型决定了允许的动作集合。</p>
+
+<h3>五 · 反馈信号的污染源与治理：让脚手架的输出可信</h3>
+<p>脚手架的可信度不取决于模型多强，而取决于反馈信号是否被污染。常见污染源有四类。其一是测量口径漂移：profiler 在不同轮次用了不同的采集配置，导致 SOL 分数不可比。治理方式是把采集配置写进候选元数据，search 只在同配置下比较。其二是 judge 的形状集合泄漏：coder 在多轮中逐渐“记住”了测试形状，产出对形状集合过拟合的实现。治理方式是 judge 持有 coder 不可见的保留形状，且保留集随轮次轮换。其三是缓存与预热：首次 launch 的时延包含上下文与指令缓存冷启动，若计时未做预热与多次取中位数，性能反馈会把冷启动噪声当成实现差异。其四是编译标志不一致：coder 改了 build flags 却没记录，judge 与 profiler 跑的不是同一个二进制。</p>
+<p>这四类污染的共同代价是“假收敛”：agent 报告指标在涨，生产端复现不出来。治理它们不需要更复杂的模型，只需要把反馈管线当成一个有版本的数据系统：候选二进制哈希、采集配置哈希、形状集合版本、容差 τ 全部进入记录，任何一次收益声明都必须能追溯到这四个字段。一个具体例子：团队发现某轮 GEMM 优化的 SOL 提升无法在生产 harness 复现，追溯发现 profiler 那一轮开启了锁频而 judge 轮没有，收益来自时钟差异而非 kernel 改动——这类问题只能靠元数据治理发现，靠模型自我反思发现不了。</p>
+<p>在路线图层面，这意味着脚手架工位的验收标准不是“生成了多少候选”，而是“反馈记录的可追溯率”与“保留形状上的通过率”。前者衡量信号可信，后者衡量泛化。两者都达标，才允许把该轮脚手架配置纳入季度里程碑的验收项；任一不达标，说明分工或治理规则有缺口，应回到工位边界与状态机规则上修，而不是加大模型调用量。</p>
+
+<h3>六 · 把工位分工固化为组织流程与验收口径</h3>
+<p>四个工位最终要落到人：kernel 工程师对 coder 的假设与实现质量负责，评测工程师对 judge 的 oracle、容差与保留形状负责，平台运维对 profiler 的采集配置、锁频与记录完整性负责，RL 工程师对 search 的预算分配与状态机规则负责。这个映射不是行政分工，而是把每一类失败模式指派给一个有裁决权的角色。治理规则相应地写成三条硬门禁：基准版本冻结（形状集合与容差变更需评审）、oracle 变更评审（judge 的判定逻辑改动不得由 coder 侧发起）、生产发布门禁（候选进入生产前必须在保留形状与端到端 harness 上双重复验）。</p>
+<p>路线图按能力排期还是按业务场景排期，在这个语境下有了具体答案：脚手架的四个工位是能力，而每个业务场景决定的是形状集合、容差 τ 与 SOL 目标。按能力排期意味着先把 judge 与 profiler 的记录治理做扎实，再扩 coder 的搜索空间；按场景排期则容易在 judge 尚未可信时就开始堆候选，产出无法复现的收益声明。技术债清单里应显式列出“采集配置未版本化”“保留形状未轮换”“编译标志未记录”这类条目，它们不影响单次 demo，但直接决定多轮修正能否收敛。</p>
+<p>一个可执行的验收口径：对每个纳入路线图的 kernel 类别，要求脚手架在冻结的基准版本上产出可追溯的候选记录，judge 在保留形状上的通过率与 profiler 在同配置下的 SOL 分数同时达标，才计入里程碑。这条口径把前十一卷的方法、数据、成本与可靠性结论压成了组织流程里的一个检查点——不是“我们有了 agent”，而是“我们的 agent 的每一次收益声明都能被四个工位分别审计”。当这条检查点成为季度评审的默认项，脚手架才从演示工具变成可复制的生产体系。</p>
+
+
+<h3>脚手架失效的三种边界与治理代价</h3>
+<p>coder/judge/profiler/search 四角色的分工在路线图里必须写成“职责+否决权”，而不是“流程步骤”。judge 的否决权体现在正确性 oracle 上：oracle 变更须走评审，任何一次 oracle 放宽都会让历史 RL 奖励不可比，因此基准版本冻结与 oracle 评审是同一枚硬币的两面。失效条件很具体：当 coder 生成的 kernel 与 profiler 采到的 SASS 之间缺少可对齐的符号（内联展开、循环展开导致指令地址漂移），profiler 的归因就退化为“整 kernel 热点”，此时多轮修正的反馈信号信噪比骤降。代价是每轮修正要多跑一次带 lineinfo 的编译，编译时间与 NCU 采集时延叠加，token 预算被 profile 文本挤占。</p>
+<p>search 角色的边界在于搜索空间的可验证性：只有能被 judge 判定的候选才值得进搜索队列，否则搜索会退化成采样。设单轮候选数为 N、判定通过率为 p、单次判定成本为 c<sub>j</sub>、单次 profile 成本为 c<sub>p</sub>，则一轮有效反馈成本约为</p>
+<div class="formula">$$C_{\text{round}} \approx N\,(c_j + \alpha\,c_p),\quad \alpha\in\{0,1\}$$</div>
+<p>其中 α 表示是否对通过判定的候选才做 profile。工程判断是：把 α 钉死为 1，用 judge 先筛再 profile，牺牲搜索广度换反馈质量；这条规则要写进治理规则，否则不同团队会各自调 α，导致跨团队奖励口径漂移。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>表现</th><th>系统代价</th></tr></thead><tbody><tr><td>SASS 符号不可对齐</td><td>归因粒度退化为整 kernel</td><td>编译+采集时延翻倍，token 挤占</td></tr><tr><td>oracle 放宽未评审</td><td>历史奖励不可比</td><td>RL 重跑，基准版本回滚</td></tr><tr><td>search 无判定前置</td><td>候选爆炸、反馈稀疏</td><td>判定与 profile 成本线性膨胀</td></tr></tbody></table>
+<p class="paper-line">对应：book/ch12 · 第 5/12 部分</p>

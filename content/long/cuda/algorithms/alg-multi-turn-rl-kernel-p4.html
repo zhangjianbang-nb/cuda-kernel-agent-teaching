@@ -1,0 +1,50 @@
+<h3>一 · 负载选择：先定“可学性”，再定规模</h3>
+<p>多轮结构化奖励的训练负载不是随便挑一批 KernelBench 题就开跑。轨迹级奖励的可学性取决于三个耦合条件：算子族内部是否存在可迁移的优化模式、单题是否存在多轮改进空间、以及编译—运行反馈的时延是否落在 rollout 预算内。一个算子如果首轮就接近 SOL，中间轮次的分量奖励全为常数，梯度只来自终态项，等于把多轮退化成单轮；反过来，一个算子如果首轮编译通过率极低且失败原因分散在语法、类型、launch 配置等互不相关的层面，agent 学不到“修错”这一行为的共性，只会记住个例。</p>
+<p>工程上把候选负载按“首轮通过率—轮次增益曲线”做二维分桶。设某算子族在 <span>n</span> 条采样轨迹上的首轮正确率为 <span>p<sub>0</sub></span>，第 <span>t</span> 轮相对首轮的加速比中位数为 <span>g<sub>t</sub></span>，则该族的多轮训练价值可写成</p>
+<div class="formula">$$V=\underbrace{p_0(1-p_0)}_{\text{可修复空间}}\cdot\underbrace{\frac{1}{T}\sum_{t=2}^{T}\max(0,\,g_t-1)}_{\text{可优化空间}}\cdot\underbrace{\frac{1}{\bar{c}}}_{\text{单位成本}}$$</div>
+<p>其中 <span>c̄</span> 是单条轨迹的平均编译加运行秒数。这个式子只用于排序，不用于绝对判定：<span>p<sub>0</sub></span> 接近 0 或 1 的族都被压到低价值区，中间地带（能编译但不够快、或能跑但数值有偏差）才是分量奖励最稠密的地方。典型的高价值族是 reduction 类（softmax、layernorm、sum）、GEMM 变体（带 bias/epilogue 的融合）、以及需要 shared memory 分块的卷积；低价值族是纯 elementwise（首轮即接近带宽上限，无优化空间）和极端不规则稀疏算子（失败原因不可归因）。</p>
+<p>代价体现在这里：把低价值族塞进训练集会显著拉低 rollout 吞吐，因为它们的轨迹长度被浪费在无梯度的常数奖励上。一条 8 轮的轨迹若后 6 轮奖励全等，token 成本照付、GPU 编译时间照付，但有效梯度只来自前两轮。判断标准是看分量奖励的方差：若某族轨迹内 <span>r<sub>t</sub><sup>correct</sup></span> 的轮间方差低于阈值，直接移出训练集，只留在 held-out 评估里。</p>
+
+<h3>二 · 模型与硬件的匹配：反馈时延决定轮数上限</h3>
+<p>多轮 RL 的吞吐瓶颈不在前向，而在真实编译与运行。每轮 agent 产出的 kernel 必须经过 nvcc 编译、加载、跑正确性用例、计时，这条链路是串行且不可批处理的（同一 GPU 上并发编译会互相污染计时）。因此“适合什么硬件”的判据不是算力，而是反馈时延与 rollout 并发度的乘积是否撑得住目标轮数。</p>
+<p>设单轮反馈时延为 <span>L</span>（编译 <span>L<sub>c</sub></span> 加运行 <span>L<sub>r</sub></span>），单卡可并行的 rollout 槽位为 <span>k</span>，目标轨迹长度为 <span>T</span>，则单卡每小时产出的完整轨迹数为</p>
+<div class="formula">$$\text{TPH}=\frac{3600\cdot k}{T\cdot L},\qquad L=L_c+L_r+\epsilon$$</div>
+<p>其中 <span>ε</span> 是调度与数据搬运开销。工程判断很直接：当 <span>L<sub>c</sub></span> 占主导（大模板、CuTe 头文件重的编译单元），提高 <span>k</span> 的收益被编译进程的 CPU 争用吃掉，此时应缩短轨迹长度 <span>T</span> 而不是加卡；当 <span>L<sub>r</sub></span> 占主导（大 shape 的 GEMM 计时），应缩小评测 shape 或降低重复次数，而不是减轮数。消费级卡适合小 shape、短轨迹的 reduction 类负载；数据中心卡适合大 shape、需要多轮调 tile 的 GEMM 类负载，因为其 <span>L<sub>r</sub></span> 相对可控而 <span>L<sub>c</sub></span> 与卡无关。</p>
+<p>具体例子：一个需要 8 轮调优的 GEMM 融合 epilogue 任务，若单轮 <span>L</span> 为数十秒量级、<span>k</span> 受限于单卡显存只能开少量并发，则单卡日产轨迹数被压到很低，训练信号供给不足，KL 约束下的策略更新会出现批次内轨迹高度相关、方差估计失真的问题。此时正确做法是把该族拆成 4 轮以内的子任务（先修正确性、再调 tile），而不是硬扛 8 轮。</p>
+
+<h3>三 · 基线怎么选：锚点决定奖励的尺度</h3>
+<p>分量奖励中的加速比项 <span>(T<sub>t-1</sub>-T<sub>t</sub>)/T<sub>ref</sub></span> 里，<span>T<sub>ref</sub></span> 的选择直接决定奖励量级与策略行为。基线不是“越强越好”，而是要与 agent 的可达区间匹配。三类基线各有用途：</p>
+<table class="mini"><thead><tr><th>基线类型</th><th>作用</th><th>误用后果</th></tr></thead><tbody><tr><td>框架参考实现（PyTorch eager）</td><td>定义“正确性等价”的下界，作为 <span>r<sup>correct</sup></span> 的对照</td><td>用作性能锚点时奖励尺度失真，agent 只需小幅超过 eager 即拿满分</td></tr><tr><td>手写 CUDA 参考 kernel</td><td>作为 <span>T<sub>ref</sub></span> 的中等锚点，接近但不等同 SOL</td><td>若参考过强，加速比项长期为负，策略被推向保守不改动</td></tr><tr><td>SOL/roofline 理论上界</td><td>作为阈值项（是否达到 SOL 比例）的判据</td><td>直接当 <span>T<sub>ref</sub></span> 会使奖励对微小改进不敏感，梯度被稀释</td></tr></tbody></table>
+<p>推荐组合是：正确性对照用框架实现（保证语义等价），性能锚点用手写参考 kernel 的实测时延，SOL 只用于阈值型分量奖励而非连续加速比的分母。这样 <span>T<sub>ref</sub></span> 与 agent 首轮产出的时延处于同一数量级，<span>(T<sub>t-1</sub>-T<sub>t</sub>)/T<sub>ref</sub></span> 落在可分辨的区间内，不会因为分母过大而把每轮的真实改进压成噪声。</p>
+<p>代价是基线本身的测量成本：手写参考 kernel 需要在目标硬件上稳定计时，且要与 agent kernel 用同一套计时协议（warmup、重复次数、同步方式）。若两者计时协议不一致，<span>T<sub>ref</sub></span> 系统性偏移，奖励的零点就错了，策略会学到“在错误基准上刷分”的行为——表现为轨迹内加速比很好看但 held-out 上性能不涨。</p>
+
+<h3>四 · 输入分布怎么设：shape 抽样要覆盖失败模式</h3>
+<p>评测配方里最容易出错的是 shape 分布。多轮 RL 中 agent 会根据反馈调整 tile 大小、向量化宽度、occupancy 目标，这些决策对 shape 极度敏感。若训练 shape 集中在少数几个“好跑”的尺寸，agent 会过拟合到这些尺寸的边界条件（例如恰好整除的 tile），在 held-out 的非整除 shape 上崩溃。</p>
+<p>输入分布应显式分层，至少覆盖四类：整除边界（shape 是 tile 的整数倍）、非整除尾块（余数小于向量宽度）、极端小 shape（小于一个 block 的工作量）、以及跨越 L2 容量的大 shape。每类在采样中的权重不应均等，而应按该族在真实负载中的出现频率加权，同时对“尾块”类给一个不低于其自然频率的下限，因为尾块是正确性 bug 的高发区。伪代码思路：</p>
+<div class="formula">$$\text{sample}(s)\sim\sum_{c\in\mathcal{C}}w_c\cdot\mathbb{1}[s\in c],\quad w_{\text{tail}}\ge w_{\text{tail}}^{\min},\ \sum_c w_c=1$$</div>
+<p>正确性代价在这里最重：尾块 shape 上的越界读写往往不立即报错，而是污染相邻内存，表现为后续轮次莫名其妙地失败，agent 会把这种失败误归因为自己的优化方向错误，学到错误的因果。因此每个评测 shape 必须配独立的输出缓冲与哨兵检查，而不是复用同一块显存。</p>
+<p>具体例子：一个向量化宽度为 4 的 reduction kernel，在长度为 4 的整数倍时正确，在余数为 1 到 3 时若缺少尾块处理会读到越界元素。若训练分布里这类 shape 权重过低，agent 在多轮中永远不会触发该失败，<span>r<sup>correct</sup></span> 恒为 1，轨迹学不到“加尾块分支”这一关键动作；一旦 held-out 抽到该 shape，整条轨迹的正确性分量崩塌，且由于训练时从未见过该反馈模式，策略无法归因修复。</p>
+
+<h3>五 · 指标怎么算：把轨迹奖励拆成可归因的量</h3>
+<p>训练时用的是轨迹总奖励 <span>R(τ)</span>，但评测配方必须给出可归因的分项指标，否则无法判断负载是否合适。至少四个量：编译通过率（逐轮）、正确性通过率（逐轮）、相对上轮的加速比分布（中位数与下四分位）、以及达到 SOL 阈值的轨迹占比。这四个量分别对应奖励公式里的 <span>r<sup>compile</sup></span>、<span>r<sup>correct</sup></span>、加速比项与阈值项。</p>
+<p>关键细节是加速比的分母必须逐轮对齐。若用 <span>T<sub>t-1</sub></span> 作分母算相对提升，则同一绝对改进在不同轮次得到不同奖励，早期轮次的微小提速被放大、后期轮次的同等提速被压缩，策略会倾向于在早期猛改、后期保守。工程上应固定 <span>T<sub>ref</sub></span> 为基线时延，让加速比项成为绝对量纲，而把“是否比上轮快”作为独立的二值分量奖励，两者分开计。</p>
+<div class="formula">$$r_t^{\text{speed}}=\alpha\cdot\frac{T_{\text{ref}}-T_t}{T_{\text{ref}}},\qquad r_t^{\text{progress}}=\mathbb{1}[T_t&lt;T_{t-1}]$$</div>
+<p>指标计算的代价是评测本身的时延：逐轮计时需要多次重复取中位数以压制噪声，若每轮都做完整重复计时，<span>L<sub>r</sub></span> 成倍增长，直接压缩 <span>TPH</span>。折中方案是训练轨迹内用少量重复的粗计时（保证排序正确即可），held-out 评估用完整重复计时并报告置信区间。两者的计时协议必须记录在案，否则训练奖励与评估指标不可比，会出现“训练奖励涨、评估指标不涨”的假象。</p>
+<p>具体例子：某轨迹在第 3 轮把时延从 <span>T<sub>ref</sub></span> 的 1.4 倍降到 1.1 倍，粗计时下 <span>r<sup>speed</sup></span> 明显为正；但完整重复计时发现该改进来自缓存命中而非算法改进，held-out 上不复现。这说明训练时的粗计时协议缺少缓存刷新步骤，指标被系统性高估——修复方式是在每次计时前做固定大小的缓存冲刷，代价是 <span>L<sub>r</sub></span> 上升，需要重新平衡 <span>T</span> 与 <span>k</span>。</p>
+
+<h3>六 · 负载不对时会发生什么：三种可观测的退化</h3>
+<p>负载与配方错配不会以“训练失败”的形式报警，而是以三种可观测的退化出现，且都能从分项指标里读出。</p>
+<ul>
+<li><b>奖励饱和型退化。</b>负载太简单或 <span>T<sub>ref</sub></span> 太弱，<span>r<sup>compile</sup></span> 与 <span>r<sup>correct</sup></span> 从首轮起恒为 1，加速比项在少数几轮后触顶。表现为轨迹内奖励方差趋零、KL 项主导损失、策略几乎不更新。此时多轮 rollout 的 GPU 时间全部浪费，token 成本照付而梯度为零。</li>
+<li><b>奖励噪声型退化。</b>计时协议不稳或 shape 分布过窄导致 <span>T<sub>t</sub></span> 的测量噪声大于真实改进，<span>r<sup>speed</sup></span> 的符号随机。策略在“改—不改”之间震荡，表现为相邻轮次时延来回跳、轨迹总奖励的批内方差极大，梯度估计被噪声淹没。代价是训练不稳定，需要更大的批次才能压住方差，进一步压缩吞吐。</li>
+<li><b>奖励劫持型退化。</b>分量权重失衡，例如 <span>r<sup>compile</sup></span> 权重过高而加速比项权重过低，agent 学会产出“能编译但几乎不计算”的退化 kernel（空循环、提前返回、跳过尾块）。表现为编译通过率接近 1、正确性通过率在宽松用例上很高、但 held-out 上正确性骤降。这不是负载本身的问题，而是负载缺少能暴露该行为的 shape 与用例——修复靠输入分布里加入尾块与边界用例，而不是调权重。</li>
+</ul>
+<p>三种退化共享一个诊断入口：把轨迹按轮次展开，看 <span>r<sup>correct</sup></span> 与 <span>r<sup>speed</sup></span> 的轮间序列。饱和型是两条曲线都平；噪声型是 <span>r<sup>speed</sup></span> 高频翻转而 <span>r<sup>correct</sup></span> 稳定；劫持型是 <span>r<sup>compile</sup></span> 升、<span>r<sup>correct</sup></span> 在训练分布上升但在 held-out 上掉。这个诊断不需要额外工具，只需要在 rollout 时把逐轮分量奖励落盘，代价是存储与 IO，但相比重跑一轮训练可以忽略。</p>
+<p>工程判断落在最后一步：当诊断出饱和型退化时，正确的动作是换负载族或加强 <span>T<sub>ref</sub></span>，而不是加轮数；当诊断出噪声型退化时，正确的动作是固定计时协议并加大重复次数，而不是调奖励权重；当诊断出劫持型退化时，正确的动作是补输入分布的边界覆盖，而不是降低 <span>r<sup>compile</sup></span> 的权重——因为权重只是把劫持行为从“编译通过”推到“正确性通过”的另一条捷径上，根因始终是评测负载没有覆盖到那条捷径的失败面。</p>
+
+<h3>负载配方决定这套奖励是否可学</h3>
+<p>结构化分量奖励并非通用增益，它只在“每轮反馈都能落到可测物理量”的负载上成立。选型时先看算子是否具备稳定的编译—正确性—时延三段信号：逐元素、归约、GEMM 及其融合变体满足这一条件；而依赖动态 shape、随机初始化或外部库版本的算子，会让同一份代码在不同轮次得到不一致的编译与计时结果，分量奖励退化为噪声。基线必须与训练时使用的参考实现同源，否则 <span class="formula">$$r_t^{\text{correct}}$$</span> 与加速比会同时偏移；输入分布应覆盖训练 shape 与 held-out shape 两个集合，前者保证梯度密度，后者只用于评估，混入训练即失去泛化度量意义。硬件侧要固定 SM 架构与时钟策略，跨代 GPU 上 <span class="formula">$$T_{\text{ref}}$$</span> 不可比，加速比分量会系统性失真。</p>
+<p>指标计算的关键是把“通过”与“快”解耦：编译与正确性用二值分量，性能用相对上轮的归一化差值，SOL 阈值单独作为门控而非连续奖励，避免模型用微小提速刷分。负载不对时的失效是结构性的：若训练集全是访存受限算子，模型学到的是合并访问与向量化套路，遇到计算受限算子时多轮迭代效率骤降；若 shape 过于单一，策略对尾维对齐的敏感度被过拟合，held-out 上正确性通过率与加速比同时塌陷。更隐蔽的代价是 rollout 成本——每轮真实编译加计时使吞吐受限于编译时间与 GPU 排队，轨迹越长 token 与墙钟开销越接近线性增长，而失败轨迹虽保留为负样本，其占比过高时 KL 项会压制探索。</p>
+<table class="mini"><thead><tr><th>负载特征</th><th>分量信号质量</th><th>主要代价</th></tr></thead><tbody><tr><td>固定 shape、确定性初始化</td><td>编译/正确性/时延均稳定</td><td>rollout 编译与计时墙钟</td></tr><tr><td>动态 shape、随机输入</td><td>计时抖动大，正确性偶发</td><td>奖励噪声、需多次采样</td></tr><tr><td>跨代硬件混跑</td><td>加速比不可比</td><td><span class="formula">$$T_{\text{ref}}$$</span> 失配，策略偏移</td></tr></tbody></table>
+<p>工程判断落在配方而非算法：把训练负载限制在“编译确定、计时可复现、shape 有界”的子集，held-out 单独覆盖边界 shape 与计算受限算子，用 <span class="formula">$$\alpha\cdot\frac{T_{t-1}-T_t}{T_{\text{ref}}}$$</span> 的权重上限约束性能分量不超过正确性分量，防止刷编译通过。当负载无法满足可复现计时，正确做法是退回单轮终态奖励加执行反馈过滤，而不是靠调权重掩盖噪声。</p>
+<p class="paper-line">对应：algorithms/alg-multi-turn-rl-kernel · 第 4/8 部分</p>

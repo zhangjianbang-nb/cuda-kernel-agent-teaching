@@ -1,0 +1,38 @@
+<h3>一 · 从微基准到端到端：为什么 agent 必须看见“时间去哪了”</h3>
+<p>生产端到端落地的第一个反直觉事实是：微基准上的 1.8x 加速，端到端可能只有 4%。这不是测量误差，而是口径错位。微基准测的是 kernel 自身的 device 时间，端到端测的是请求从进入到返回的墙钟时间，两者之间隔着框架调度、数据搬运、同步点、内存分配、算子间依赖与批处理策略。agent 如果只拿到“这个 kernel 比 PyTorch 快 1.8x”的单一标量奖励，它就会朝错误方向优化——把 device 时间压到极限，却对端到端毫无贡献，甚至因为引入额外拷贝而变慢。硬件反馈与 profile 的职责，就是把这 4% 的构成拆开，让 agent 的优化目标与业务口径对齐。</p>
+<p>具体机制上，端到端时间可分解为：请求排队与调度、host 侧框架开销、H2D/D2H 拷贝、kernel device 时间、kernel 间空隙（launch 间隔与同步等待）、以及后处理。收益归因要求对每个 kernel 计算“端到端占比”，即该 kernel 的 device 时间除以端到端墙钟时间，并乘以调用频次权重。只有当占比足够高的热点 kernel 被替换，端到端才有可见收益。故事中的 1.8x/4% 正是占比过低的典型：被优化的 kernel 在端到端中只占约 2%–3%，即使翻倍也只省下 1%–2%，叠加集成开销后净收益趋近于零。</p>
+<div class="formula">$$\text{端到端收益} \approx \frac{t_{\text{kernel}}}{T_{\text{e2e}}} \times \left(1 - \frac{1}{s}\right) - c_{\text{integ}}$$</div>
+<p>其中 $s$ 是微基准加速比，$c_{\text{integ}}$ 是集成引入的额外开销（拷贝、同步、格式转换）。这个公式给出工程判断：先筛占比，再谈加速比。代价方面，做全链路 profile 本身有成本——NCU 采集会引入 replay 开销，逐 kernel 采集可使被测负载时延膨胀数倍，生产环境不能直接开；因此需要采样式采集与离线复现相结合，用低采样率在灰度节点上抓取，避免污染线上 SLA。</p>
+
+<h3>二 · Roofline 作为第一道筛子：判断 kernel 是算力受限还是带宽受限</h3>
+<p>agent 拿到一个候选 kernel 后，第一件事不是改代码，而是定位它的性能天花板。Roofline 模型给出上界：给定算术强度 $I$（FLOP/Byte），可达性能为算力峰值与带宽乘以算术强度两者的较小值。对 memory-bound kernel，优化方向是减少访存、提高合并度、用向量化加载；对 compute-bound kernel，方向是提高占用率、减少指令依赖、用 Tensor Core。方向错了，再多轮 RL 也只是在噪声里打转。</p>
+<div class="formula">$$P_{\text{roof}} = \min\left(P_{\text{peak}},\; B_{\text{mem}} \cdot I\right),\quad I = \frac{\text{FLOPs}}{\text{Bytes}}$$</div>
+<p>机制上，agent 需要两类输入才能算出 $I$：kernel 的浮点运算计数与全局内存流量。前者可从源码或编译产物静态推断，后者依赖 NCU 的 dram__bytes 类指标。把实测吞吐与 $P_{\text{roof}}$ 对比，得到“距屋顶的距离”，这个距离才是可优化的空间。若实测已接近带宽屋顶，说明该 kernel 在当前数据布局下已无油水，agent 应转向融合或改变数据流，而不是继续调 tile 大小。</p>
+<p>代价在于，roofline 的峰值参数依赖具体 GPU 架构，且实际可达峰值远低于理论峰值（受占用率、指令混合、缓存命中影响），因此 roofline 只能作为粗筛，不能作为验收标准。具体例子：一个 elementwise 归一化 kernel，算术强度极低，实测带宽已接近 HBM 峰值，此时 agent 若继续尝试增大 block size，收益为零；正确动作是把它与前后的算子融合，减少一次往返显存，把两趟访存压成一趟。这个判断只能由 roofline 加实测带宽给出，单看加速比看不出来。</p>
+
+<h3>三 · Warp stall 与占用率：把“慢”拆成可归因的 stall 原因</h3>
+<p>roofline 告诉你天花板在哪，warp stall 分析告诉你为什么没到天花板。NCU 的 warp state 统计把每个 warp 的周期分配到若干 stall 原因上：内存依赖（long scoreboard）、执行依赖（short scoreboard）、同步屏障（barrier）、指令取指（imc miss）、以及 not selected（可发射但调度器未选中）。agent 需要的是 stall 原因的分布，而不是单一占用率数字。</p>
+<p>机制上，一个高占用率但性能差的 kernel，常见画像是 long scoreboard 占比高——访存延迟未被足够多的在途请求掩盖。此时优化方向是提高 memory-level parallelism：增加每线程独立加载数、用异步拷贝（cp.async）预取、调整 tile 使加载与计算重叠。相反，若 barrier stall 占比高，说明线程块内负载不均或同步过密，方向是重新划分工作。若 not selected 高，说明 occupancy 过高导致调度器争抢，反而应降低占用率换取更多寄存器。</p>
+<p>代价是采集开销：warp stall 需要逐 warp 采样，NCU 的 replay 次数随采集指标数线性增长，一次完整采集可使 kernel 时延放大到数十倍，且需要独占 GPU 以避免其他进程干扰计时。工程上通常只在离线复现环境做全量采集，线上用轻量计数器抽样。具体例子：一个 reduction kernel 在微基准上比 PyTorch 快，但端到端无收益，NCU 显示其 barrier stall 占比过半——原因是它用了全局同步的树形归约，块间同步等待拖长了尾延迟，而端到端负载是小 batch、高并发，尾延迟直接体现为请求时延。agent 若只看 device 平均时间会漏掉这个信号，必须看 stall 分布与尾部分位数。</p>
+
+<h3>四 · SASS：当源码级优化失效时，看编译器实际生成了什么</h3>
+<p>CUDA C++ 与 Triton 的源码抽象层会掩盖指令选择、寄存器分配与调度决策。agent 在源码层做的“优化”可能被编译器抵消：例如手工展开循环反而增加了寄存器压力导致溢出，或 Triton 的自动调优选出的配置在 SASS 层产生大量冗余搬运。此时必须下沉到 SASS，检查指令混合、寄存器用量、以及是否存在本地内存（local memory）溢出。</p>
+<p>机制上，agent 可用 cuobjdump/nvdisasm 导出 SASS，统计每类指令的条数、检查 LDG/STG 的宽度与合并模式、确认是否存在 LDL/STL（本地内存访问，通常意味着寄存器溢出）。寄存器溢出是隐蔽的性能杀手：源码看不出问题，SASS 里却多出成对的本地内存读写，直接把 compute-bound kernel 拖成 memory-bound。另一个信号是谓词执行与分支密度，高分支密度在 warp 内 divergent 时会串行化两条路径。</p>
+<p>代价是分析成本与迭代周期：SASS 与源码不是一一对应，agent 需要建立“源码改动—SASS 变化—性能变化”的因果链，这要求每轮改动后重新编译并导出，编译时间与采集时间叠加，单轮迭代从秒级升到分钟级。具体例子：一个 Triton 写的 attention 变体在微基准上加速明显，集成后却变慢，SASS 显示其 softmax 阶段因寄存器压力产生本地内存溢出，每次迭代多出数十条 LDL/STL。修复方式不是继续调 block size，而是缩小 tile 让寄存器需求回落——这个判断只有 SASS 能给。</p>
+
+<h3>五 · 二进制插桩：在不改源码的前提下拿到调用序列与时间戳</h3>
+<p>有些性能问题不在单个 kernel 内部，而在 kernel 之间的调用序列与空隙。框架层（PyTorch/TensorRT/vLLM）的调度、内存池分配、流同步，都会在 kernel 之间插入不可见的等待。源码级 profile 看不到这些，因为它们是运行时行为而非 kernel 代码。二进制插桩（如 eBPF 或 CUPTI 的 callback 机制）在驱动/运行时层挂载探针，记录每次 kernel launch 的时间戳、流 ID、grid/block 配置，从而重建时间线。</p>
+<p>机制上，插桩给出的是事件序列：launch 时刻、完成时刻、所在流、以及 host 侧调用栈。由此可计算 kernel 间空隙、流间重叠度、以及 host 侧阻塞点。若发现大量空隙，说明瓶颈在 host 调度或同步，而非 kernel 本身——此时优化 kernel 毫无意义。若发现多流之间没有重叠，说明依赖关系或同步点过密，应重排执行顺序。代价是插桩本身引入开销：每次 launch 的回调与时间戳记录会增加 host 侧时延，高频小 kernel 场景下开销占比显著，且插桩需要特权或特定运行时支持，生产环境部署受限。</p>
+<p>具体例子：故事中的 4% 收益，用插桩重建时间线后发现，被替换的 kernel 只占端到端的一小段，而前后存在两次显式同步与一次格式转换拷贝，合计吃掉了微基准省下的时间。agent 据此把优化目标从“更快的内核”改为“消除同步与拷贝”，这才是端到端收益的来源。这个结论无法从单 kernel 的 device 时间推出，只能从跨 kernel 的时间线读出。</p>
+
+<h3>六 · 把四类反馈接进 agent 的观测与奖励：口径对齐与代价控制</h3>
+<p>四类反馈（roofline、warp stall、SASS、插桩时间线）不是给工程师看的报告，而是要变成 agent 可消费的观测与可验证的奖励信号。关键设计是分层：第一层是粗筛，用 roofline 距离与端到端占比决定“值不值得优化”；第二层是归因，用 stall 分布与 SASS 信号决定“往哪个方向改”；第三层是验收，用插桩时间线确认端到端收益归因成立。每层对应不同的采集成本，agent 的迭代预算应与之匹配。</p>
+<p>机制上，奖励信号必须是端到端口径而非微基准口径，否则 agent 会学会“刷微基准”。一个可操作的奖励构造是：以端到端时延或吞吐为主项，以正确性 oracle 为硬约束，以 profile 导出的占比作为加权，使 agent 只在占比高的 kernel 上获得正向信号。同时要把采集开销计入成本：若某轮优化需要全量 NCU 采集，其时间成本应折算进 token/时延预算，避免 agent 无节制地触发昂贵采集。</p>
+<p>代价与工程判断：全量采集不可用于生产，抽样采集会带来方差，agent 需要在噪声中做决策，因此奖励应是多次采样的稳健统计量而非单次读数。具体例子：灰度发布阶段，agent 用低采样率的插桩在灰度节点上持续观测端到端占比，一旦发现某 kernel 占比因负载变化而下降，就自动降低其优化优先级并触发回滚阈值评估——这把 profile 从一次性诊断变成了持续的生产反馈回路。最终落在具体机制上：端到端收益归因的分子是 kernel device 时间，分母是墙钟时间，两者必须用同一时钟域、同一负载、同一批处理配置测量，否则 1.8x 与 4% 的错位会反复出现。</p>
+
+<h3>当 profile 本身成为瓶颈：硬件反馈回路的边界与系统代价</h3>
+<p>把 NCU 的 stall 采样、SASS 反汇编、二进制插桩接进 agent 的观测通道，收益是让“时间去哪了”变成可检索的结构化信号；代价是这条回路本身会改变被测对象。NCU 以固定采样周期轮询 SM 的 performance counter，采集窗口内每个 warp 的 stall reason 分布（long scoreboard、short scoreboard、MIO throttle、barrier、LG throttle 等），单次 kernel replay 需要把目标 kernel 重放数十遍以覆盖全部 counter 组，且 replay 期间 L2 被 flush、clock 被锁定到基频。这意味着 agent 看到的 stall 分布对应的是“降频 + 冷 cache”的执行形态，与生产环境的 boost clock、热 L2 命中率不是同一份时间账本。若 agent 用这份 profile 去指导“把 shared memory 占用降下来以提高 occupancy”，它优化的可能是 replay 态下的瓶颈，而生产态下该 kernel 早已被 memory bandwidth 而非 occupancy 限制。失效条件很明确：当 kernel 的执行时间接近采样粒度（微秒级小 kernel）、或 kernel 的瓶颈随输入 shape 漂移（如 attention 在短序列与长序列下分别受 launch overhead 与 HBM 带宽支配），单次 profile 的结论不可外推。</p>
+<p>roofline 作为 profile 的上位约束，作用是给 agent 一个“还差多少”的绝对标尺，而不是替代 stall 分析。对给定 kernel，算术强度 <span>I = FLOPs / Bytes</span>，可达性能上界为 <span>P = min(P_peak, I × BW)</span>；agent 需要把实测吞吐与该上界比对，才能判断优化空间是在计算侧还是访存侧。但 roofline 的分母 Bytes 取决于 agent 如何界定“必要访存”——把一次融合算子中本可驻留寄存器的中间结果算进 HBM 流量，会人为压低 I、把 kernel 误判为 memory-bound。工程上更可靠的做法是同时给出两套口径：按算法语义的最小流量（下界）与按实际生成的 SASS 中 LDG/STG 指令统计的流量（上界），二者夹出的区间才是可信的优化余量。代价是这套双口径统计需要 SASS 级指令计数，而二进制插桩（如在 kernel 入口/出口插入 timestamp、或用 CUPTI 的 PC sampling）会引入每 warp 数条额外指令与序列化开销，对短 kernel 的时延扰动可达可观比例——插桩版与裸版的时延差必须作为测量噪声从收益归因中扣除，否则 agent 会把插桩开销误读为“这段代码慢”。</p>
+<p>更隐蔽的失效来自 profile 与端到端收益的脱钩。故事里微基准 1.8x、端到端仅 4% 的落差，根因是 kernel 时间在端到端时延中的占比被高估：agent 若只看 kernel 自身的 SOL 与 stall，会持续优化一个只占端到端 5% 的热点，边际收益被框架侧的 launch 开销、内存拷贝、同步与调度吞掉。正确的观测设计是让 profile 输出带一个“归属权重”——<span>w = t_kernel / t_e2e</span>，并把优化优先级定为 <span>Δ = w × (1 − P_measured / P_roofline)</span>，即只有当权重与 roofline 缺口同时可观时才值得投入多轮 RL 与重编译。系统代价在于：为拿到 w，agent 必须在真实负载下做端到端 trace（而非离线 microbench），trace 的采样与聚合本身消耗 CPU/GPU 时间，且灰度阶段的流量分桶会让 w 随 batch 组成波动。因此 profile 回路应设成低频、按需触发的诊断通道，而非每轮 RL 都跑的常规反馈；把 NCU 重放、SASS 计数、插桩时延校准做成带缓存与置信区间的服务，agent 只在 roofline 缺口与权重同时越过阈值时才请求一次深度 profile，其余轮次用轻量的 CUPTI 计时与计数器快照。</p>
+<table class="mini"><thead><tr><th>观测手段</th><th>能回答的问题</th><th>主要扰动</th><th>适用边界</th></tr></thead><tbody><tr><td>NCU stall 采样</td><td>warp 卡在哪个流水级</td><td>replay 降频、L2 flush</td><td>中长 kernel、瓶颈稳定</td></tr><tr><td>roofline 双口径</td><td>计算侧还是访存侧的余量</td><td>需 SASS 指令计数</td><td>算术强度可界定的算子</td></tr><tr><td>二进制插桩</td><td>段级时延与调用序</td><td>每 warp 额外指令、序列化</td><td>需扣除插桩基线噪声</td></tr><tr><td>端到端 trace 权重</td><td>kernel 占 e2e 的比例</td><td>采样开销、流量分桶漂移</td><td>灰度真实负载</td></tr></tbody></table>
+<p class="paper-line">对应：book/ch9 · 第 6/12 部分</p>

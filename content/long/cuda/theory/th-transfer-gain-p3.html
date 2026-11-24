@@ -7,7 +7,7 @@
 <p>给定事实明确指出：源/目标任务分布差异大时增益为负。这里的“分布”不是抽象的数据分布，而是 kernel 生成任务的结构分布——算子族（elementwise、reduction、matmul、attention）、shape  regime（小 batch 延迟受限 vs 大 batch 带宽受限）、dtype、内存层级访问模式。MetaKernelBench 实测双向迁移为 −19%~+29%，说明同一对源/目标在方向反转时符号可以翻转，增益不是对称量。</p>
 <p>机制上，负迁移来自“错误先验的强注入”：源任务上学到的优化模式（例如对 reduction 用大量 shared memory 分块）被当作默认策略迁移到目标任务的 elementwise 题上，反而引入了不必要的同步与占用率损失。公式层面可以把 $G$ 写成源任务策略在目标任务上的期望收益减去其引入的失配代价：</p>
 <div class="formula">$$G_{\text{transfer}} \approx \underbrace{\mathbb{E}_{t\sim T}\left[\Delta s_{\text{match}}(t)\right]}_{\text{可迁移部分}} - \underbrace{\mathbb{E}_{t\sim T}\left[\Delta s_{\text{mismatch}}(t)\right]}_{\text{失配代价}}$$</div>
-<p>当失配代价的期望超过可迁移部分，$G<0$。这个分解的工程价值在于：它提示我们不该问“迁移好不好”，而该问“目标任务中有多大比例落在源任务策略的适用域内”。代价是显存与带宽层面的：错误的分块策略会推高 shared memory 占用、压低 occupancy，进而拉长时延；这类代价在 profile 上表现为 stall 归因从 memory throttle 转向 barrier，可与 Warp Stall 归因分解条目的口径对接。</p>
+<p>当失配代价的期望超过可迁移部分，$G&lt;0$。这个分解的工程价值在于：它提示我们不该问“迁移好不好”，而该问“目标任务中有多大比例落在源任务策略的适用域内”。代价是显存与带宽层面的：错误的分块策略会推高 shared memory 占用、压低 occupancy，进而拉长时延；这类代价在 profile 上表现为 stall 归因从 memory throttle 转向 barrier，可与 Warp Stall 归因分解条目的口径对接。</p>
 <p>具体例子：源任务是批量较大的 matmul（计算受限），目标任务是 batch=1 的 decode 阶段小算子（延迟受限）。把 matmul 的大 tile 策略迁过去，单题时延反而上升，$G$ 为负；而反向迁移（把延迟优化的小 kernel 经验带到 matmul）同样可能因占用率不足而退化。这正是 −19%~+29% 双向区间存在的结构性原因，也是每模型/每方向仍有 16%–45% 题目退化的来源。</p>
 
 <h3>三 · 硬件与 dtype 漂移：迁移的物理边界</h3>

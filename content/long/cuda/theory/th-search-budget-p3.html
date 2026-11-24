@@ -11,7 +11,7 @@
 
 <h3>三 · 规模上限：编译时间、验证吞吐与显存墙</h3>
 <p>公式只对 $n$ 求导，把每次采样的成本当作常数。这一假设在 $n$ 增大后失效，因为单次采样的成本本身随候选复杂度上升：生成的 kernel 越长、使用的 tile/流水越复杂，nvcc 编译时间与 ptxas 寄存器分配时间非线性增长，编译失败率也上升。若单次采样成本为 $g(n)$（随 $n$ 递增），真实边际成本是 $\frac{\partial}{\partial n}\left(n\,g(n)\right)$，而不是常数。收益递减的判据应从“边际得分低于单次 GPU 成本”改为“边际得分低于边际总成本”：</p>
-<div class="formula">$$\frac{\partial}{\partial n}\mathbb{E}\left[\max_{i\le n}s_i\right] < g(n)+n\,g'(n)$$</div>
+<div class="formula">$$\frac{\partial}{\partial n}\mathbb{E}\left[\max_{i\le n}s_i\right] &lt; g(n)+n\,g'(n)$$</div>
 <p>这解释了为什么在固定 wall-clock 预算下，把 $n$ 翻倍往往不如把单候选的编译与验证预算翻倍。验证侧同样有吞吐上限：每个候选都要跑正确性 oracle（多组输入、边界 shape）和至少一次计时，oracle 的输入规模与重复次数决定了单候选验证时延；当 $n$ 大到验证队列成为瓶颈，GPU 在采样与验证之间来回切换，利用率下降，实际吞吐低于线性。显存墙则出现在批量验证阶段：同时驻留多个候选的中间张量与计时 buffer，会挤占采样阶段的 KV cache 空间，迫使降低 batch size，反过来拉长采样时延。一个具体例子是 Triton 候选的编译缓存：同一 kernel 的不同 config 会触发多次编译，编译产物占用磁盘与内存，$n$ 增大后编译时间占比上升，收益曲线在编译开销超过得分增益的 $n$ 处出现拐点——这个拐点与公式预测的拐点通常不在同一位置。</p>
 
 <h3>四 · reward hacking 放大：分数越高，审计成本越重</h3>

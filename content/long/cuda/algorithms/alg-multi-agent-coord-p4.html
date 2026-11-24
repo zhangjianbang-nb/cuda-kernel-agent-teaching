@@ -1,0 +1,39 @@
+<h3>一 · 负载选择的判据：从"能跑"到"值得跑"</h3>
+<p>多智能体协同的收益不是均匀分布在所有 kernel 上的。四个角色（proposer/coder/profiler/critic）每轮都要交换策略描述、源码 diff、NCU 归因与判定结论，单轮 token 成本显著高于单 agent；因此负载必须满足"存在可被诊断的非平凡瓶颈"这一前提，否则 profiler 的归因输出退化为噪声，proposer 拿到的是错误梯度。判据可以写成一个筛选条件：设基线 kernel 的实测时延为 <span class="inline-math">T_base</span>，roofline 下界为 <span class="inline-math">T_SOL</span>，则要求 <span class="inline-math">T_base/T_SOL</span> 落在有明显优化空间的区间——太接近 1 意味着策略池里所有候选（split-K、双缓冲、向量化）都无处施展，多轮迭代只会烧 token；比值过大则往往意味着基线实现本身有结构性缺陷（如未做 tiling 的朴素实现），此时正确的动作是换基线而不是让 agent 去"优化"一个不该存在的起点。</p>
+<p>算子类型上，优先选择同时具备访存与计算两个可调维度的负载：GEMM 系（含 batched、split-K 变体）、attention 的 fused kernel、reduction/softmax 类、卷积的 implicit GEMM 实现。纯 elementwise 或纯 copy 类 kernel 的瓶颈单一（带宽），profiler 归因几乎没有信息量，四个角色的分工退化为一个角色。shape 维度上，负载必须包含至少一组"边界 shape"：非 2 的幂、K 维不能被 tile 整除、batch 很小而 M/N 很大、以及极端长宽比。这些 shape 是向量化与 split-K 策略的分水岭，也是 critic 判定 keep/revert 时最有区分度的样本。</p>
+<p>硬件侧的选择标准是"NCU 可归因"：需要 profiler 能稳定采集到 stall 分布与吞吐指标，且硬件计数器语义清晰。多卡或跨 NUMA 的负载会把通信开销混入时延，使 <span class="inline-math">T_t</span> 的方差吞掉策略带来的真实增益，这类负载要么固定拓扑后单独建配方，要么排除。一个具体例子：把 split-K 策略用在 K 很小（不足以分摊 reduction 开销）的 GEMM 上，profiler 会报告同步 stall 上升，critic 依据时延回退——这一轮消耗了完整的四角色通信 token，却只得到一条"该 shape 不适合 split-K"的教训。教训本身有价值，但如果配方里塞满这类低信息量 shape，策略池的更新速率会被稀释。</p>
+
+<h3>二 · 基线锚定：三级别与不可比陷阱</h3>
+<p>基线不是"随便找个能跑的版本"，而是决定了 reward 公式中 <span class="inline-math">T_best</span> 的语义。配方应固定三级基线：<strong>朴素参考实现</strong>（正确性锚，通常显著慢，仅用于 oracle 对照）、<strong>厂商库基线</strong>（cuBLAS/CUTLASS 或对应 Triton 教程实现，性能锚）、<strong>历史最优</strong>（策略池内已 keep 的最佳版本，进化锚）。reward 中的 <span class="inline-math">T_best</span> 必须明确取哪一级：取厂商库时，agent 的任务是"逼近或超过库"，reward 在接近 1 附近极度敏感，微小抖动即可翻转 keep/revert；取历史最优时，reward 度量的是相对自身进步的增量，长程迭代后期必然衰减。两种语义都合法，但不能在同一配方里混用，否则 critic 的判定阈值 <span class="inline-math">\tau</span> 失去物理意义。</p>
+<div class="formula">$$\text{reward}_t=\mathbb{1}[\text{correct}]\cdot\left(\frac{T_{\text{best}}}{T_t}-1\right)-\lambda\cdot\text{tokens}_t,\quad \text{keep if }\ \text{reward}_t>\tau$$</div>
+<p>不可比陷阱主要有三类。其一是编译基线漂移：基线若以不同编译选项（如是否开启 fast math、不同 unroll 因子）构建，时延差异可以轻易超过多数策略的真实增益，因此基线必须与候选 kernel 共享同一套编译配置，且编译产物需固定。其二是测量口径不一致：基线用 CUDA event 计时而候选走 profiler 的 kernel duration，两者对 launch 开销与同步点的处理不同，差值会被误读为优化收益。其三是缓存状态：基线冷缓存、候选热缓存，L2 命中差异在小 shape 上足以颠倒结论，配方需规定统一的 warmup 次数与重复测量取中位数（而非均值，均值会被首次 launch 的初始化污染）。</p>
+<p>代价体现在配方构建期：三级基线意味着三套正确性对照与三套计时流程，构建与维护成本是单基线的数倍；运行期则体现为每轮 critic 需额外做一次基线复测以排除机器状态漂移，这部分时延不计入 reward 但计入墙钟预算。具体例子：某配方以 cuBLAS 为 <span class="inline-math">T_best</span>，agent 写出的 kernel 在中等 shape 上时延略优于库，但库在小 shape 上因启发式选择算法而极快，导致同一策略在不同 shape 上 reward 符号相反——critic 若不按 shape 分组判定，keep/revert 会在同一策略上反复震荡，双记忆被污染。</p>
+
+<h3>三 · 输入分布：shape 采样与数据值域</h3>
+<p>输入分布包含两个正交维度：shape 分布与数值分布。shape 分布决定策略池的覆盖面，数值分布决定正确性 oracle 的检出能力。配方应把 shape 分为固定集与采样集：固定集是每次评测必跑的锚点 shape（覆盖典型与边界），采样集按轮次从预定义分布中抽取，用于防止 agent 对固定 shape 过拟合（例如把 tile 大小硬编码成恰好匹配某一组维度）。采样分布本身要写进配方并冻结，否则不同轮次的 reward 不可比。</p>
+<p>数值分布的设计要点是让错误"可被触发"。全零或全一输入会让大量索引错误、越界读写与累加顺序问题静默通过；配方应至少包含大幅值混合符号（检验溢出与累加精度）、含 NaN/Inf 的边界用例（检验传播语义是否符合参考实现）、以及接近机器精度下限的小量（检验 reduction 的数值稳定性）。这些用例的判定必须走 fp64 参考 oracle 与容差比较，容差本身按 dtype 与归约长度设定，不能全局统一。</p>
+<p>代价是评测时间与显存。每个 shape 一次完整正确性扫描意味着参考实现也要跑一遍，fp64 参考在长归约上时延可达候选 kernel 的数倍；采样集规模每翻一倍，单轮评测墙钟近似线性增长，而 agent 的 token 预算不变，等于压缩了可用于策略探索的轮次。具体例子：一个 reduction kernel 的配方若只采样大 K、小 M 的 shape，agent 会收敛到"增大并行度"这一条策略，而小 K 场景下的启动开销与 occupancy 问题永远不被暴露；把 K=1 的退化 shape 加入固定集后，proposer 才会提出针对低占用的策略分支。</p>
+
+<h3>四 · 指标计算：从时延到可判定标量</h3>
+<p>指标层要把多次测量压缩成一个 critic 可比较的标量，同时保留诊断所需的辅助量。主指标是分组时延：按 shape 分组取中位数 <span class="inline-math">T_t^{(g)}</span>，再按配方给定的权重 <span class="inline-math">w_g</span> 聚合为 <span class="inline-math">T_t=\sum_g w_g T_t^{(g)}</span>。权重反映业务重要性而非等权，否则大量边界 shape 会淹没主战场。辅助指标包括：SOL 利用率（供 profiler 归因引用）、正确性通过率（任一 shape 失败即整体 <span class="inline-math">\mathbb{1}[\text{correct}]=0</span>，不做部分给分）、以及编译时间与 token 消耗（进入 reward 的惩罚项）。</p>
+<p>这里有一个必须显式处理的判定顺序问题：正确性是硬门，性能是软分。若允许"快但错"的候选获得正 reward，agent 会学会用未定义行为换时延。因此 critic 的判定应先跑正确性 oracle，失败即 revert 并写入失败记忆，不进入时延比较；只有通过正确性门的候选才计算 reward。这一顺序也影响 token 开销：错误候选无需 profiler 采集 NCU，可省下一轮昂贵的 profile 采集。</p>
+<p>指标计算的代价主要在方差控制。GPU 时延测量对频率、温度与共租敏感，单次测量不足以支撑 <span class="inline-math">\tau</span> 附近的判定；配方需规定重复次数与离散度阈值，离散度超标的测量整组作废重测。这直接把单轮评测墙钟拉长，且在高负载机器上可能反复触发重测。具体例子：某候选在 <span class="inline-math">\tau</span> 边缘，重复测量中位数稳定但四分位距较大，critic 若强行判定 keep，下一轮 profiler 基于该版本的诊断会建立在噪声之上；正确做法是标记为"待定"，让 proposer 在下一轮用不同策略再试，而不是把不确定性写进策略池。</p>
+
+<h3>五 · 负载错配的失效模式</h3>
+<p>负载与配方错配时，失效不是随机噪声而是有结构的。第一种是<strong>策略池同质化</strong>：当负载瓶颈单一（纯带宽或纯启动开销），profiler 每轮给出相同归因，proposer 反复提出同一类策略的变体，双记忆的成功分支被同一策略的微调填满，进化停滞。第二种是<strong>归因误导</strong>：shape 集合缺少能区分策略的样本时，profiler 把测量噪声归因为某一类 stall，proposer 据此提出的策略在真实瓶颈上无效，critic 回退后写入的"失败教训"本身是错的，污染后续轮次。</p>
+<p>第三种是<strong>reward 尺度失配</strong>：基线过强（如已高度优化的厂商库）时，<span class="inline-math">T_best/T_t-1</span> 长期为负，所有候选都被 revert，agent 学不到任何东西；基线过弱时，reward 长期为正且幅度大，<span class="inline-math">\tau</span> 形同虚设，策略池被低质量候选灌满。第四种是<strong>预算错配</strong>：负载的评测成本（fp64 参考、多 shape 扫描、重复测量）吃掉了大部分墙钟，四角色通信的 token 开销相对占比更高，单轮性价比下降，多轮迭代在预算耗尽前无法收敛。</p>
+<p>识别这些失效模式的工程手段是配方自检：在正式跑 agent 之前，用一组人工构造的"已知优劣"候选（一个明显更快的正确实现、一个明显更慢的正确实现、一个错误的实现）走完整评测流程，检查 reward 排序是否符合预期、<span class="tau">τ</span> 是否能正确切分。这一步的代价是一次性的配方调试时间，但能避免整轮进化建立在错误的度量上。具体例子：若人工构造的"明显更快的正确实现"在配方下 reward 未超过 <span class="inline-math">\tau</span>，说明基线或 shape 权重设置有误，此时应调配方而非调 agent。</p>
+
+<h3>六 · 配方冻结与版本化</h3>
+<p>多智能体进化的可比性依赖于配方冻结：shape 集合、采样分布、基线级别、测量重复次数、容差、权重、<span class="inline-math">\lambda</span> 与 <span class="inline-math">\tau</span> 一旦进入正式迭代即不可中途修改。原因是 reward 是跨轮次比较的量，任何一项变动都会使历史策略池中的 keep 记录失去意义，双记忆的成功/失败标签变得不可信。配方应作为带版本号的工件与策略池一同存档，每轮评测记录配方版本，critic 的判定结论绑定到该版本。</p>
+<p>版本化的实际收益是故障回溯：当某一轮出现异常的 keep/revert 序列时，可以对比配方版本差异定位是度量问题还是策略问题。代价是灵活性下降——发现配方缺陷后不能就地修补，只能开新版本并从干净策略池重启，这意味着已消耗的 token 预算无法回收。因此配方设计阶段的自检（上一节的已知优劣候选）比迭代中的热修复更重要。</p>
+<p>一个具体的工程判断：当负载包含多个差异极大的 shape 族（如既有大 GEMM 又有小 reduction），不要试图用单一权重把它们塞进一个 reward 标量，而应拆成独立配方并行进化，各自维护策略池，最后在部署侧按业务占比合并选型。合并的代价是策略池无法跨族复用（split-K 的教训对 reduction 无意义），收益是每个族的 <span class="inline-math">\tau</span> 都能落在该族时延分布的有区分度区间内，critic 的判定不再被跨族尺度差异稀释。</p>
+
+<h3>配方失配时的三重代价与止损判据</h3>
+<p>这套四角色协同的收益高度依赖负载与评测配方的匹配度。它适合的负载画像很窄：算子有可分解的优化自由度（split-K、双缓冲、向量化这类策略能真实改变瓶颈位置），单次编译与正确性 oracle 的往返在预算内可承受，且基线时延与 SOL 之间存在明显可压缩空间。反过来，访存带宽已接近 SOL 的纯拷贝类算子、shape 极小导致 launch 开销主导的 kernel、以及正确性 oracle 本身昂贵或难以构造的算子，都不适合投入 proposer/coder/profiler/critic 的完整链路——策略池里能提的候选很快耗尽，profiler 的 NCU 归因退化为“已饱和”，critic 只能反复 revert，token 开销却按轮次线性累积。输入分布设定同样关键：若评测只覆盖单一对齐良好的 shape，向量化与双缓冲策略会被系统性高估，一旦换到非对齐尾块或动态 shape，正确性 oracle 才会暴露越界与掩码缺失，而此时策略已被写入成功记忆，污染后续轮次的 proposer 先验。</p>
+<p>指标计算必须把“相对基线的收益”与“探索成本”分开记账，否则 keep/revert 判据会被 token 开销主导：</p>
+<div class="formula">$$\text{reward}_t=\mathbb{1}[\text{correct}]\cdot\left(\frac{T_{\text{best}}}{T_t}-1\right)-\lambda\cdot\text{tokens}_t,\quad \text{keep if }\ \text{reward}_t>\tau$$</div>
+<p>这里 $T_{\text{best}}$ 取历史最优而非当前基线，意味着一次回退不会抹掉已得收益，但也意味着 profiler 归因错误若未被 critic 校验，会把一个偶然的时延抖动固化为“最优”，后续策略围绕错误瓶颈展开。$\lambda$ 与 $\tau$ 的取值直接决定方案边界：$\lambda$ 偏大时，多角色通信的 token 成本压过真实加速，系统退化为单 agent 式的保守试错；$\lambda$ 偏小时，critic 会保留大量噪声级收益，策略池膨胀、上下文变长，下一轮 proposer 的读取成本上升，形成“记忆越全、单轮越贵”的反向缩放。</p>
+<table class="mini"><thead><tr><th>失配情形</th><th>可观测症状</th><th>系统代价</th></tr></thead><tbody><tr><td>带宽已饱和算子</td><td>profiler 归因恒为访存、候选策略重复</td><td>token 线性增长、时延零收益</td></tr><tr><td>shape 覆盖过窄</td><td>正确性 oracle 通过但换 shape 失效</td><td>成功记忆污染、后续轮次返工</td></tr><tr><td>编译往返过慢</td><td>单轮预算被编译吃掉</td><td>有效迭代轮数骤减</td></tr></tbody></table>
+<p>工程判断应落在“配方先行、链路后置”：先用一组覆盖对齐/非对齐、静态/动态 shape 的小规模负载跑通单 agent 基线，确认存在可压缩的 SOL 差距与稳定的正确性 oracle，再启用四角色链路；同时在 critic 侧加一条硬约束——任何 keep 必须附带 profiler 归因与 SASS stall 分布的一致性证据，否则降级为 revert。负载不对时最典型的失效不是算错，而是系统在“正确的 kernel、错误的瓶颈叙事”上持续烧预算。</p>
+<p class="paper-line">对应：algorithms/alg-multi-agent-coord · 第 4/8 部分</p>

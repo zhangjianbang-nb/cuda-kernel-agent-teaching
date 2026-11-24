@@ -1,0 +1,46 @@
+<h3>一 · 脚手架的分工不是流水线，而是带反馈的搜索树</h3>
+<p>把 coder、judge、profiler、search 四个角色理解成一条单向流水线，是这类系统最常见的工程误判。真实可用的 kernel agent 脚手架是一个带预算约束的搜索树：coder 在节点上生成候选实现，judge 给出正确性判定与失败类型，profiler 给出性能向量（时延、带宽利用率、寄存器压力、occupancy），search 决定下一个扩展哪个节点、放弃哪个分支、是否回退到上一版并施加定向变异。四者的接口必须窄且结构化，否则反馈无法被下游消费。</p>
+<p>关键机制在于把“反馈”分成三类并分别路由：<strong>硬约束反馈</strong>（编译失败、越界、数值不匹配）直接杀死节点，不进入性能评估，节省 profiler 预算；<strong>软约束反馈</strong>（正确但慢、正确但显存超限）进入 search 的打分函数；<strong>诊断反馈</strong>（SASS 指令组合、stall 原因、bank conflict 计数）作为变异提示注入下一轮 coder 的上下文。三类的处理代价差异极大：一次 NCU 采集的时延开销远高于一次编译，而一次编译又远高于一次静态检查，因此路由顺序本身就是性能决策。</p>
+<div class="formula">$$\text{score}(n)=\mathbb{1}[\text{correct}(n)]\cdot\frac{\text{SOL}(n)}{\max(1,\ \text{tokens}(n)/T_0)}\cdot\mathbb{1}[\text{mem}(n)\le M]$$</div>
+<p>这个打分刻意把 token 成本放进分母：同一正确性下，用三千 token 换来 5% 的 SOL 提升，在私有 held-out 上往往不划算，因为搜索预算被单点消耗。举例：一个 reduce 类 kernel，coder 首轮给出朴素全局原子加版本，judge 判定正确，profiler 显示带宽利用率极低且原子冲突严重，search 不应直接重写，而应把“原子冲突”作为诊断标签回注，让 coder 在 warp 内先做 shuffle 归约再落一次原子——这是单点变异而非重新生成，token 开销小一个量级。</p>
+
+<h3>二 · judge 的职责边界：正确性 oracle 之外还要判“可评测性”</h3>
+<p>judge 常被简化为“跑一遍参考实现比对数值”，这在基准演化语境下不够。judge 至少承担三件事：判定数值正确性（含容差策略与特殊值处理）、判定该候选是否<strong>可被公平评测</strong>（是否偷偷改变了问题规模、是否把计算挪到 host、是否复用了不该复用的缓存）、以及给失败打类型标签供 search 使用。第二件事是防污染与防作弊的交汇点：一个候选如果在 benchmark 输入上做了特化分支，数值全对但语义已偏，judge 必须能识别。</p>
+<p>机制上，judge 应实现为“参考实现 + 输入生成器 + 不变量检查”的三元组。输入生成器负责覆盖边界形状（非 2 的幂、极小 batch、极端 stride），不变量检查覆盖形状契约、dtype 契约与确定性要求。代价是显存的：为覆盖边界形状，judge 需要同时驻留参考输出与候选输出，在大 shape 上这是峰值显存的主要来源，因此 judge 的批处理策略必须与 profiler 的测量策略分离，否则测量会被 judge 的驻留污染。</p>
+<p>具体例子：一个 layernorm 候选在标准 shape 上数值吻合，但输入生成器给出 batch=1、hidden 非对齐的情形时出现归约顺序差异导致的末位偏差。judge 若只做固定 shape 比对就会放过它，而这类候选一旦进入 held-out 就会暴露为“分数虚高”的来源之一。因此 judge 的输出不是布尔值，而是 <code>{pass, fail_numeric, fail_contract, fail_determinism}</code> 的枚举，search 依据枚举决定是修复还是丢弃。</p>
+
+<h3>三 · profiler 的采样策略：NCU 与 SASS 是两种不同粒度的证据</h3>
+<p>profiler 在脚手架里不是“跑个 benchmark 拿时延”，而是提供可归因的证据。NCU 给出的是硬件计数器的聚合视图：achieved occupancy、DRAM throughput、L2 命中、warp stall 分布；SASS 给出的是指令级事实：是否生成了预期外的 local memory 访问、是否因寄存器压力产生 spill、循环是否被展开。二者粒度不同，消费方式也不同——NCU 适合做分支级排序（哪个候选值得继续投入），SASS 适合做变异提示（下一版该改什么）。</p>
+<p>采样代价必须显式建模。NCU 的采集会引入 replay 开销，一个 kernel 采集多个 section 时时延可能放大数倍，因此在搜索树中应对 profiler 调用设配额：只有通过 judge 且时延进入前若干名的节点才允许进入 NCU 采集。SASS 反汇编则是编译期产物，几乎无运行时开销，可以对所有通过编译的候选批量获取，用于静态过滤（例如直接丢弃出现 spill 的候选）。</p>
+<div class="formula">$$\text{priority}(n)=\alpha\cdot\frac{\text{lat}(n)}{\text{lat}_{\text{ref}}}+\beta\cdot\frac{\text{stall}_{\text{mem}}(n)}{\text{stall}_{\text{total}}(n)}+\gamma\cdot\mathbb{1}[\text{spill}(n)]$$</div>
+<p>举例：一个 GEMM 候选时延接近参考实现，但 NCU 显示 long scoreboard stall 占比高、L2 命中偏低，同时 SASS 显示 A 片段被重复加载。search 据此选择“提升 shared memory 复用”这一变异方向，而不是盲目调 tile 大小。反过来，若 SASS 显示大量 spill，则无论时延多好都应降权——它在 held-out 的更大 shape 上必然崩溃。这里的代价是编译时间：为获取 SASS 需要完整编译，批量反汇编会拉长单轮迭代的墙钟时间，因此实践中常把 SASS 获取放在异步队列，与下一轮 coder 生成并行。</p>
+
+<h3>四 · search 的策略：在正确性、性能与预算之间做剪枝</h3>
+<p>search 是脚手架的调度器，其核心不是“多试几次”，而是决定预算如何在深度（同一节点连续修正）与广度（并行探索不同实现路线）之间分配。一个可操作的机制是分层剪枝：第一层用静态检查与编译结果剪掉语法与资源超限分支；第二层用 judge 剪掉不正确分支；第三层用低成本时延测量剪掉明显劣于当前最优的分支；第四层才对幸存者做 NCU 深采。每层都有明确的预算上限，避免某一层吞噬全部预算。</p>
+<p>多轮修正的语义需要区分“修复”与“探索”。修复是在同一算法骨架下改参数或改访存模式，token 开销小、收敛快；探索是更换算法骨架（例如从 tiled 到 warp-specialized），token 开销大但可能突破局部最优。search 应维护每个分支的“修正次数”计数，超过阈值仍无性能增益则强制转向探索，防止在错误骨架上无限微调——这正是公开基准上分数虚高却无法迁移到 held-out 的典型成因之一。</p>
+<p>代价体现在 token 与墙钟两端：一次探索性重写的 token 消耗可达修复的若干倍，而墙钟受编译与 NCU 排队支配。具体例子：一个 softmax 候选连续三轮修复都在调 block size，SOL 停滞；search 依据修正计数触发探索，让 coder 改用 online softmax 的单遍扫描结构，虽然首轮正确性需要两轮修复，但最终 SOL 显著提升。这里工程判断是：修复的边际收益递减点应通过计数而非主观判断来触发。</p>
+
+<h3>五 · 反馈回注的格式：结构化诊断比自然语言描述更可靠</h3>
+<p>把 NCU 与 SASS 的结论以自然语言长文回注给 coder，是低效且不稳定的做法：模型容易抓住描述中的次要线索而忽略主因，且长文占用大量上下文预算。更可靠的机制是把诊断压缩成固定字段的结构化标签，例如 <code>{bottleneck: "dram", spill: true, bank_conflict: 3, unroll: false}</code>，并附上对应的最小 SASS 片段。字段化的好处是可被 search 直接用于分支排序，也可被 coder 作为约束条件而非叙述背景。</p>
+<p>回注的另一个要点是“只回注与当前变异方向相关的证据”。全量 NCU 报告包含数十个指标，全部回注会稀释信号；按瓶颈类型筛选后回注，能让 coder 的修改聚焦。代价是上下文 token：结构化标签加最小片段通常远小于完整报告，这在多轮迭代中累积起来是显著的预算节省。举例：当瓶颈标签为 dram 时，回注应包含 achieved DRAM throughput 与访存指令占比，而不必包含 stall 全表；当标签为 compute 时则相反。</p>
+<p>需要强调的是，回注的证据必须与 judge 的判定一致。若 judge 标记 fail_contract，则不应再回注性能诊断，因为该候选的语义已不可信，性能数字无意义。这条规则看似显然，但在实际脚手架中经常被违反，导致 search 在错误分支上继续投入 profiler 预算。</p>
+
+<h3>六 · 脚手架与基准演化的耦合：私有 held-out 上的行为差异</h3>
+<p>脚手架在公开基准与私有 held-out 上的行为应当被分别观测，这是基准从公开集迁移到私有集时最容易被忽略的工程点。公开集上，coder 可能通过记忆或模式匹配生成高度特化的实现，search 的探索分支被压制；私有 held-out 上，这类特化失效，search 必须依赖 profiler 证据做真实归因。因此脚手架需要一条“去特化”约束：在生成阶段限制对具体 shape 的硬编码，在 judge 阶段用输入生成器覆盖非标准形状。</p>
+<p>机制上，可为每个任务维护一个“形状族”描述，coder 的候选必须在该族上通过 judge，而非仅在单一 shape 上。代价是评测时间：形状族带来的用例数增长直接放大 judge 与 profiler 的墙钟开销，因此实践中常对形状族做分层采样，边界形状必测、中间形状抽样。具体例子：一个 transpose 候选在 4096×4096 上表现优异，但在非对齐尾块上出现越界，若脚手架只在单一 shape 上评测，该候选会被错误地保留并推高公开集分数，正是污染检测揭穿的那类虚高来源。</p>
+<p>最终落在工程判断上：脚手架的四个角色中，search 的剪枝策略与 judge 的可评测性判定共同决定了分数是否可信；profiler 提供的是归因证据而非排名依据；coder 的产出必须被形状族约束而非单点 shape 约束。把这条约束写进基准变更记录，才能保证每次基准升级后历史分数仍可比——否则升级只是换了一批更容易被特化的题。</p>
+
+<h3>脚手架分工的失效边界：当 judge 与 profiler 互为噪声源</h3>
+<p>coder/judge/profiler/search 四角色的分工在纸面上是清晰的：coder 产出候选 kernel，judge 用正确性 oracle 与数值容差判定，profiler 采 NCU 指标与 SASS 反汇编，search 决定下一轮往哪个方向改。但真实系统里最先崩掉的往往不是 coder，而是 judge 与 profiler 之间的信息耦合。judge 的判定阈值一旦放宽到能容纳浮点重排带来的误差，profiler 就会把“通过但慢”的候选也纳入优化队列，导致 search 在错误方向上消耗轮次；反过来，judge 收紧到逐位一致，则大量合法的 tiling 变换被误杀，profiler 采到的样本全是保守实现，NCU 上的 occupancy 与 memory throughput 曲线退化成单峰分布，search 失去梯度信号。这个耦合的代价可以直接量化：设每轮修正的 token 预算为 B，judge 假阴性率 f⁻、假阳性率 f⁺，则有效候选率约为 (1−f⁻)(1−f⁺)，而 search 每轮实际可用于探索的预算只剩 B·(1−f⁻)(1−f⁺) 减去 profiler 采集开销。profiler 单次 NCU 采集在中等规模 kernel 上引入的时延放大是数量级级别的（相对裸跑），多轮修正里若每轮都全量采集，wall-clock 会被 profile 本身吃掉，而不是被 kernel 本身吃掉。</p>
+<p>失效条件有三类值得在基准设计里显式记录。第一类是 SASS 与源码的语义漂移：coder 基于 CUDA C++ 写的分支，经 nvcc 优化后 SASS 里出现谓词化与指令重排，profiler 报出的 stall 原因（如 long scoreboard）指向的是编译器决策而非算法缺陷，此时 search 若按 SASS 指标回改源码，等于在优化编译器的产物而不是优化算法。第二类是 NCU 的采样扰动：profiler 为控制开销采用周期性采样，短 kernel 上采样窗口覆盖不全，报出的 DRAM throughput 与真实值偏差足以让 roofline 判定跨过 SOL 边界，把“接近带宽上限”误判为“已饱和”。第三类是 judge 的 oracle 本身依赖库实现：当参考实现来自 cuBLAS 或 PyTorch 原生算子，其内部算法选择随 shape 变化，judge 的容差必须随 shape 分档，否则同一 kernel 在小 shape 上通过、在大 shape 上被判错，search 收到的是自相矛盾的反馈。</p>
+<div class="formula">$$\text{有效探索轮次} \;=\; \left\lfloor \frac{B_{\text{total}} - N_{\text{prof}} \cdot c_{\text{prof}}}{c_{\text{iter}}} \right\rfloor \cdot (1-f^-)(1-f^+)$$</div>
+<p>其中 N_prof 为强制采集轮数，c_prof 为单次采集的 token 与时延折算成本，c_iter 为单轮修正的固定开销。这个式子说明：把 profiler 从“每轮必采”改为“仅在候选通过 judge 且与当前最优差距超过阈值时采”，能在不损失搜索质量的前提下把有效轮次抬升数倍。具体例子：一个 reduction kernel 的候选在 judge 处因容差过松被判通过，profiler 报出 62% 的 DRAM 利用率，search 据此判定“已接近 roofline”而停止迭代；实际该 kernel 因未做向量化加载，理论带宽上限只用到一半，SASS 里 LDG.32 而非 LDG.128 才是根因。若 judge 在通过时附带一条“与参考实现的相对误差分布”而非单一布尔值，profiler 的利用率读数就会被正确解读为“低效实现下的伪饱和”，search 也就不会提前收敛。这类误判在私有 held-out 集上尤其危险：污染检测揭穿分数虚高后重建的基准，其价值恰恰在于让 judge 的容差与 profiler 的采样策略一起被版本化记录，任何一次基准升级都必须回答“这次改动让哪一类失效条件不再被触发”，否则历史分数不可比。</p>
+
+<h3>脚手架的分工边界：当 judge 与 profiler 开始互相污染</h3>
+<p>coder/judge/profiler/search 四角色的分工在纸面上是干净的：coder 产出候选 kernel，judge 做正确性判定，profiler 采集 NCU/SASS 与 roofline 证据，search 依据反馈决定下一轮往哪个方向改。真正的失效点不在单角色能力，而在反馈通道的耦合。judge 一旦把“能编译、能跑、数值在容差内”当作通过信号直接喂给 search，search 就会把编译通过与正确性通过混为一谈，转而优化那些最容易通过 judge 但离 SOL 很远的形态——比如把大 tile 拆成小 tile 以规避越界，正确性稳过，带宽利用率却塌了。profiler 的介入必须早于 search 的收敛判断，否则 NCU 指标只是事后装饰。</p>
+<p>一个可操作的机制是把反馈分成硬约束与软信号两层。硬约束由 judge 独占：数值容差、越界检测、确定性要求，任一不满足即回滚到上一版候选，search 不得据此调参。软信号由 profiler 提供，形如收益函数</p>
+<div class="formula">$$G = \frac{\text{measured\_time}}{\text{roofline\_time}} \cdot \mathbb{1}[\text{judge pass}] - \lambda \cdot \text{compile\_cost}$$</div>
+<p>其中 roofline 时间由 profiler 依据实测带宽与峰值算力给出，compile_cost 惩罚那些靠模板爆炸换性能的候选。代价很直接：每轮多一次 NCU 采集意味着时延增加，SASS 反汇编与指标归因还会吃掉 token 预算；若把 profiler 放在每轮都跑，多轮修正的轮数会被采集开销压缩，反而降低搜索广度。工程判断是让 profiler 按需触发——仅当 judge 通过且候选与历史最优的差距落在阈值内才采集，其余轮次只跑轻量计时。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>表现</th><th>系统代价</th></tr></thead><tbody><tr><td>judge 容差过松</td><td>search 收敛到数值侥幸通过的形态</td><td>正确性 oracle 失效，私有 held-out 分数虚高</td></tr><tr><td>profiler 指标不可归因</td><td>NCU 计数器与源码行对不上</td><td>SASS 反汇编时间与 token 消耗翻倍</td></tr><tr><td>search 无回滚点</td><td>多轮修正单向漂移</td><td>编译时间累积，候选版本不可比</td></tr></tbody></table>
+<p>具体例子：某 reduction kernel 在 judge 下稳定通过，profiler 却显示 shared memory bank conflict 主导 stall。若 search 只看 judge 信号，会继续加大 tile 尺寸；接入 profiler 的 stall 归因后，search 改为调整 padding 与访问步长，收益来自冲突消除而非 tile 变大。这里的边界在于：profiler 给出的 stall 归因必须能映射回源码结构，否则 search 拿到的是无法执行的诊断，多轮修正退化为随机扰动。</p>
+<p class="paper-line">对应：book/ch2 · 第 5/12 部分</p>

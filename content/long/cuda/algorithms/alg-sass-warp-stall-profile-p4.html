@@ -1,0 +1,39 @@
+<h3>一 · 负载选型：哪些模型/算子/shape 才配得上 SASS 级剖析</h3>
+<p>SASS 级反馈的成本结构决定了它不是通用工具。一次完整的 <code>cuobjdump -sass</code> 反汇编加 <code>ncu</code> 的 <code>smsp__pcsamp</code> 采样重放，单 kernel 的剖析开销落在秒级到分钟级，且采样本身会改变 warp 调度节奏。把这种预算花在访存受限、指令序列简单的逐元素 kernel 上是浪费——这类 kernel 的瓶颈在 DRAM 带宽，SASS 里看到的多半是整齐的 LDG/STG 流水，stall 类型几乎全是 long scoreboard，反馈块给出的动作（预取、增大并行）对已经打满带宽的 kernel 没有增量。真正值得剖析的是**指令级并行与寄存器压力主导的算子**：GEMM 及其变体（含 split-K、stream-K）、attention 的 softmax 与 online 归一化段、卷积的 implicit GEMM 展开、归约与 scan、以及融合后的复合 kernel（如 layernorm+GEMM 融合、RMSNorm+量化融合）。这些算子的共同特征是编译器做了激进变换——循环展开、软件流水、寄存器分块——源码级完全看不到变换后的真实指令序列，而 stall 构成直接反映这些变换是否把寄存器推到了溢出边缘。</p>
+<p>shape 的选择比算子选择更微妙。剖析负载必须落在**编译器行为发生切换的边界附近**，否则反馈块只是在描述一个稳定状态。以 GEMM 为例，当 M/N/K 使得 tile 尺寸恰好整除、寄存器分块不溢出时，SASS 呈现稳定的 FFMA 长链，stall 以 not selected 与 short scoreboard 为主，这是健康态，剖析价值低；而当 K 维不是 tile 的整数倍、尾块处理引入谓词与分支，或 tile 尺寸使每线程寄存器数越过阈值触发 spill，SASS 里就会出现 local load/store 与 long scoreboard 的混合，这才是反馈块能指出具体动作的场景。因此负载配方应显式包含**边界 shape**：非对齐尾维、奇数 batch、极端小 M（decode 阶段 GEMV 形态）、极端大 K（split-K 决策点）。这些 shape 不是随机抽出来的，而是从算子实现的分块参数反推出来的切换点。</p>
+<p>硬件维度上，SASS 反馈不可跨代复用是硬约束。不同架构的指令集、寄存器文件规模、warp 调度器数量、shared memory bank 结构都不同，同一份源码在不同代上编译出的 SASS 片段与 stall 分布可以完全不同。负载配方必须把 <code>(arch, sm_count, regs_per_sm, smem_per_sm)</code> 作为一等参数记录下来，反馈块与架构绑定。跨代迁移时只能迁移“stall 类型 → 动作”的映射策略，不能迁移具体 SASS 片段。一个具体例子：同一份 tiled GEMM 源码，在一代上因寄存器充裕而展开为 8 条 FFMA 无溢出，在另一代上因每 SM 寄存器总量更紧而溢出到 local，反馈块在前者说“指令依赖链过长，考虑增大 ILP”，在后者说“寄存器溢出，减小 tile 或降低展开因子”——两条建议方向相反，若配方不记录架构，agent 会把前者的结论错误迁移到后者。</p>
+
+<h3>二 · 基线锚定：剖析对象必须与谁比</h3>
+<p>SASS 剖析产出的 stall 占比是绝对量，单独看没有意义。一个 kernel 的 long scoreboard 占 40% 可以是健康的（访存延迟被足够多的 warp 掩盖），也可以是病态的（occupancy 不足导致无 warp 可切换）。判断依赖基线。基线选择有三层，每层回答不同问题。</p>
+<p>第一层是**同源码不同编译配置的基线**：同一份 CUDA C++ 在 <code>-O3</code> 默认、指定 <code>--maxrregcount</code>、开启/关闭 <code>-lineinfo</code> 下的 SASS 与 stall 分布对比。这一层回答“编译器决策是否已经接近局部最优”，是 agent 判断“还有没有动作空间”的第一道闸。若默认编译的 stall 构成与调参后的构成差异在噪声内，说明该 kernel 已进入编译器稳定区，继续在源码层做等价变换收益极低，应转向算法层（换 tile 策略、换数据布局）。</p>
+<p>第二层是**手写参考实现的基线**：对同一算子，用 CuTe 或手写 PTX 给出一个已知高效的实现，采集其 SASS 与 stall 分布作为上界参照。这一层回答“当前实现的 stall 构成离专家实现差在哪一类”。注意这里比较的不是绝对时延，而是**stall 类型的相对构成**：专家实现可能在 long scoreboard 上占比更高但总周期更少，因为它的 occupancy 更高、掩盖更充分；agent 需要学的是“在同等 occupancy 下，哪类 stall 被压下去了”。</p>
+<p>第三层是**roofline/SOL 归一后的基线**：把实测周期折算到该 shape 在该硬件上的理论下界，得到归一化利用率。这一层的作用是给 stall 剖析设一个“值不值得继续”的门槛——当归一化利用率已经贴近 SOL 时，stall 分布再优化也只是在噪声里挪动，反馈块应被抑制而不是注入 prompt 诱发无意义的搜索。</p>
+<p>基线锚定的代价是**编译时间与剖析次数的乘积**。三层基线意味着每个候选 kernel 至少要跑三次编译加三次 ncu 采样，若 agent 每轮迭代都重锚定，token 与 wall-clock 成本会迅速吃掉收益。工程上的折中是：第一层基线每轮必做（成本最低，只需重编译），第二层基线按算子族预计算一次并缓存（手写参考实现不随候选变化），第三层基线只在候选进入最终比较集时计算。这样把锚定成本从 O(轮数×3) 降到 O(轮数×1 + 常数)。</p>
+
+<h3>三 · 输入分布：让 stall 采样落在有代表性的 PC 上</h3>
+<p>PC 采样是按指令地址聚合 stall 周期的，输入分布直接决定了哪些 PC 被采样到、采样到多少次。若输入分布让 kernel 走了一条与生产负载不同的分支，采样热点会落在错误的 SASS 行上，反馈块指向的位置对生产毫无意义。输入分布设计要覆盖三类维度。</p>
+<p>**数值分布**影响的是控制流与谓词：全零输入会让很多 kernel 提前退出或走简化路径，采样到的 PC 集中在入口段；极端值（inf/nan）触发慢路径；正常随机分布才走到主循环体。剖析负载必须使用与生产一致的数值分布，且要显式包含会触发慢路径的边界值样本，否则 agent 学到的“热点在入口”是伪信号。</p>
+<p>**shape 分布**已在第一节讨论边界 shape 的选择，这里补充采样策略：PC 采样需要足够的重复次数才能让热点 PC 的计数稳定。对短 kernel（周期数少），单次采样可能只覆盖部分 warp，热点 PC 的计数方差大。配方应规定每个 shape 的最小采样迭代数，使热点 PC 的计数相对误差落在可接受区间。这个迭代数与 kernel 周期数成反比——短 kernel 需要更多迭代，这直接推高剖析成本，是配方必须显式预算的一项。</p>
+<p>**数据布局分布**影响 bank conflict 与合并访存：转置与否、stride 是否对齐、batch 维是否连续，都会改变 LDG 的合并度与 shared memory 的 bank 分布，进而改变 MIO throttle 与 long scoreboard 的占比。布局维度的样本不能只取一种，否则 agent 会把某个布局下的 stall 构成当作算子固有属性。</p>
+<p>输入分布不对时的失效模式是可观测的：反馈块反复指向同一段 SASS，但 agent 据此做的动作在验证集上无收益。根因通常是采样热点落在了非代表性路径上——例如全零输入让主循环体几乎不被采样，热点集中在初始化段，agent 于是去优化初始化而忽略真正的 FFMA 链。诊断方法是把输入分布切换为生产分布后重采样，若热点 PC 集合发生大幅漂移，说明原配方的输入分布不具代表性，应作废该轮反馈。这一诊断本身需要一次额外剖析，成本要计入配方预算。</p>
+
+<h3>四 · 指标计算：从采样计数到可比较的 stall 画像</h3>
+<p>原始采样给出的是每个 PC 上的 stall 周期计数，需要聚合成可比较的画像。核心聚合量是每类 stall 的周期占比：</p>
+<div class="formula">$$\text{StallShare}_k=\frac{\sum_{pc}\text{cycles}_k(pc)}{\sum_{pc}\sum_{k'}\text{cycles}_{k'}(pc)}$$</div>
+<p>这个占比是反馈块的第一层信息，但它单独不足以指导动作，因为占比高不等于可优化——高占比可能只是该类 stall 在该硬件上固有的延迟特征。第二层信息是**热点集中度**：把每个 PC 的 stall 周期按类型排序，看前若干条 PC 贡献了多少占比。若 long scoreboard 的 80% 集中在三条 LDG 指令上，动作是明确的（预取或调整访存模式）；若均匀散布在几十条指令上，说明是全局性的延迟暴露，动作应转向 occupancy 或 tile 策略。集中度指标把“哪类 stall”细化到“哪几条指令”，这是 SASS 级反馈相对源码级反馈的核心增量。</p>
+<p>第三层是寄存器压力与 occupancy 的耦合：</p>
+<div class="formula">$$\text{RegPressure}=\frac{\text{regs per thread}\times\text{threads per block}}{\text{regs per SM}}$$</div>
+<p>这个比值越过 1 意味着一个 block 的寄存器需求超过单 SM 容量，编译器要么降低 occupancy 要么 spill。配方必须把 RegPressure 与 stall 画像并列记录，因为两者共同决定动作方向：RegPressure 高且 long scoreboard 高，指向 spill 到 local 后的访存延迟暴露；RegPressure 低但 not selected 高，指向 warp 数不足、调度器空转。只看 stall 占比会漏掉这层耦合。</p>
+<p>指标计算的代价在于**聚合口径的选择会影响结论**。按 PC 聚合还是按 SASS 行聚合、是否把谓词指令的 stall 归并到其控制的分支、是否剔除采样噪声下限以下的 PC，每种口径给出不同的热点排序。配方应固定口径并记录，否则跨轮次的反馈块不可比，agent 会在口径漂移中迷失。一个具体例子：某 kernel 的 barrier stall 占比 15%，按 PC 聚合时集中在一条 BAR.SYNC 上，动作是“减少同步点”；但若把该 BAR 前后的谓词分支 stall 一并归入，占比升到 25%，动作变成“重构同步结构”。口径不同，动作不同，配方必须锁定前者或后者之一并在反馈块中标注。</p>
+
+<h3>五 · 负载不对时的失效模式与工程判断</h3>
+<p>负载配方错误的后果不是“反馈不准”这么笼统，而是有具体形态的。第一种是**热点错位**：输入分布或 shape 不具代表性，采样热点落在非生产路径，agent 优化了错误的 SASS 段，验证集上无收益但剖析成本已付出。第二种是**基线失锚**：基线选错（例如用手写实现的上界去要求一个本就访存受限的算子），归一化利用率永远显得低，agent 陷入无休止的搜索，token 消耗与编译次数线性增长而收益为零。第三种是**架构串味**：反馈块未绑定架构，跨代迁移时动作方向反转，agent 在错误的寄存器策略上反复 keep-revert。</p>
+<p>识别这些失效模式的工程判据是**反馈块与验证收益的一致性**。若连续若干轮反馈块指向的 SASS 段在验证集上带来的时延变化落在噪声内，应首先怀疑负载配方而非 agent 策略。此时的动作不是继续调 prompt，而是回到配方层：检查输入分布是否覆盖生产路径、基线是否与算子瓶颈类型匹配、架构参数是否记录完整。这个判断把“agent 不行”与“评测配方不行”区分开，是可信评测的前提。</p>
+<p>配方的成本预算需要显式建模。设每轮剖析成本为 <code>C_prof</code>（含编译、ncu 重放、聚合），每轮 agent 推理成本为 <code>C_llm</code>（token），则单位收益的迭代成本为 <code>(C_prof + C_llm) / Δ收益</code>。当 Δ收益 趋零时，继续迭代是纯亏损。配方应设一个基于归一化利用率提升的停止条件：当归一化利用率连续若干轮提升低于阈值，停止剖析并冻结当前最优。这个阈值不是拍脑袋，而是由采样噪声水平决定的——低于噪声的提升不可信，继续投入只会放大噪声。</p>
+<p>最后落在具体机制上：负载配方的核心不是“选一个大模型跑一遍”，而是把 <strong>(算子族, 边界 shape 集合, 生产数值/布局分布, 架构参数, 三层基线, 聚合口径, 停止阈值)</strong> 作为一个整体契约固化下来，反馈块只在这个契约内生成与解释。契约之外的剖析结果不进入 prompt，契约之内的每一条反馈都带架构标签与口径标签。这样 SASS 级反馈的可信度不依赖于单次采样的运气，而依赖于配方本身的可复现性——agent 学到的“stall 类型 → 动作”映射才具备跨轮次、跨候选的迁移价值。</p>
+
+<h3>负载配方与失效边界：SASS 反馈在哪些 shape 上才可信</h3>
+<p>SASS 级反馈的适用面由采样分辨率与寄存器压力共同界定。ncu 的 <code>smsp__pcsamp</code> 以 PC 为桶聚合 stall 周期，热点判定依赖每个 PC 上累计到足够样本；当 kernel 总周期数偏少（小 shape、单次 launch 的 decode 阶段、batch=1 的 elementwise），单 PC 采样计数落在噪声区间，<code>StallShare_k</code> 的分子分母同时被少数几个样本主导，反馈块会把随机抖动标成 long scoreboard 热点。因此负载必须保证每个被分析的 kernel 有足够的常驻 warp 与迭代次数：prefill 类大 M/N 的 GEMM、长序列 attention 的 fwd、通道数较大的卷积适合；而 shape 退化为 (1, hidden) 的 GEMV、极短 reduction 不适合，此时应改用源码级或纯静态 SASS 指令混合分析。判据可写成采样充分性条件：单 PC 期望样本数 <code>λ = cycles(pc) × sampling_rate</code> 需高于阈值，否则该 PC 的 stall 类型标注应被丢弃而非回灌。</p>
+<p>寄存器压力决定了反馈能否落到 occupancy 上，公式 <code>RegPressure = regs/thread × threads/block ÷ regs/SM</code> 一旦逼近 1，编译器就会把展开后的活跃值溢出到 local memory，SASS 里出现 LDL/STL，此时 long scoreboard 高并不指向“增大并行”，而是指向“降低展开因子或缩小 tile”。这正是源码级反馈失效的典型：源码只看到一个循环，SASS 显示 8 条 FFMA 后跟 STL，agent 若按“long scoreboard→预取”动作修改，反而加剧溢出。基线选择上，必须以同 shape、同 dtype、同架构的 cuBLAS/CUTLASS 或 Triton 参考实现作为对照，而不是跨代 SASS 复用——不同架构的指令编码与调度策略不同，上一代采集的 stall 占比不能作为本代 prompt 的先验。输入分布同样要固定：attention 的 causal mask、GEMM 的 K 维对齐（是否 128B 对齐影响 LDG 合并度）、卷积的 padding 模式，都会改变 LDG/FFMA/BAR 混合比例，分布漂移会让两轮反馈的热点不可比。代价上，单 kernel 的 ncu 重放剖析带来数倍于正常执行的时延与额外显存占用，若把每个候选都做全量 PC 采样，评测吞吐会被剖析本身拖垮；工程上只对通过正确性 oracle 且性能落入可疑区间的候选做 SASS 剖析，把剖析预算集中在少数样本上。</p>
+<table class="mini"><thead><tr><th>负载特征</th><th>SASS 反馈可信度</th><th>主要风险</th></tr></thead><tbody><tr><td>大 shape prefill GEMM / 长序列 attention</td><td>高，样本充足</td><td>剖析时延占比高</td></tr><tr><td>batch=1 decode、短 reduction</td><td>低，采样噪声主导</td><td>热点误标</td></tr><tr><td>高 RegPressure、展开溢出</td><td>中，需结合 LDL/STL 判读</td><td>动作建议方向错误</td></tr></tbody></table>
+<p class="paper-line">对应：algorithms/alg-sass-warp-stall-profile · 第 4/8 部分</p>

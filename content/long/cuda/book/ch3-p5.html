@@ -1,0 +1,40 @@
+<h3>一 · 脚手架的四个角色不是四个模型，而是四种可验证接口</h3>
+<p>把 coder、judge、profiler、search 当成四个 agent 实例来编排，是这类系统最常见的误读。在可信评测流水线里，它们的真实身份是四个<strong>接口契约</strong>：coder 只负责产出可编译的 kernel 源码与调用桩；judge 只负责给出正确性判决与失败分类；profiler 只负责把执行轨迹翻译成结构化指标；search 只负责在候选空间上做有预算的采样与剪枝。四者共享同一份任务描述（shape、dtype、容差、参考实现、目标硬件口径），但彼此之间只通过<strong>结构化产物</strong>通信，不通过自然语言对话通信。这条约束的直接后果是：任何一环的结论都可以被单独重放与审计，而不是被包在一段“模型说它通过了”的叙述里。</p>
+<p>接口化的代价体现在 token 与时延上。若让 coder 与 profiler 直接对话，一轮修正往往要消耗数千 token 的上下文往返；而接口化之后，profiler 输出的是定长字段（编译状态、运行状态、最大绝对误差、SM 占用、achieved occupancy、DRAM 吞吐占比、kernel 时长中位数），coder 的下一轮输入是“源码 + 该字段表 + 失败分类标签”，上下文长度可控，单轮修正的 token 成本被压到与源码规模同阶。反过来，接口化的代价是表达力损失：profiler 无法告诉 coder“你这个 tile 切得不好”，只能给出“L2 命中率低于同 shape 的参考实现”这类可量化信号，修正的方向性因此更依赖 search 的候选生成质量。</p>
+<p>一个具体例子：任务是对 <span>M=4096, N=4096, K=4096</span> 的 fp16 矩阵乘做自定义实现。coder 首轮给出朴素分块版本，judge 判为“数值通过、性能不达标”，profiler 返回的字段里 <span>achieved occupancy</span> 偏低而 DRAM 吞吐已接近峰值——这组信号组合直接排除了“继续加大 tile”的方向，把 search 的采样空间收缩到寄存器压力与 shared memory bank 冲突两个维度上。若没有这组字段，search 会在 tile 尺寸上盲目多采样三到四轮，每轮都包含一次完整编译与计时，编译时间与 GPU 占用时间都是实打实的成本。</p>
+
+<h3>二 · 执行反馈的三种粒度：编译、运行、数值，各自对应不同的失败分类</h3>
+<p>执行反馈不是二值的“过/不过”。流水线必须把反馈切成三层，因为三层的修复代价差了一个数量级以上。第一层是编译反馈：nvcc 或 triton 编译器的诊断信息，修复代价最低，通常只需局部语法或类型修正，单次编译在秒级。第二层是运行反馈：launch 配置越界、shared memory 超限、非法访存，这类错误在 CUDA 侧表现为 <span>cudaErrorInvalidConfiguration</span> 或 <span>cudaErrorIllegalAddress</span>，修复需要重新推导线程块与网格的映射关系，代价是分钟级的多轮试错。第三层是数值反馈：kernel 跑完了但结果与参考实现的最大绝对误差超出容差，这类错误最难定位，因为它可能来自归约顺序、累加精度、边界处理或未初始化内存，修复代价可能是十轮以上的修正。</p>
+<p>失败分类必须与这三层一一对应，并且分类标签要进入 coder 的输入。伪代码思路如下：</p>
+<div class="formula">$$\text{verdict} = \begin{cases} \text{COMPILE\_ERR} & \text{若编译退出码非零} \\ \text{RUNTIME\_ERR} & \text{若 launch 或同步返回错误码} \\ \text{TIMEOUT} & \text{若 wall clock 超过预算} \\ \text{NUMERIC\_ERR} & \text{若 } \max|y-\hat{y}| > \tau \\ \text{PERF\_MISS} & \text{若数值通过且 } t_{\text{kernel}} > \kappa \cdot t_{\text{ref}} \\ \text{PASS} & \text{其余} \end{cases}$$</div>
+<p>这里 <span>τ</span> 是任务给定的数值容差，<span>κ</span> 是性能达标阈值，两者都必须写进任务描述而不是由 judge 临时决定，否则同一份 kernel 在不同轮次会得到不同判决，这正是评测抖动的一个来源。代价方面：把数值反馈做成逐元素误差统计而非单一布尔值，需要在 GPU 上多跑一次归约 kernel，对 <span>4096×4096</span> 的输出多出一次约 64MB 的读回与归约，属于可接受的固定开销；但若对每个候选都做全量误差图，显存占用会随候选数线性上升，因此在 search 阶段通常只保留标量统计量，把误差图留给最终入选候选的复核。</p>
+<p>一个具体例子：某候选在编译层反复报 <span>identifier "wmma" is undefined</span>，judge 将其归为 COMPILE_ERR 并把诊断原文附在反馈里，coder 下一轮补上 <span>#include &lt;mma.h&gt;</span> 即通过编译；若这条诊断被摘要成“编译失败”四个字，coder 会在头文件、架构宏、命名空间三个方向上各试一轮，多消耗两到三次编译。</p>
+
+<h3>三 · NCU 与 SASS 的分工：一个回答“瓶颈在哪”，一个回答“指令对不对”</h3>
+<p>profiler 角色的核心不是“跑一次 ncu 然后把输出丢给模型”。NCU 提供的是<strong>硬件计数器层面的瓶颈归因</strong>：SM 吞吐、DRAM 吞吐、L2 命中、warp stall 原因分布、achieved occupancy。这些指标回答的是“这个 kernel 离 roofline 的哪一侧更近”。SASS 提供的是<strong>指令层面的实现核对</strong>：编译器是否把内层循环展开、是否生成了预期的 <span>HMMA</span> 指令、shared memory 访问是否被合并成 <span>LDS.128</span>、是否存在多余的 <span>BAR.SYNC</span>。两者的信息粒度不同，用途也不同：NCU 用于决定 search 往哪个方向采样，SASS 用于判断 coder 的意图是否被编译器忠实实现。</p>
+<p>把两者混用是常见的工程错误。仅看 NCU 的 DRAM 吞吐接近峰值，会得出“已接近带宽上限、无需优化”的结论，但若 SASS 显示内层循环没有展开、每次迭代都有一次冗余的全局加载，那么真实瓶颈其实是指令发射而非带宽，继续按带宽方向优化是无效的。反过来，仅看 SASS 判断“指令序列正确”，也无法回答这个 kernel 在目标 shape 上是否已经接近 SOL。一个可操作的判据是：先看 NCU 的 roofline 位置确定优化方向，再用 SASS 验证该方向上的具体指令是否如预期生成。</p>
+<p>代价必须写清楚。NCU 的采集本身会显著改变 kernel 时序：逐 pass 采集计数器时，kernel 会被多次重放，单次 profile 的 wall clock 可能是裸跑的数十倍，且重放会引入缓存状态的扰动，因此 NCU 数据只能用于归因，<strong>绝不能用于计时口径</strong>。计时必须回到无 profile 的裸跑路径，用 CUDA event 记录，并配合 warmup 与重复取中位数。SASS 的代价在编译时间：保留 <span>-lineinfo</span> 或输出 cubin 反汇编会增加编译产物体积与编译时间，在 search 的高频采样阶段通常只在入围候选上开启。</p>
+<p>一个具体例子：某 fp16 矩阵乘候选的 NCU 显示 DRAM 吞吐占比高、SM 吞吐偏低，初步判断为带宽受限；但对该候选做 SASS 核对后发现内层循环未展开且累加器被溢出到 local memory，说明真实问题是寄存器压力导致的指令级低效。修正方式是把累加器分块、限制每个线程的 tile 尺寸，而不是去优化全局加载的合并度。若没有 SASS 这一步，search 会在访存模式上多采样若干轮，每轮都伴随一次 NCU 重放，profile 时间成本成倍增加。</p>
+
+<h3>四 · 多轮修正的状态机：什么条件下允许重试，什么条件下必须终止</h3>
+<p>多轮修正不是“失败就再来一次”的循环。它必须是一个带预算与终止条件的状态机，否则 search 会在同一类失败上无限打转，把 GPU 时间耗在注定失败的候选上。状态机的状态就是第二节的失败分类，转移条件由预算与失败模式的重复性决定。关键设计是<strong>失败模式指纹</strong>：把每一轮的失败分类、诊断摘要、profiler 关键字段拼成一个短指纹，若连续两轮的指纹相同，则判定为“同一失败模式重复”，强制终止该分支并把该指纹记入 search 的黑名单，避免后续候选落入同一陷阱。</p>
+<p>伪代码思路：</p>
+<div class="formula">$$\text{next} = \begin{cases} \text{retry(coder)} & \text{若 fingerprint 未重复且 } r &lt; R_{\max} \\ \text{resample(search)} & \text{若 fingerprint 重复且采样预算未耗尽} \\ \text{abandon} & \text{若 } r = R_{\max} \text{ 或采样预算耗尽} \end{cases}$$</div>
+<p>这里 <span>r</span> 是该候选已消耗的修正轮数，<span>R<sub>max</sub></span> 是单候选轮数上限。这个上限的存在本身就是成本控制：每一轮修正包含一次编译、一次正确性校验、一次计时，编译时间在秒级、校验与计时在百毫秒到秒级，但 GPU 是被独占的，轮数上限直接决定了单位时间内能评测多少候选。把 <span>R<sub>max</sub></span> 设得过高会让少数候选吃掉大部分预算，设得过低则会让本可在两三轮内修好的候选被误弃——这个取舍必须由实测的“修正成功率随轮数衰减曲线”来定，而不是拍脑袋。</p>
+<p>一个具体例子：某候选首轮 TIMEOUT，第二轮仍是 TIMEOUT 且 profiler 显示 kernel 时长随 shape 线性增长、无分块迹象，指纹重复，状态机转入 resample，search 换一个带边界检查的分块模板重新生成候选；若状态机不做指纹判断，coder 会在超时问题上反复调整 launch 配置，而真实原因是算法复杂度没有降下来，这类修正注定无效。</p>
+
+<h3>五 · search 的采样空间必须由 profiler 字段裁剪，而不是由语言模型自由发挥</h3>
+<p>search 角色最容易被写成“让模型再想几个版本”。在可信评测语境下，这等于放弃了预算控制。正确的做法是把采样空间定义为一组<strong>带约束的模板参数</strong>：tile 尺寸、线程块形状、是否使用向量化加载、归约树深度、是否启用 shared memory 暂存、流水线级数。每个参数有离散取值域，search 在这些域上做采样，而 profiler 返回的字段用于<strong>条件化</strong>下一次采样的分布——例如 achieved occupancy 偏低时收缩 tile 尺寸的上界，DRAM 吞吐接近峰值时把采样重心移到指令效率维度。</p>
+<p>这样做的好处是采样空间可枚举、可复现，且每个候选的失败原因可以回溯到具体参数取值。代价是表达力受限：某些真正新颖的实现思路不在模板参数空间内，会被 search 漏掉。工程上的折中是保留一条低比例的“自由生成”通道，其产物必须经过与模板候选完全相同的 judge 与 profiler 流程，不允许跳过任何一层校验。自由通道的比例要计入预算：它带来的编译失败率通常高于模板候选，因此其单候选的期望成本更高，比例过高会拉低整体吞吐。</p>
+<p>一个具体例子：在归约类任务上，search 的初始采样覆盖了不同的 block 尺寸与是否使用 warp shuffle；profiler 返回某候选的 warp stall 主要集中在 <span>long scoreboard</span>（等待全局访存），search 据此把后续采样的重心移到“先做向量化加载再做树形归约”的模板变体上，而不是继续在 block 尺寸上做无信息量的枚举。这一裁剪把有效候选的命中轮数从盲目枚举的多次降到个位数轮次，节省的是编译时间与 GPU 独占时间。</p>
+
+<h3>六 · 反馈闭环的信任边界：哪些信号可以进 coder 的输入，哪些只能进审计日志</h3>
+<p>最后一个工程判断是信任边界。执行反馈、NCU 字段、SASS 摘要都可以进 coder 的输入，因为它们是从真实执行中采集的、可重放的客观信号。但 judge 的自然语言评语、search 的“这个版本看起来更好”这类主观判断不能进 coder 的输入，否则 coder 会被引导去迎合评语而不是去满足可验证判据，多轮修正会退化成语言层面的自我说服。这条边界在流水线里的实现方式是：coder 的输入模板只接受结构化字段，任何自由文本评语都被路由到审计日志，供人工复核使用，不进入生成回路。</p>
+<p>与之配套的是<strong>判决不可由 coder 自身产生</strong>。即使 coder 在生成时附带“我已验证通过”的声明，judge 也必须独立重跑正确性校验与计时，声明本身只作为日志字段记录。代价是每轮修正都要付出一次完整的校验开销，无法靠模型自述省掉；但这是可信评测的前提——若允许自述通过，失败分类与性能口径就失去了意义，评测结果会重新回到抖动与误判的状态。故事中评测结果反复抖动导致误判的危机，其根源正是判决来源不独立、计时口径不统一；把 judge 与 profiler 做成独立接口、把 coder 的输入限制在结构化字段上，是让 agent 排名稳定的直接机制。</p>
+<p>一个具体例子：某候选在 coder 的输出里附带了“该实现已通过本地测试”的说明，judge 仍按流程重跑，发现最大绝对误差在边界 shape 上超容差，判为 NUMERIC_ERR；若信任了自述，这个候选会以 PASS 进入排名，而它的性能数据是在错误结果上测得的，排名因此失真。这类失真不会表现为明显错误，只会表现为排名的小幅漂移，恰恰是最难排查的一类。</p>
+
+<h3>多轮修正的收益边界：反馈通道的带宽与污染</h3>
+<p>coder/judge/profiler/search 四角色分工的隐含假设是：profiler 产出的 NCU/SASS 反馈是“干净信号”，judge 的失败分类是“确定标签”，search 只在离散候选空间里做选择。一旦这个假设破裂，多轮修正就从收敛变成振荡。具体机制上，每轮修正的净收益可写成 <span class="formula">$$\Delta_t = R(\text{fix}_t) - C_{\text{compile}} - C_{\text{profile}} - C_{\text{judge}} - \lambda \cdot \mathbb{I}[\text{regress}_t]$$</span>，其中 <span class="formula">$$R(\text{fix}_t)$$</span> 是相对上一轮的可验证改进（正确性通过且中位数时延下降超过噪声阈值），回归惩罚项 <span class="formula">$$\lambda$$</span> 捕捉“修好数值错却拖慢 8%”这类跨维度退化。当 <span class="formula">$$\Delta_t$$</span> 连续两轮非正，继续迭代只是消耗 token 与 GPU 机时。</p>
+<p>失效条件集中在三类。其一，反馈通道带宽不足：NCU 单次采集的指标集有限，SASS 反汇编给出的是静态指令序列而非动态 stall 归因，agent 容易把“寄存器压力高”误读为“应当减少 unroll”，从而在错误的抽象层上做修改。其二，judge 标签污染：编译错与超时被合并为“失败”时，coder 会尝试语法级修补而非算法重构，修正方向系统性偏移。其三，search 的候选空间与 profiler 的粒度不匹配——profiler 报的是 kernel 级 roofline 位置，search 却在 tile size 这一维上做局部搜索，二者不在同一坐标系，多轮迭代无法把 profile 信息转化为搜索梯度。</p>
+<p>系统代价必须计入评测口径。每轮修正至少触发一次容器内编译与一次 warmup 后的重复计时，编译时间在 Triton/CuTe 路径上可达数十秒量级，profiler 采集本身会扰动时钟并引入额外方差；若把多轮修正的中间产物全部纳入排名，等于把“搜索成本”隐式转嫁给评测预算。工程判断是：把修正轮数上限与 <span class="formula">$$\Delta_t$$</span> 的符号绑定，而非固定轮数；judge 输出必须保留失败子类而非二值标签；profiler 反馈只在与 search 维度对齐时才进入下一轮 prompt。对应故事中排名抖动的危机，正是修正轮数不设界、反馈维度错配导致的方差累积。</p>
+<p class="paper-line">对应：book/ch3 · 第 5/12 部分</p>

@@ -1,0 +1,49 @@
+<h3>一 · 负载选择的判据：从“能跑”到“能分辨”</h3>
+<p>负载与评测配方要回答的第一个问题不是“哪个模型最热门”，而是“这套 trace 与 keep/revert 机制能否在该负载上分辨出真实的 kernel 级改进”。二进制插桩 tracing 的信号是 <span class="formula">$$T^{(t)}$$</span>（launch 时延）、SASS 哈希差与计数器增量三元组；若负载本身的时延方差远大于 agent 单轮修改带来的收益，则 <span class="formula">$$\Delta_{\text{trace}}^{(t)}$$</span> 中时延分量被噪声淹没，keep 判据退化为抛硬币。因此负载选择的第一判据是信噪比：单 kernel 时延量级应显著高于 CUPTI 回调与 launch 拦截引入的抖动，且该 kernel 在总时延中占比足够高，使得端到端差异可归因。</p>
+<p>第二判据是可分解性。适合 tracing 的负载应当具备清晰的 kernel 边界：每个 launch 对应一个语义明确的算子（GEMM、attention、layernorm、reduce、scan），参数（grid/block/shape/dtype）可枚举、可复现。融合算子链、动态控制流密集的图、以及依赖运行时 autotune 选择实现的库调用，会让 trace 中的 SASS 哈希与参数记录失去稳定对应关系——同一轮 prompt 下两次运行可能命中不同 cubin，<span class="formula">$$\text{SASS}^{(t)}\oplus\text{SASS}^{(t-1)}$$</span> 的差异不再反映 agent 的修改。</p>
+<p>第三判据是修改空间的存在性。若某算子的实现已被库函数压到 SOL 附近，agent 的改写空间只剩指令调度与访存微调，trace 能捕捉到的 <span class="formula">$$\Delta T$$</span> 落在测量噪声带内，评测就变成对噪声的拟合。反之，shape 分布中存在明显偏离库启发式最优点的区间（非 2 的幂、窄 K、不规则 batch），才是 agent 生成 kernel 能产生可分辨收益的负载。</p>
+<p>具体例子：以单层 decode 阶段的 attention 为负载时，若 batch 很小、序列极短，kernel 时延落在微秒级，CUPTI 回调的固定开销占比高，trace 测得的时延不可作为评分依据；此时应把负载换成 prefill 阶段的大 shape GEMM 或多头 attention 的中间 shape，使单 launch 时延进入可分辨区间，同时保持 shape 参数可枚举以便对齐 trace。</p>
+
+<h3>二 · 基线锚定：三种基线各自回答不同问题</h3>
+<p>基线选择直接决定 keep 判据的参照系。工程上需要区分三类基线，且评测配方必须显式声明当前使用的是哪一类，否则 trace 中的 <span class="formula">$$\Delta T&lt;0$$</span> 无法解释为“相对什么变快了”。</p>
+<ul>
+<li><strong>库基线</strong>：cuBLAS/cuDNN/CUTLASS 或框架自带 kernel。它回答“agent 是否达到了工业实现水平”，是部署收益的锚。代价是库实现自带 autotune 与启发式，shape 变化会切换实现，trace 中基线侧的 SASS 哈希不稳定，需固定库版本与启发式开关。</li>
+<li><strong>朴素基线</strong>：教科书式实现（naive GEMM、逐元素 layernorm）。它回答“agent 是否至少完成了基本优化”，用于早期轮次的 keep/revert，避免 agent 在低水平区间反复横跳。代价是朴素基线本身离 SOL 远，容易给出虚高的相对加速比。</li>
+<li><strong>自基线</strong>：agent 上一轮被 keep 的版本。它回答“本轮修改是否真的改进”，是 <span class="formula">$$\Delta_{\text{trace}}^{(t)}$$</span> 的直接输入。代价是自基线会累积测量噪声与漂移，必须配合重复测量与置信区间，否则单次 <span class="formula">$$\Delta T&lt;0$$</span> 可能只是抖动。</li>
+</ul>
+<p>配方上通常采用双基线：keep/revert 用自基线（低延迟、每轮可比），评分与汇报用库基线（绝对水平、跨轮可比）。两者混用时必须在 trace 文件中标注基线类型字段，否则按版本对齐 trace 时会把“换了基线”误读为“性能突变”。一个具体代价：若基线侧启用了库的 autotune，同一 shape 下基线时延在多次运行间波动，agent 的 keep 判据会因基线抖动而误回滚——这正是 trace delta 相对单点时延的价值所在，但前提是基线侧也被固定并记录哈希。</p>
+
+<h3>三 · 输入分布：shape、dtype 与数值域的三层设计</h3>
+<p>输入分布不是“随机生成张量”这么简单，它同时决定正确性 oracle 的覆盖面与性能测量的代表性。三层设计如下。</p>
+<p><strong>Shape 层</strong>：需要区分“评分 shape 集”与“隐藏 shape 集”。评分集是 agent 可见、用于 keep/revert 的固定 shape 列表，应覆盖该算子的典型区间（小/中/大、对齐/非对齐、方阵/长宽比极端），并保证每个 shape 至少重复测量若干次以压低方差。隐藏集用于检测过拟合到特定 shape 的 kernel，其抽样策略属于另一片段主题，此处只强调：评分集与隐藏集的 shape 必须来自同一分布族，否则隐藏集失败无法归因于过拟合。</p>
+<p><strong>Dtype 层</strong>：fp32/fp16/bf16/fp8 的选择直接改变 roofline 上的位置与正确性容差。低精度下 SOL 由带宽或张量核吞吐决定，agent 的收益更多来自分块与流水；fp32 下收益更多来自寄存器压力与指令级并行。评测配方必须把 dtype 作为 trace 的 launch 参数之一记录，否则跨 dtype 的 <span class="formula">$$\Delta T$$</span> 不可比。代价：多 dtype 覆盖使评分轮次线性增加，trace 文件体积与解析成本同步上升。</p>
+<p><strong>数值域层</strong>：输入张量的取值范围决定归约类 kernel 是否触发溢出、attention 的 softmax 是否进入极端饱和区、GEMM 的累加是否暴露精度问题。正确性 oracle 需要覆盖极端值（大数、小数、零、NaN/Inf 边界），而性能测量应使用“代表性”分布而非极端分布，因为极端值可能触发 kernel 内的慢路径（如 denormal 处理）。两者混在同一组输入上，会让性能数字被慢路径污染。具体例子：layernorm 的输入若全为同值，均值方差计算进入退化路径，时延偏低但正确性测试无区分度；配方应把“性能输入”与“正确性输入”分开生成，并在 trace 中记录输入生成种子，保证可复现。</p>
+
+<h3>四 · 指标计算：从单点时延到可审计的 delta</h3>
+<p>指标层要把原始 trace 转成 keep 判据可用的标量。核心是三项：时延统计量、SASS 差异度量、计数器增量。时延不能取单次测量，需在固定 shape/dtype 下重复 launch，取中位数或截尾均值以抵抗 CUPTI 回调抖动；同时记录分位数以暴露长尾。keep 判据中的 <span class="formula">$$\Delta T$$</span> 应基于同一统计量在相邻两轮的差，而非两轮各自的绝对值相减后再平均。</p>
+<div class="formula">$$\text{Keep}=\mathbb{1}\left[\Delta T&lt;0\wedge\text{Correct}\right],\quad \Delta T=\text{med}(T^{(t)})-\text{med}(T^{(t-1)})$$</div>
+<p>SASS 差异度量用于区分“真优化”与“测量偶然”：若 <span class="formula">$$\text{SASS}^{(t)}\oplus\text{SASS}^{(t-1)}=\varnothing$$</span> 而 <span class="formula">$$\Delta T&lt;0$$</span>，说明本轮修改未改变生成代码（可能只改了注释或未生效的编译选项），该 keep 应被标记为可疑并进入审计队列。计数器增量（可选、低频采样）用于给 <span class="formula">$$\Delta T$$</span> 提供机制解释：带宽利用率上升、warp stall 下降等，使“哪次修改导致哪个指标变化”的因果链可回溯。</p>
+<p>指标计算的代价必须计入配方：CUPTI 回调引入 5–20% 时延开销，因此 trace 模式下测得的绝对时延不能直接作为评分依据，评分需在关闭插桩的干净运行中另测，trace 只提供 delta 与因果证据。重复测量次数与 shape 数量的乘积决定单轮评测的墙钟时间；trace 文件随轮次线性增长，需按轮次采样与压缩，否则解析成本会反过来拖慢 keep/revert 循环。一个具体工程判断：当单轮评测时间超过 agent 单轮生成时间时，评测成为瓶颈，此时应减少评分 shape 数而非减少重复次数——方差控制比覆盖面更影响 keep 判据的可靠性。</p>
+
+<h3>五 · 负载不对时的失效模式</h3>
+<p>负载与配方错配不会报错，只会让 trace 看起来正常而决策失真。典型失效模式有四类。</p>
+<ul>
+<li><strong>噪声主导</strong>：单 kernel 时延接近插桩开销量级，<span class="formula">$$\Delta T$$</span> 的符号由抖动决定，keep/revert 变成随机游走，trace 中记录了大量“改进”但部署端无收益。识别信号是同一版本重复评测的 <span class="formula">$$\Delta T$$</span> 分布跨越零。</li>
+<li><strong>基线漂移</strong>：库基线因 autotune 或版本变化切换实现，agent 的“加速”实为基线变慢。识别信号是基线侧 SASS 哈希在轮次间变化而 agent 侧未变。</li>
+<li><strong>过拟合 shape</strong>：评分集 shape 太少或太规整，agent 生成对特定 tile 尺寸硬编码的 kernel，隐藏 shape 上性能崩塌。trace 本身无法暴露此问题，需隐藏集与评分集联合审计。</li>
+<li><strong>慢路径污染</strong>：性能输入落入极端数值域，kernel 触发 denormal 或分支慢路径，时延偏高且方差大，agent 的优化被慢路径掩盖。识别信号是同一 shape 下不同输入种子的时延分布呈双峰。</li>
+</ul>
+<p>每类失效都对应配方上的一个约束：噪声主导要求提高单 launch 时延量级或增加重复次数；基线漂移要求固定库版本与启发式并记录基线哈希；过拟合要求评分集与隐藏集同分布族；慢路径污染要求性能输入与正确性输入分离并记录种子。这些约束应写入评测配方的元数据，与 trace 一同归档，使后续审计能判断某轮 keep 是否在可信条件下产生。</p>
+
+<h3>六 · 配方与 trace 的耦合：让负载成为证据链的一部分</h3>
+<p>负载与评测配方不是 trace 的外部参数，而是证据链的组成部分。trace 文件中的每条记录至少应携带：shape、dtype、输入种子、基线类型与哈希、重复次数、统计量选择、插桩开关状态。缺少任一字段，<span class="formula">$$\Delta_{\text{trace}}^{(t)}$$</span> 就无法在跨轮、跨机器、跨版本时被正确解释。工程上把这组字段作为 trace schema 的必填项，比事后补录更可靠。</p>
+<p>耦合带来的直接收益是 keep/revert 的可审计性：当某轮 <span class="formula">$$\text{Keep}=1$$</span> 被质疑时，审计者可以沿 trace 回溯到具体 shape、具体输入种子、具体 SASS 差异与计数器快照，判断该 keep 是真实改进还是配方缺陷所致。代价是 schema 字段增多使 trace 体积与写入开销上升，需在采样策略上做取舍：高频轮次只记录时延与 SASS 哈希，低频轮次（如每若干轮）才附带计数器快照与完整输入元数据。</p>
+<p>具体机制上，配方应把“评分 shape 集”与“keep 判据所用 shape 集”解耦：keep 判据用少量高信噪比 shape 快速决策，评分用完整 shape 集在关闭插桩的干净运行中计算绝对水平。两者通过 trace 中的 shape 标识关联，使快速决策与最终评分不互相污染。这一解耦的工程判断是：当 agent 轮次密集时，决策延迟比评分精度更重要；当轮次稀疏或进入部署评估时，评分精度优先。配方应显式声明当前处于哪种模式，并随 trace 归档，避免把快速决策模式下的 delta 误读为部署收益。</p>
+
+<h3>负载配方不对时，trace 会替你“说谎”</h3>
+<p>二进制插桩 tracing 的证据链强度，完全取决于被 trace 的那次 launch 是否落在评测负载的分布内。CUPTI 回调记录的是真实 launch 的 grid/block/shape/dtype 与时间戳，一旦负载配方偏向小 shape、单流、冷 cache，trace 里每一轮的 <span class="inline">ΔT</span> 都会被 launch 开销与固定开销主导，SASS 差异带来的真实收益被淹没。此时 <span class="inline">Keep</span> 判据虽然形式上仍成立，但 <span class="inline">ΔT</span> 的符号更多由噪声决定，agent 会把“改了个寂寞”的版本误判为改善并保留，证据链看似完整、结论却是错的。配方必须覆盖目标算子的典型 shape 档位（如 attention 的 seq_len 分档、GEMM 的 M/N/K 组合）、dtype 组合与并发流数，并让每档在 trace 中独立成组，否则跨档聚合的 delta 没有物理意义。</p>
+<p>基线选择直接决定 <span class="formula">$$\Delta_{\text{trace}}^{(t)}=\left(T^{(t)}-T^{(t-1)},\ \text{SASS}^{(t)}\oplus\text{SASS}^{(t-1)},\ \text{metrics}^{(t)}-\text{metrics}^{(t-1)}\right)$$</span> 中 <span class="inline">T^{(t-1)}</span> 的含义。用上一轮 agent 自己的版本做基线，只能回答“这轮改得比上轮好吗”，无法回答“是否已超过手写 kernel 或厂商库”；用固定参考实现做基线，则每轮 delta 都相对同一锚点，能暴露“改了很多轮仍在原地”的退化。工程上应同时保留两条基线：轮间基线用于 keep/revert 决策，锚点基线用于判断是否值得继续投入。输入分布同样要固定随机种子与数据布局（ contiguous 与否、对齐、stride 模式），否则同一 SASS 在不同内存访问模式下时延差异足以覆盖编译期优化的收益，trace 的因果归因失效。</p>
+<p>指标口径要在配方里写死：时延取 CUDA event 的 kernel 级区间还是含 launch 的端到端，是否剔除首次 launch 的模块加载与 JIT 开销，计数器快照取哪几个（如 dram 吞吐、L2 命中、issue slot 利用率），采样频率多低才不影响被测 kernel。trace 模式下 CUPTI 回调本身带来 5–20% 时延开销，因此 trace 测得的 <span class="inline">T</span> 只能用于相对比较与因果归因，评分必须回到无插桩的干净运行；若把 trace 时延直接当评分，keep 判据会系统性偏向“回调开销更小”的版本而非真正更快的 kernel。下表给出负载失配时的典型症状与代价。</p>
+<table class="mini"><thead><tr><th>失配类型</th><th>trace 症状</th><th>代价</th></tr></thead><tbody><tr><td>shape 过小</td><td>ΔT 符号随机，SASS 差异不显著</td><td>误保留退化版本，轮次浪费</td></tr><tr><td>单流无并发</td><td>流 ID 维度为空，launch 间隔被忽略</td><td>错过并发相关优化，证据链不完整</td></tr><tr><td>输入分布漂移</td><td>同 SASS 的 metrics 快照跳变</td><td>归因错误，回滚正确改动</td></tr><tr><td>trace 时延当评分</td><td>回调开销小的版本胜出</td><td>5–20% 系统性偏差，评分不可信</td></tr></tbody></table>
+<p>trace 文件随轮次线性增长，负载档位越多、采样越密，存储与解析成本越高；配方应在档位数量与采样频率之间做显式取舍，例如只对锚点档位保留完整计数器快照，其余档位仅记时延与 SASS 哈希。负载不对时最隐蔽的失效是“正确性 oracle 通过但性能结论错误”：shape 落在寄存器压力未触发的区间，agent 把占用率换来的收益记成真实提升，换到生产 shape 上直接 spill。配方因此要把边界 shape（寄存器临界、shared memory 临界、尾块不规则）单列，让 trace 在这些点上暴露退化，而不是等到部署端才由端到端收益打脸。</p>
+<p class="paper-line">对应：algorithms/alg-binary-instr-tracing · 第 4/8 部分</p>

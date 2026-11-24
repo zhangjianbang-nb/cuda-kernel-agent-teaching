@@ -1,0 +1,50 @@
+<h3>一 · 从“跑完了”到“时间花在哪”：硬件反馈的三种分辨率</h3>
+<p>一个 kernel 在评测流水线里返回“通过正确性、耗时 X 微秒”，对 agent 来说几乎是零信息：它知道结果，不知道原因。硬件反馈的价值在于把这段耗时拆成可归因的层次。工程上通常分三档分辨率，成本与信息量严格正相关。<strong>第一档是聚合计时</strong>：CUDA event 包住 launch，得到 wall time，代价近乎为零，但把 launch 开销、尾部效应、内存搬运全糊在一起。<strong>第二档是硬件计数器</strong>：通过 NCU 采集 SM 占用率、DRAM 吞吐、L2 命中、warp stall 原因分布，单次采集通常要让 kernel 在 profiler 下重放多遍（NCU 默认对每个 kernel 做多 pass 采样以覆盖不同计数器组），采集开销可达原生执行的数十倍，且会改变时序。<strong>第三档是二进制级观测</strong>：SASS 反汇编、指令级插桩、寄存器与 shared memory 用量，能回答“编译器到底生成了什么”，代价是编译时间与工具链复杂度。</p>
+<p>agent 需要的是<strong>可归因的差分信号</strong>，而不是一堆计数器。设计反馈接口时，应把三档输出统一成“瓶颈假设 + 证据指针”的结构：roofline 给出上界，stall 分布给出阻塞点，SASS 给出指令级证据。三者串起来才能形成一条 agent 可执行的修改链。代价必须显式计入成本模型：如果每个候选 kernel 都跑全量 NCU，单任务评测 GPU 分钟数会被 profile 采集开销主导，评测集群吞吐直接塌陷。因此工程判断是<strong>分层采样</strong>——全量候选只跑第一档，进入候选池的少数个体才升级到第二、三档，且升级次数按任务预算硬性封顶。</p>
+<div class="formula">$$\text{profile cost per task} \approx N_{\text{cand}} \cdot t_{\text{wall}} + N_{\text{promoted}} \cdot k_{\text{pass}} \cdot t_{\text{replay}}$$</div>
+<p>其中 $k_{\text{pass}}$ 是 NCU 的采样遍数。这个式子的意义在于：把 $N_{\text{promoted}}$ 压到候选数的百分之几，profile 开销就从主导项降为可忽略项。具体例子：一个 reduction kernel 的候选池有 40 个变体，全量 NCU 采集会让单任务 GPU 分钟数膨胀到无法在排队窗口内完成；改为 40 个只跑 event 计时、前 4 个跑 NCU、第 1 名再跑 SASS 审查，反馈链路完整而成本可控。</p>
+
+<h3>二 · Roofline 作为 agent 的第一道判据</h3>
+<p>roofline 的作用不是精确预测，而是<strong>快速排除方向性错误</strong>。给定 kernel 的算术强度 $I$（FLOP/Byte）与机器峰值算力 $P_{\text{peak}}$、峰值带宽 $B_{\text{peak}}$，可达性能上界为：</p>
+<div class="formula">$$P_{\text{attainable}} = \min\left(P_{\text{peak}},\; I \cdot B_{\text{peak}}\right)$$</div>
+<p>agent 拿到实测吞吐后，先算它相对上界的比值。若比值已接近 1，继续调优的边际收益极低，应把预算转给别的 kernel；若远低于上界且 $I$ 落在带宽侧，则优先怀疑访存模式（合并访问、bank conflict、L2 复用），而不是指令调度。这一步的代价极低——只需要 FLOP 与字节数的估算，加上一次 event 计时——却能省掉大量无效的 NCU 采集。</p>
+<p>关键在于算术强度的估算必须与实现一致。同一个数学算子，用 fp32 累加还是 tensor core 路径，$P_{\text{peak}}$ 差一个量级；把中间结果写回 global memory 还是留在 register/shared，字节数差数倍。agent 若用“算子级”而非“实现级”的 $I$ 去套 roofline，会得出错误的瓶颈侧。工程做法是让 agent 从生成代码里<strong>静态提取</strong>访存字节数与浮点指令数（或从 SASS 计数），再与实测带宽、实测吞吐交叉验证：若实测带宽已接近 $B_{\text{peak}}$ 而上界判定为带宽侧，则 roofline 结论可信；若实测带宽远低于峰值却仍被判为带宽侧，说明 $I$ 估算有误，应回退到 stall 分析。具体例子：一个 layernorm 变体被 agent 判定为“算力受限”，实测 DRAM 吞吐却只有峰值的很小一部分，stall 分布显示长延迟 scoreboard 占比高——真实瓶颈是访存延迟未被隐藏，而非算力，roofline 的输入估算错了。</p>
+
+<h3>三 · Warp stall 分布：把“慢”翻译成阻塞原因</h3>
+<p>NCU 的 warp state 统计把每个 warp 的周期划分为若干状态：发出指令、等待依赖、等待内存、等待 barrier、被调度器抢占等。agent 真正需要的是<strong>占比最高的那一类 stall 及其对应源码行</strong>。这比“占用率低”有用得多，因为占用率低只是症状，stall 类型才指向修法。</p>
+<ul>
+<li><strong>长延迟 scoreboard / memory dependency</strong>：访存延迟未被足够多的在飞请求掩盖。修法是提高 ILP、软件流水、增大每线程独立访存数，或调整 tile 让复用发生在 shared memory。</li>
+<li><strong>Barrier / membar</strong>：同步点过密，典型出现在 shared memory 分块过细或跨 warp 归约。修法是减少同步轮次、改用 warp shuffle 做块内归约。</li>
+<li><strong>Not selected / 调度器竞争</strong>：可发射 warp 多于发射端口，说明 occupancy 足够但指令组合不佳，或存在分支发散。</li>
+<li><strong>Branch divergence</strong>：谓词化执行导致有效吞吐下降，需重排数据布局使同一 warp 走同一路径。</li>
+</ul>
+<p>agent 的反馈接口应把 stall 分布与源码位置绑定。NCU 能给出 SASS 级的热点归因，把 stall 采样落到具体指令地址，再经行号映射回源码。代价是：这一层信息需要 source-level 关联（编译时保留行信息），且采集本身要重放多遍，单次 profile 的时延与显存占用都会上升——尤其当 kernel 使用大量 shared memory 或大 grid 时，重放会拉长采集窗口。工程判断是<strong>只对 top-N stall 类别做归因</strong>，不要全量导出。</p>
+<p>具体例子：一个 softmax kernel 的 stall 分布里 barrier 占比突出，agent 据此把两次跨 warp 归约合并为一次 warp shuffle 加一次 shared memory 交换，同步轮次下降；验证阶段只需 event 计时加一次 NCU 复核，不必再跑 SASS。这里体现的原则是：<strong>stall 分布负责提出假设，计时负责证伪，SASS 只在假设无法区分时才介入</strong>。</p>
+
+<h3>四 · SASS 与二进制插桩：当源码不再解释性能</h3>
+<p>编译器会重排、合并、谓词化、展开循环，源码里看到的不等于硬件执行的。SASS 审查回答三类问题：指令是否被向量化（LDG.E.128 而非四条 32 位加载）、是否出现意外的 spill（local memory 往返）、tensor core 指令是否真的被选中、循环是否被完全展开导致 I-cache 压力。agent 不需要读懂全部 SASS，只需要<strong>定向查询</strong>：给定一个假设（“访存未合并”），去 SASS 里找对应证据（连续地址的加载是否合并为宽指令、是否有 shared memory bank 冲突相关的指令序列）。</p>
+<p>二进制插桩更进一步：在 SASS 层插入计数器或时间戳，测量指令级或段级耗时。它的优势是不依赖源码结构，能测到编译器优化后的真实路径；代价是工具链复杂、插桩本身扰动时序、且需要为每个架构重新适配。工程上更常见的折中是<strong>用 NCU 的 SASS 级采样代替手写插桩</strong>，只在 NCU 无法区分两个假设时才动用插桩。成本上，SASS 反汇编与静态分析几乎不增加运行时开销，但会增加编译/分析时间与 token 消耗——agent 读 SASS 的上下文长度远大于读源码，若不加约束会把预算烧在反汇编文本上。因此反馈接口应返回<strong>过滤后的 SASS 片段</strong>（热点基本块、疑似 spill 段落），而非整份反汇编。</p>
+<p>具体例子：agent 生成的 GEMM 变体实测吞吐低于 roofline 上界，stall 显示 memory dependency 偏高。SASS 审查发现编译器把本应走 tensor core 的片段降级为 FMA 路径，原因是 fragment 布局与指令要求的寄存器排布不匹配。修法不是调 tile 大小，而是改数据布局声明。这个结论无法从源码或 stall 分布单独得出，必须看 SASS。</p>
+
+<h3>五 · 让反馈可被 agent 消费：接口设计与噪声控制</h3>
+<p>硬件反馈的工程难点不在采集，而在<strong>把高维、含噪、昂贵的观测压缩成 agent 能稳定使用的信号</strong>。三个设计约束必须同时满足。</p>
+<p><strong>其一，稳定性。</strong>GPU 计时受频率漂移、邻居干扰、clock throttle 影响，单次测量方差可能吞掉真实差异。做法是固定重复次数取中位数、固定 clock（在允许的场景下）、并在同一批次内做相对比较而非跨批次绝对比较。代价是重复次数直接乘进评测 GPU 分钟数，需要在置信度与成本间定一个硬阈值——这正是评测精度与成本权衡在 profile 层的投影。</p>
+<p><strong>其二，可归因。</strong>每条反馈必须携带“证据指针”：哪个 stall 类别、哪条 SASS 指令、哪个源码行、哪次测量的哪个分位数。没有指针的反馈对 agent 是噪声，会诱发随机游走式的修改。</p>
+<p><strong>其三，预算感知。</strong>agent 必须知道每次升级观测档位的成本，才能自主决定何时停止深挖。反馈接口应暴露剩余 profile 预算，让 agent 在“再采一次 NCU”与“直接改代码”之间做显式选择。</p>
+<table class="mini"><thead><tr><th>档位</th><th>观测内容</th><th>相对开销</th><th>适用阶段</th></tr></thead><tbody><tr><td>L0 计时</td><td>event wall time、分位数</td><td>基准</td><td>全部候选</td></tr><tr><td>L1 roofline</td><td>实测吞吐/带宽 vs 上界</td><td>低（静态估算 + 一次计时）</td><td>全部候选</td></tr><tr><td>L2 stall</td><td>warp state 分布 + 源码归因</td><td>高（多 pass 重放）</td><td>晋级候选</td></tr><tr><td>L3 SASS/插桩</td><td>指令级证据、spill、指令选择</td><td>最高（分析时间 + token）</td><td>假设冲突时</td></tr></tbody></table>
+<p>具体例子：评测集群排队拖慢迭代时，成本模型显示瓶颈在评测吞吐而非单次采集精度。团队据此把 L2 采集从“每个候选”改为“每个任务仅 top-2”，并把 L3 限定为“仅当 L2 无法区分两个假设时触发”，profile 采集开销从主导项退回次要项，排队窗口内可完成的候选数上升。这不是靠提高单次采集效率，而是靠<strong>改变观测档位的分配策略</strong>。</p>
+
+<h3>六 · 反馈闭环的边界：profile 不能替代正确性</h3>
+<p>硬件反馈只解释性能，不证明正确。一个被 agent 优化到接近 roofline 的 kernel 完全可能算错，而 stall 分布和 SASS 都不会告诉你。因此反馈链路必须与正确性 oracle 解耦：性能档位的晋级不能豁免正确性检查，反之亦然。工程上的顺序是<strong>先正确性过滤，再性能分层</strong>——错误候选不进入昂贵的 profile 档位，避免把采集预算烧在将被丢弃的个体上。这与可信评测流水线的分工一致，此处只强调成本侧后果：若顺序颠倒，profile 开销会随错误候选数量线性膨胀。</p>
+<p>另一个边界是<strong>profile 的可迁移性</strong>。在 A 架构上采集的 stall 分布与 SASS 结论，迁移到 B 架构时可能失效——指令集、cache 层级、tensor core 形态都变了。agent 若把跨架构的 profile 结论当作先验复用，会引入系统性偏差。做法是把 profile 结论标注架构与编译选项，作为<strong>带条件的证据</strong>而非通用规则；跨架构时降级为假设，重新用低成本档位验证。</p>
+<p>最终落在工程判断上：反馈系统的设计目标不是“采集尽可能多的计数器”，而是<strong>用最小的 GPU 分钟数把 agent 的搜索方向从错误分支上剪掉</strong>。roofline 负责剪掉方向性错误，stall 负责剪掉修法错误，SASS 负责剪掉编译器层面的误判，三者按成本递增排列，且每一档都必须携带证据指针与预算信号。当评测吞吐成为瓶颈时，正确的动作是重排档位分配与晋级比例，而不是提高单次采集的精度——后者只会让排队更长。</p>
+
+<h3>当 profile 本身成为瓶颈：反馈采集的边界与系统代价</h3>
+<p>硬件反馈不是免费的观测通道，而是一次对被测 kernel 的侵入式改造。NCU 采集一次完整指标集通常需要多次 replay：每个 pass 冻结时钟、清空 L2、重放同一段 kernel，才能把一组计数器拼成一致的时间线。这意味着 profile 的墙钟时间与 kernel 真实执行时间脱钩——一个在端到端里只占 3% 的 kernel，若被纳入全量采集，其 replay 开销足以让整轮评测的 GPU 分钟数翻倍。工程上的边界很清楚：roofline 与 stall 采样适合放在候选筛选的最后一层，而不是每一轮 rollout 都跑。把采集频率做成可调旋钮，比把采集精度做成固定值更重要。</p>
+<p>失效条件来自采样本身。warp stall 的归因依赖 PC 采样与指令级计数器，当 kernel 极短（小于采样周期）或占用率极低时，采样点落在调度气泡上，报告出的 stall 分布会系统性偏向“等待”而非真实瓶颈；SASS 级反汇编能给出指令混合与寄存器压力，但它看不见内存系统的实际命中行为，二者必须交叉验证。一个可用的判据是把 stall 占比与 SOL 的差距对齐：</p>
+<div class="formula">$$\text{gap} = \max(\text{SOL}_{\text{mem}},\ \text{SOL}_{\text{sm}}) - \text{achieved},\quad \text{若 gap} &lt; \epsilon \text{ 则 stall 报告不具诊断价值}$$</div>
+<p>当实测已接近 roofline 上限，任何 stall 归因都只是在解释余量，此时应直接停止采集、把预算让给正确性验证。</p>
+<p>二进制插桩是另一条路径，代价结构不同。它在编译期或加载期改写 SASS 插入计时与计数指令，换来的是无需 replay 的单次运行全轨迹，但会改变指令调度、增加寄存器占用、破坏原有 occupancy，测出来的时间不再是原 kernel 的时间。对 agent 而言这是一笔明确的交易：插桩适合回答“哪个分支被走了多少次”这类控制流问题，不适合回答“这个 kernel 有多快”。下表给出三类反馈通道的代价对照。</p>
+<table class="mini"><thead><tr><th>通道</th><th>时间可信度</th><th>主要代价</th><th>适用问题</th></tr></thead><tbody><tr><td>NCU 多 pass</td><td>高（隔离态）</td><td>replay 成倍放大 GPU 分钟</td><td>roofline 定位、瓶颈确认</td></tr><tr><td>PC 采样 stall</td><td>中（受采样率影响）</td><td>短 kernel 归因失真</td><td>占用率与调度气泡</td></tr><tr><td>SASS 插桩</td><td>低（扰动调度）</td><td>occupancy 与寄存器压力变化</td><td>控制流与分支频次</td></tr></tbody></table>
+<p>系统代价最终落在容量上：若每轮 RL rollout 都附带一次 NCU 采集，评测集群的卡时需求会从“按均值预留”被迫转向“按峰值预留”，因为 replay 让单任务时长出现长尾。这正是容量规划里评测精度与成本权衡的具体形态——把 profile 从每轮必跑降级为按需触发，用少量高置信样本校准大批低成本的执行反馈，才能让排队瓶颈不被观测行为自身加剧。</p>
+<p class="paper-line">对应：book/ch11 · 第 6/12 部分</p>

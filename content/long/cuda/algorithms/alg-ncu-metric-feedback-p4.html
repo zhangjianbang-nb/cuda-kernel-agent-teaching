@@ -1,0 +1,43 @@
+<h3>一 · 负载适配：什么模型、什么算子、什么 shape 才配得上 NCU 回灌</h3>
+<p>NCU 指标回灌不是万能放大器的原因在于它把“时延黑箱”拆成“瓶颈白箱”，而拆箱本身要求被拆对象具备可归因的结构。若 kernel 的端到端时延被 launch 开销、Python 侧调度或框架胶水主导，ncu 采到的 DRAM 吞吐与 SM 利用率都处在低位，roofline 分类必然落到 latency-bound，反馈块会反复告诉 agent“减少同步、提高 occupancy”，而真正的病灶在 kernel 之外——这类负载对回灌是负收益的，因为每一轮 profile 都要付出串行重放代价，却只换来一条误导性建议。</p>
+<p>适配的负载有三条硬性特征。其一，单 kernel 的 GPU 执行时间要显著压过 launch 与框架开销，否则计数器反映的是噪声；其二，算子具备明确的访存/计算二象性，例如 GEMM、卷积、attention 的 softmax 与 flash 变体、layernorm、reduce、transpose，这些算子在不同 shape 下会真实地在 memory-bound 与 compute-bound 之间迁移，分类才有信息量；其三，shape 空间要覆盖至少两类 roofline 区域，否则 agent 学到的只是单一区域的局部技巧。反例是逐元素加法类算子：它在任何合理 shape 下都是 memory-bound，回灌反馈永远是“DRAM 已饱和”，agent 的搜索空间被压缩成“减少访存”一条路，多轮 RL 的梯度信号迅速退化。</p>
+<p>shape 的选择直接决定反馈块的判别力。以 GEMM 为例，小 M/N 大 K 的 skinny 形状偏向 latency-bound 与低 occupancy，方阵大 shape 偏向 compute-bound，而 K 很小、M/N 很大的形状偏向 memory-bound；把这三类混在同一评测配方里，agent 才会收到“同一份代码在不同 shape 下被判为不同 Bound”的信号，从而学会按 shape 分支选择 tile 与 swizzle。代价是评测预算：每个 shape 都要跑一次 ncu 采集，profile 耗时是裸跑的 10–100×，若配方里塞进几十个 shape，单轮反馈的墙钟成本会吞掉整个搜索循环的迭代次数。工程判断是每个算子维护 3–5 个代表性 shape，按 roofline 区域分层抽样，而不是均匀铺满。</p>
+<p>硬件维度同样要收敛。不同 SM 架构的 Peak_BW 与 SM 吞吐不同，同一份 kernel 在两种卡上可能被判为不同 Bound，反馈块里的“DRAM 吞吐占 Peak_BW 比例”是相对量而非绝对量，因此配方必须绑定具体硬件型号并在反馈块中显式标注，否则 agent 会把跨卡的分类差异误读为代码优劣差异。一个具体例子：某 reduce kernel 在带宽较低的卡上 DRAM 比例越过 0.8 被判 memory-bound，在带宽更高的卡上同一比例跌到 0.6 被判 latency-bound，若配方不标注硬件，agent 会在两轮之间来回改方向，形成振荡。</p>
+
+<h3>二 · 基线锚定：选谁做分母，决定反馈块在说什么</h3>
+<p>NCU 回灌的反馈块里所有比例都是相对量，分母选错，整块反馈的语义就错。基线有三类可选：框架原生实现（cuBLAS/cuDNN/PyTorch 算子）、手写参考 kernel、以及同一 agent 历史最优版本。三者回答的问题不同——框架基线回答“离工业级实现还差多少”，手写参考回答“离算法语义的最简实现还差多少”，历史最优回答“这一轮相对上一轮是否退步”。评测配方必须明确每个比例的分母是谁，并在反馈块中以字段形式写死，否则 agent 会把“相对 cuBLAS 的 0.4”与“相对上一轮的 0.9”混为一谈。</p>
+<p>基线锚定的具体机制是双分母制：性能侧用框架基线做 SOL 归一（这一层与 Roofline/SOL 归一评分条目共享口径，此处只强调分母必须在配方里冻结版本与调用参数），正确性侧用手写参考或 fp64 oracle 做逐元素比对。冻结版本的必要性在于框架实现会随版本改变 tile 策略与算法选择，若基线漂移，同一份 agent kernel 的“相对收益”会凭空波动，reward shaping 的中间信号被污染。代价是维护成本：每个算子要记录基线库版本、调用 shape、warmup 次数与计时方式，任何一项变动都要重跑基线并更新配方，这部分工程量常被低估。</p>
+<div class="formula">$$\text{Score}=\frac{T_{\text{base}}(\text{shape})}{T_{\text{agent}}(\text{shape})},\quad \text{Bound}=g(\text{DRAM}_{\text{ratio}},\text{SM}_{\text{util}})$$</div>
+<p>公式里 Score 的分母是 agent kernel 实测时延，分子是冻结基线在同一 shape 上的时延；Bound 则由 NCU 计数器独立计算，两者不共享分母。这样设计的原因是：Score 衡量“快不快”，Bound 衡量“为什么快/不快”，若把 Bound 也做成相对基线的比例，agent 就无法从反馈中读出绝对瓶颈位置。一个具体例子：agent 生成的 layernorm kernel 相对 cuBLAS 类基线只有 0.5 的 Score，但 NCU 显示 DRAM 比例 0.85、SM 利用率 0.3，反馈块应写成“memory-bound，DRAM 已饱和，Score 落后的原因是访存效率而非计算量”，而不是笼统的“比基线慢一倍”。</p>
+<p>基线选择的性能代价体现在评测时延上：每轮都要跑基线会 doubling 计时开销，若基线是框架实现还需处理其内部的算法选择启发式（同一 shape 多次调用可能走不同 kernel），配方要用固定 warmup 与固定输入把基线钉死。工程上常见的折中是基线只跑一次并缓存，但缓存必须带 shape 与硬件指纹，指纹不匹配即失效重跑。</p>
+
+<h3>三 · 输入分布：数值范围、稀疏度与对齐决定计数器读数</h3>
+<p>NCU 计数器读的是真实执行路径，输入分布改变执行路径，也就改变反馈块。最直接的是数值分布对分支的影响：softmax 类算子在输入含大量极值时会走不同的归约路径，分支发散抬高 stall；稀疏输入会让某些 tile 提前退出，occupancy 读数虚高。配方若不固定输入分布，同一份 kernel 在两轮之间会收到不同的 Bound 分类，agent 会把分布波动误判为代码改动效果。</p>
+<p>对齐与 stride 是第二层。非对齐的起始地址会触发额外的访存事务，DRAM 吞吐比例被拉高但有效带宽下降，反馈块会误报“memory-bound 且已饱和”，实际是访存模式低效。stride 非连续的输入会让 L2 命中率骤降，而 L2 hit rate 是反馈块里的关键字段，命中率的变化会直接改变 agent 对“是否该改 swizzle”的判断。配方必须把对齐、stride、dtype 与 layout 作为输入规格的一部分冻结，并在反馈块中回显这些规格，让 agent 知道当前读数是在什么访存模式下取得的。</p>
+<p>数值范围还影响正确性 oracle 的严格度。fp16 输入在累加顺序改变时会出现可接受的舍入差异，若 oracle 用逐位相等做判据，agent 会被大量假阴性惩罚；配方应按 dtype 设定容差，并把容差写进反馈块，避免 agent 为迎合过严判据而放弃合法的重排优化。代价是容差设定本身需要工程判断：容差过松会放过真实错误，过紧会压制合法优化，这部分与变异测试审计 checker 条目互补，此处只强调容差必须与输入分布绑定。</p>
+<p>一个具体例子：某 attention kernel 在输入全为均匀随机值时被判 compute-bound，SM 利用率 0.82；换成含大量零的稀疏 mask 后，同一 kernel 的有效计算量下降，SM 利用率跌到 0.5，分类翻转为 latency-bound，反馈块从“增大 tile 提高计算密度”变成“减少同步、提高 occupancy”。若配方不记录输入分布，agent 会认为自己的上一轮改动导致了退化，从而回滚一个正确的优化。</p>
+
+<h3>四 · 指标怎么算：从原始计数器到可回灌的结构化字段</h3>
+<p>反馈块的字段不是 ncu 原始输出的搬运，而是派生量的计算与压缩。派生量的计算顺序有讲究：先算 DRAM 吞吐占 Peak_BW 比例与 SM 利用率，再做 roofline 分类，最后取 Top-3 stall 原因。顺序颠倒会导致分类用了未归一化的绝对吞吐，跨硬件不可比。achieved occupancy 要与 theoretical occupancy 对照，两者差距大说明寄存器压力或共享内存限制在起作用，这一对字段应成对出现在反馈块里，单给 achieved 值 agent 无法判断是“ occupancy 上限低”还是“实际没跑满”。</p>
+<div class="formula">$$\text{Bound}=\begin{cases}\text{memory}, & \frac{\text{DRAM}_{\text{throughput}}}{B_{\text{peak}}}>0.8\\ \text{compute}, & \frac{\text{SM}_{\text{util}}}{1}>0.8\\ \text{latency}, & \text{otherwise}\end{cases},\quad \text{Feedback}=f(\text{Bound},\text{Top-3 stalls})$$</div>
+<p>公式里的两个阈值是经验规则，配方要明确它们是硬阈值而非连续打分，因为硬阈值让反馈块离散化、token 更省，但也带来边界抖动：DRAM 比例在 0.79 与 0.81 之间跳动会让分类翻转。缓解手段是对同一 kernel 多次采集取中位数，或在反馈块中同时给出比例数值与分类标签，让 agent 看到“接近边界”的信息。代价是采集次数上升，profile 的 10–100× 串行化开销被进一步放大，配方要在稳定性与预算之间取平衡，通常每个 shape 采 3 次取中位即可。</p>
+<p>压缩成 ≤200 token 的反馈块是硬约束。字段优先级为：Bound 标签、DRAM 比例、SM 利用率、achieved/theoretical occupancy、L2 hit rate、Top-3 stall 原因及各自占比。Top-3 stall 的选择要按占比排序而非按名称，long scoreboard 与 barrier 是两类语义完全不同的 stall，前者指向访存延迟隐藏不足，后者指向同步开销过大，agent 据此选择“增大 tile 提高并行度”还是“减少同步点”。一个具体例子：反馈块写成“Bound=memory, DRAM=0.86/Peak, SM=0.31, occ=0.62/0.75, L2=0.41, stalls: long scoreboard 38%, barrier 21%, mio throttle 12%”，agent 读到 DRAM 饱和与 long scoreboard 主导，应优先改访存合并与预取，而不是加计算。</p>
+<p>指标计算的性能代价在于 ncu 的重放机制：采集 full set 会让 kernel 串行化并多次重放以读取不同计数器组，单次 profile 是裸跑的 10–100×。配方因此不能每轮全量跑，常见做法是自定义 metric 集只采 10–20 个关键指标，把重放次数压到最低，仅在分类边界模糊或 agent 连续两轮无改进时才升级到 full set。</p>
+
+<h3>五 · 负载不对时会发生什么：三类失效模式</h3>
+<p>第一类是分类误导。L2 命中率高被误判为 compute-bound 是典型：高 L2 命中说明访存被缓存吸收，DRAM 比例低，但 SM 利用率未必高，若配方只看 DRAM 比例低于阈值就跳到 compute 分支，agent 会去加计算密度，而真实瓶颈可能是 occupancy 不足导致的延迟未隐藏。这类错误的代价是搜索方向整体跑偏，多轮 RL 的样本被浪费在错误分支上，且因为反馈块言之凿凿，agent 不会自我怀疑。</p>
+<p>第二类是负载与反馈粒度不匹配。端到端时延被 launch 开销主导时，ncu 的计数器读数全部处于低位，Bound 恒为 latency-bound，反馈块里的 Top-3 stall 往往是 barrier 或 short scoreboard，agent 被反复引导去减少同步，而真正的优化点是 kernel 融合或减少 launch 次数——这两者不在单 kernel 的 NCU 视野内。配方若把这类负载纳入回灌，等于用错误的粒度做归因，profile 开销白付。</p>
+<p>第三类是输入分布漂移导致的假退化。同一份 kernel 因输入从稠密换为稀疏，occupancy 与 SM 利用率同步下降，Score 相对冻结基线也下降，反馈块与 Score 同时报“退化”，agent 回滚正确改动。这类失效的识别手段是在反馈块中回显输入规格指纹，并在配方里规定输入分布变更时必须重跑基线，否则 Score 的分母与分子不在同一输入条件下，比较无意义。</p>
+<p>三类失效的共同代价是评测预算的浪费：每次 profile 的 10–100× 串行化开销乘以无效轮次，搜索循环的有效迭代数被压缩。工程判断是配方上线前先用少量 shape 做失效探测——若某 shape 下 agent 连续多轮收到同一 Bound 标签且 Score 无变化，该 shape 应从回灌配方中剔除或降级为仅计时不回灌。</p>
+
+<h3>六 · 配方冻结与回灌接口的工程约束</h3>
+<p>评测配方要作为版本化产物冻结：硬件指纹、基线版本与调用参数、shape 列表及抽样权重、输入分布规格（dtype、layout、对齐、stride、数值范围、稀疏度）、容差、metric 集、采集次数与聚合方式、反馈块模板与 token 上限。任何一项变动都要触发基线重跑与配方版本号递增，反馈块中携带配方版本号，agent 的 prompt 里因此能看到“本轮读数基于哪版配方”，避免跨版本比较。</p>
+<p>回灌接口的约束在于反馈块必须自洽：Bound 标签与字段数值不能矛盾，若 DRAM 比例 0.86 却标 compute-bound，agent 会陷入解释冲突。配方要在生成反馈块前做一致性校验，矛盾时降级为“Bound=uncertain”并附原始数值，让 agent 自行判断而非被错误标签牵引。代价是校验逻辑本身的维护，以及 uncertain 状态下 agent 的搜索效率下降，但这比错误分类的代价低。</p>
+<p>最后落在具体机制上：反馈块的 token 预算应优先给 Top-3 stall 的占比数值而非文字描述，因为 stall 名称对 agent 是已知词汇，占比才是新信息；Bound 标签占一个 token 位即可。配方冻结与一致性校验共同构成回灌的可信前提——没有冻结的配方，NCU 读数只是不可复现的噪声；没有一致性校验，结构化反馈会把噪声包装成结论。</p>
+
+<h3>负载配方错配时，反馈块会变成噪声源</h3>
+<p>这套回灌方案的有效性完全建立在“负载能触发目标瓶颈”这一前提上。若 shape 太小（如单 batch 的 elementwise 或 reduction 长度不足一个 wave），kernel 根本压不满 SM，DRAM 吞吐与 SM 利用率双双落在低位，分类器按规则落入 latency-bound，Top-3 stall 往往是 long scoreboard 与 barrier 交替出现——此时反馈块告诉 agent“你在等访存”，而真实原因是并行度不足、grid 太小。agent 据此去加 tile、改 swizzle，只会把 launch 开销和尾部浪费放大。反过来，shape 过大导致寄存器溢出或 shared memory 超限时，occupancy 骤降，分类仍可能误判为 latency-bound，掩盖了编译器 spill 这一真因。因此配方必须显式约束：单 kernel 的 grid 至少覆盖数个 SM wave，工作集要能区分 L2 驻留与 DRAM 流式两种情形，且同一算子至少准备小/中/大三档 shape 作为交叉验证，避免单点负载给出片面结论。</p>
+<p>基线选择同样决定反馈的可比性。用 PyTorch eager 作基线时，端到端时延里混入了框架调度与多次 kernel launch，agent 看到的“没降”可能只是 launch 开销被摊薄；用厂商库（cuBLAS/cuDNN）作基线时，则要求生成 kernel 与库在同一 shape、同一 dtype、同一 layout 下比较，否则 DRAM 吞吐比例失去意义。输入分布上，全零或极端稀疏输入会让分支预测与 L2 命中率失真，必须混入随机但可复现的种子，并对 reduction 类算子额外注入非均匀分布以暴露数值稳定性问题。指标计算上，反馈块只应保留派生量与分类，不直接塞原始计数器：</p>
+<div class="formula">$$\text{Bound}=\begin{cases}\text{memory}, & \frac{\text{DRAM}_{\text{throughput}}}{B_{\text{peak}}}>0.8\\ \text{compute}, & \frac{\text{SM}_{\text{util}}}{1}>0.8\\ \text{latency}, & \text{otherwise}\end{cases},\quad \text{Feedback}=f(\text{Bound},\text{Top-3 stalls})$$</div>
+<p>代价在于 profile 本身：ncu 采集会串行化并重放 kernel，单次耗时是裸跑的 10–100×，若每轮都对三档 shape 全量跑 <code>--set full</code>，一轮 RL 迭代的墙钟时间会被 profile 主导，token 预算也会被冗长的指标块挤占。工程判断是：只在候选 kernel 通过正确性 oracle 后做一次分层采样——小 shape 只跑轻量 metric 集验证并行度，大 shape 才跑全量集判瓶颈；反馈块严格压缩到 ≤200 token，且当分类置信度不足（如 DRAM 比例在 0.6–0.8 之间、SM 利用率同样模糊）时，宁可不给 Bound 标签，只回灌 Top-3 stall 的原始计数，让 agent 自己承担判断，而不是用一条错误分类把它引向错误方向。</p>
+<p class="paper-line">对应：algorithms/alg-ncu-metric-feedback · 第 4/8 部分</p>

@@ -1,0 +1,38 @@
+cuda: papers=50 dirs=6 algos=26 theory=15 stories=2 exams=88 book=12 app=18
+parts done 563/1059 {'papers': 158, 'algorithms': 104, 'theory': 45, 'directions': 18, 'stories': 12, 'exams': 88, 'book': 84, 'appendix': 54}
+bundled cuda
+  split cuda: core 0.60 MB
+    sec-papers.js          0.37 MB
+    sec-theory.js          0.03 MB
+    sec-algorithms.js      0.05 MB
+    sec-exam.js            1.70 MB
+    sec-book.js            1.38 MB
+    sec-appendix.js        0.00 MB
+bundle_split done: cuda
+manifest: 1 domains -> site/data/manifest.js
+totals: site/data/totals.js
+PASS papers=50  50
+PASS algorithms=26  26
+PASS theory=15  15
+PASS directions=6  6
+PASS stories=2  2
+PASS assessments=88  88
+PASS book=12  12
+PASS appendix=18  18
+PASS all units >=500 chars
+PASS per-unit visuals
+PASS total figures >=80  179
+PASS assess math >=100  592
+PASS assess tables >=100  277
+PASS formula fields $$
+PASS visible chars >=3,000,000  4050151
+PASS internal links resolve
+PASS no <pre>
+PASS no external img
+PASS no mermaid runtime
+PASS domain data JSON valid
+PASS manifest exists
+
+== 21 PASS / 0 FAIL ==
+DATA cuda: pages=221 vis=3642706 stats={"directions":6,"algorithms":26,"papers":50,"theory":15,"stories":2,"assessments":88,"book":12,"appendix":18,"classic_algorithms":4,"core_papers":10,"recent_papers":40,"total_papers":50,"classic_papers":10}
+E2E PASS

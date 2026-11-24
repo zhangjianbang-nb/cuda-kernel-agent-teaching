@@ -1,0 +1,50 @@
+<h3>一 · 从“跑得快”到“为什么快”：roofline 把时间折算成带宽与算力</h3>
+<p>计时数据只回答“多快”，roofline 回答“还能多快、卡在哪”。做法是把 kernel 的实测吞吐折算到两个上限：峰值算力 $P_{peak}$ 与峰值带宽 $B_{peak}$，再算算术强度 $I = \text{FLOPs} / \text{Bytes}$，得到该 kernel 在机器上的可达上限</p>
+<div class="formula">$$P_{attain} = \min\left(P_{peak},\; I \cdot B_{peak}\right),\qquad \text{SOL} = \frac{P_{measured}}{P_{attain}}$$</div>
+<p>SOL（speed-of-light）不是“相对上一版的加速比”，而是相对硬件物理上限的占比，因此跨 kernel、跨形状可比。工程上真正有用的是拐点 $I^{*} = P_{peak}/B_{peak}$：$I &lt; I^{*}$ 的 kernel 是带宽受限，优化动作应落在访存合并、减少冗余读写、提高有效字节率；$I > I^{*}$ 是算力受限，动作落在指令级并行、减少同步、提高 occupancy 掩盖延迟。这条判断必须先于任何 profile 细节，否则 agent 会对着一个带宽受限的 kernel 去调 unroll 因子，白烧编译与评测预算。</p>
+<p>代价在于口径：roofline 需要 FLOPs 与 Bytes 的静态估算，而真实 kernel 的有效字节数受 cache 命中影响，实测带宽常高于 DRAM 峰值（因为 L2 复用），此时 SOL 会“超过 1”，必须把分母换成层次化带宽（L2 与 DRAM 分开）才不误导 agent。具体例子：一个逐元素缩放 kernel，$I$ 极低，SOL 若只有峰值的很小一部分，agent 的正确动作是查 NCU 的 sector 数与请求数之比，确认是否发生非合并访存，而不是去改 shared memory 分块——后者对纯流式 kernel 毫无收益。</p>
+
+<h3>二 · warp stall 是时间去哪了的直接证据</h3>
+<p>NCU 的 stall reason 采样把每个 warp 的发射停顿归因到具体原因：long scoreboard（等全局访存）、short scoreboard（等 shared memory）、barrier（等 __syncthreads）、MIO throttle（访存指令队列饱和）、not selected（可发射但调度器选了别人）、wait（等固定延迟指令）。这些计数器是 per-warp 的采样统计，agent 拿到的是“每个 stall 原因占 issued 周期的比例”，而不是绝对时间。</p>
+<p>解读的关键是区分“延迟未被掩盖”与“吞吐已饱和”。long scoreboard 占比高，可能是 occupancy 太低导致没有别的 warp 可切换，也可能是访存本身太慢；前者要提 occupancy（减寄存器、减 shared memory），后者要改访存模式。not selected 高反而是好信号——说明有足够多可发射 warp，瓶颈在指令吞吐而非延迟。barrier 高则指向同步过密或分块粒度不当。一个具体例子：softmax 类 kernel 若 barrier stall 显著，agent 应尝试把两次跨 warp 归约合并为一次，或改用 warp 级 shuffle 减少 __syncthreads 次数，而不是盲目增大 block size。</p>
+<p>采样代价必须进预算：NCU 全指标采集会让 kernel 重放多次，单次采集的墙钟时间可达原生执行的数十倍，且会改变 cache 状态。因此 profile 采样频率要按“每 N 个候选 kernel 采一次”而非每个都采，且优先采那些计时已进入候选池的 kernel；对形状敏感的 kernel 还要固定输入规模，否则 stall 分布不可比。</p>
+
+<h3>三 · SASS 是最后一道真相：源码意图与机器指令的落差</h3>
+<p>PTX 到 SASS 之间，编译器会做寄存器分配、指令调度、谓词化、以及把 shared memory 访问折叠成 LDS/LDSM。agent 若只看 CUDA C++ 源码，会把“我写了合并访存”当成事实；SASS 反汇编才能确认是否真的生成了 128-bit 的 LDG.E.128、是否出现意料之外的 local memory 溢出（LDL/STL）、是否把循环展开成了带 bank conflict 的 LDS 序列。</p>
+<p>关键片段提取是控制 token 成本的核心机制：不要整段反汇编进 prompt，而是按“热点指令窗口”截取——以 NCU 给出的 PC 采样直方图定位最热的若干个指令地址区间，只把这些区间的 SASS 连同前后若干条指令一起喂给 agent，并附上该区间的 stall 归因。伪代码思路：</p>
+<ul>
+<li>读 NCU 的 source-level 或 SASS-level 采样计数，按 PC 排序取前 k 个热点；</li>
+<li>对每个热点 PC，向两侧扩展固定条数指令，合并重叠窗口；</li>
+<li>对窗口内指令做模式标注：访存宽度、是否 shared、是否同步、是否分支；</li>
+<li>只把标注后的窗口与对应 stall 原因送入 prompt，其余丢弃。</li>
+</ul>
+<p>代价是双重的：反汇编本身需要 cuobjdump 或 nvdisasm 一次额外调用，编译产物要保留；token 侧若不截取，一个中等 kernel 的完整 SASS 轻易超过数万 token，远超一次对话的有效预算，且大量指令与瓶颈无关，反而稀释信号。具体例子：agent 声称做了 shared memory 分块，但 SASS 窗口显示内层循环仍是逐元素的 LDS.32 且地址步长为 32 的倍数，这正是 bank conflict 的机器级证据，比任何源码审查都硬。</p>
+
+<h3>四 · 二进制插桩：在不改源码的前提下拿到运行时行为</h3>
+<p>当源码不可改或改造成本高时，二进制插桩提供另一条通道：在 SASS 层插入计数或计时指令，统计分支走向、每类指令的执行次数、甚至每个 block 的耗时分布。与 NCU 的采样不同，插桩是确定性的计数，不受采样抖动影响，但会引入执行开销并可能改变指令调度。</p>
+<p>工程判断在于选择通道：需要“哪个 stall 原因占多少”用 NCU 采样；需要“这条分支实际走了多少次”用插桩；需要“这段代码编译成了什么”用反汇编。三者不是替代关系，而是按问题类型分工。插桩的代价是每次插桩都要重新生成二进制并重跑，若 agent 在搜索循环里对每个候选都插桩，编译时间与执行开销会迅速吃掉预算；合理做法是只在候选收敛到少数几个后再插桩确认。</p>
+<p>具体例子：一个归约 kernel 的计时方差很大，NCU 采样显示 stall 分布不稳定，此时用插桩统计每个 block 的到达时间戳，可以判定是尾部 block 拖尾还是负载不均——这是采样给不出的确定性结论，代价是插桩版本不能用于最终性能数字，只能用于诊断。</p>
+
+<h3>五 · 指标到动作：规则库与 agent 自主读 profile 的分工</h3>
+<p>把 NCU 指标直接丢给 agent 是低效的：指标是症状，动作是处方，中间隔着领域知识。规则库把“指标模式 → 优化动作”固化下来，例如：sector 数远大于请求数 → 检查合并访存与对齐；shared memory 的 bank conflict 计数显著 → 改填充或改访问步长；barrier stall 高 → 减少同步点或改 warp 级归约；occupancy 受限且寄存器数是主因 → 调 maxrregcount 或重构。规则引擎给建议的好处是稳定、可审计、token 便宜；坏处是覆盖不到规则外的新模式。</p>
+<p>因此分工应是：规则引擎处理高频、模式明确的症状，直接产出候选动作；agent 自主读 profile 只用于规则未命中或规则给出的动作全部失败的情形，此时把截取后的指标摘要与 SASS 窗口一起给它，让它提出假设。这个分工直接决定 token 成本：规则命中时一次交互即可，agent 自主分析则要多轮读指标、提假设、改代码、再 profile，成本高一个量级。</p>
+<p>故事映射正在此处：agent 首次看懂 NCU 的 stall 报告，识别出 barrier 与 short scoreboard 的组合指向分块粒度过粗，自主改了 shared memory 分块，硬件反馈由此成为性能跃迁的拐点。这个拐点的工程含义是——反馈通道的价值不在“有 profile”，而在“profile 被翻译成了可执行的动作”，且翻译过程可复现、可审计。</p>
+
+<h3>六 · 反馈通道的预算与可信边界</h3>
+<p>整条通道要算三笔账。其一是采样开销：NCU 重放使单次 profile 的墙钟成本远高于原生执行，因此采样频率要与候选池规模挂钩，宁可少采、精采。其二是编译与反汇编开销：每次改代码都要重编译才能拿 SASS，编译时间在搜索循环里是硬成本，缓存编译产物与按需反汇编能省下可观预算。其三是 token 开销：指标摘要要压缩成固定字段（occupancy、带宽占比、top stall 原因、bank conflict 计数、热点 PC 窗口），字段化后既省 token 又便于规则匹配。</p>
+<p>可信边界同样要写清：NCU 采样有抖动，单次 profile 的 stall 比例不能当作精确值，应看多次采样的稳定性；插桩改变调度，其计时不能进最终性能口径；SASS 反馈依赖编译器版本与编译选项，跨版本比较无意义。工程判断落在最后一步：反馈通道的输出不是“诊断结论”，而是“带证据的候选动作”，动作必须回到计时与正确性 oracle 上复核，硬件反馈只负责把搜索空间从盲目试错收缩到有依据的少数方向。</p>
+
+<h3>反馈通道的失效边界：指标失真、归因错位与采样预算</h3>
+<p>硬件反馈通道的可靠性不由“能不能采到 NCU 指标”决定，而由“采到的指标是否仍代表真实执行”决定。NCU 默认以串行重放方式隔离每个 kernel 的计数器，重放会改变缓存状态与并发环境：一个在完整流水线中因 L2 残留而受益的 kernel，被单独重放后可能呈现完全不同的 memory throughput 与 stall 分布。因此反馈通道必须携带“采集模式”元数据，agent 侧规则库需区分 <em>isolated replay</em> 与 <em>in-context sampling</em> 两类读数，前者适合定位指令级瓶颈，后者才可用于端到端收益判断。失效条件很具体：当 kernel 依赖前后算子留下的显存布局或流间重叠时，重放读数会系统性高估 memory bound 程度，把 agent 引向错误的合并访存改造。</p>
+<p>归因错位是第二个边界。NCU 给出的 stall reason 是 warp 调度器视角的聚合计数，<code>stall_long_scoreboard</code> 高并不等价于“访存延迟大”，也可能是 shared memory 分块后 occupancy 下降导致可用 warp 不足以掩盖同一延迟。规则引擎若直接把 stall 名映射到优化动作，就会在 occupancy 与 ILP 之间做出错误取舍。一个可用的判据是把 stall 占比与 SOL 位置联立：设某 stall 类别占比为 <span>s<sub>i</sub></span>，该 kernel 的 SOL 利用率为 <span>u</span>，则仅当 <span>s<sub>i</sub></span> 显著高于其余类别且 <span>u</span> 明显偏离 roofline 拐点对应的理论上限时，才值得触发对应改造；否则应先做 occupancy 或指令混合度诊断。这个门槛写成规则比让 agent 自由解读更稳，因为后者容易把相关当因果。</p>
+<div class="formula">$$ \text{trigger}(a)=\mathbb{1}\left[\frac{s_a}{\sum_j s_j}>\theta_s \;\wedge\; \frac{u}{u_{\text{roof}}}&lt;\theta_u\right] $$</div>
+<p>采样频率与开销预算是第三个边界，也是系统代价最直接的一项。逐指令 SASS 级采集（source-level counter 加 PC sampling）会使 kernel 时延抬升一个量级以上，且反汇编片段进入 prompt 后 token 成本随指令窗口线性增长；若每轮迭代都做全量 SASS 反馈，多轮 RL 的 rollout 吞吐会被 profile 本身吃掉。工程上的折中是分层触发：首轮只采 occupancy、memory throughput 与 stall 聚合三项，命中规则库后再对可疑代码区做窄窗口 SASS 提取，窗口以基本块为界而非整 kernel。代价表现为编译—采集—解析链路的时间预算被固定切分，agent 每轮可用于生成与验证的 token 预算相应压缩，因此反馈通道必须自带“本轮是否值得采”的判据，而不是无条件全采。</p>
+<table class="mini"><thead><tr><th>反馈层级</th><th>典型读数</th><th>主要代价</th><th>失效场景</th></tr></thead><tbody><tr><td>聚合指标</td><td>occupancy、SOL 位置、stall 占比</td><td>重放时延，缓存状态被扰动</td><td>依赖上下文缓存的多算子流水</td></tr><tr><td>窄窗口 SASS</td><td>基本块指令混合、访存宽度</td><td>反汇编 token 与解析时间</td><td>编译器重排使窗口与源码错位</td></tr><tr><td>二进制插桩</td><td>逐指令周期计数</td><td>时延抬升显著，改变调度行为</td><td>插桩本身引入的 stall 污染读数</td></tr></tbody></table>
+<p>具体例子是 shared memory 分块那次跃迁的反面：若 agent 在 occupancy 已接近上限、bank conflict 计数为零的情况下，仅凭 <code>stall_short_scoreboard</code> 偏高就继续缩小分块，会因同步点增多而让 <code>stall_barrier</code> 上升，SOL 反而退化。这说明反馈通道的价值不在于指标齐全，而在于把“哪类 stall 在何种 occupancy 与 SOL 组合下才可归因于哪类改造”编码成可证伪的规则，并让 agent 在触发改造前先付出一次低成本验证采集的代价。</p>
+
+<h3>采样预算与 SASS 反馈的失效边界</h3>
+<p>NCU 的指标采集不是免费的：每次 replay 都要把 kernel 重跑一遍，并冻结时钟、串行化 warp 以获取精确计数，采样频率越高、指标组越全，单次 profile 的墙钟开销就越大。工程上要守的预算约束可写成 <span class="formula">$$T_{\text{profile}} \approx N_{\text{replay}} \cdot (T_{\text{kernel}} + T_{\text{serialize}}) \le \beta \cdot T_{\text{iter}}$$</span>，其中 replay 次数由所选 metric set 决定，串行化开销在短 kernel 上会占主导。当 kernel 只有几十微秒时，profile 开销可能远超 kernel 本身，此时硬件反馈通道的吞吐成为 agent 迭代的瓶颈，而非 kernel 性能。失效条件很具体：短 kernel 上高采样率得到的 stall 分布会被串行化扭曲，occupancy 与 memory throughput 的读数不再代表真实并发场景；对策是降低 metric 粒度、只在关键轮次做全量采集，其余轮次用轻量计时做筛选。</p>
+<p>SASS 级反馈的代价在 token 而非时间。一段反汇编片段动辄数百行，若连同指令编码、地址、谓词一起塞进 prompt，单轮上下文预算会被迅速吃光，且 agent 对长汇编的注意力衰减明显。可行的压缩是只保留与 stall reason 相关的指令窗口：以 NCU 报出的热点 PC 为中心截取前后若干条指令，剥离地址与编码，仅留助记符、操作数与访存宽度。这样一条反馈的 token 成本可控，但代价是丢失跨基本块的调度信息——当瓶颈来自指令级并行不足而非单条指令时，窗口化片段会给出误导性结论，agent 可能去改一条本已最优的指令而忽略寄存器压力导致的依赖链。</p>
+<table class="mini"><thead><tr><th>反馈形态</th><th>主要代价</th><th>典型失效</th></tr></thead><tbody><tr><td>全量 NCU metric set</td><td>replay 墙钟、串行化失真</td><td>短 kernel 读数不代表并发实况</td></tr><tr><td>窗口化 SASS 片段</td><td>token 预算、上下文注意力</td><td>跨块调度问题被误判为单指令问题</td></tr><tr><td>规则引擎给建议</td><td>规则覆盖盲区</td><td>新访存模式不在规则库内</td></tr></tbody></table>
+<p>规则引擎与 agent 自主读 profile 的分工也有边界。规则库把 stall reason 映射到动作（长板访存→合并访存、shared memory 冲突→分块与 padding、同步等待→减少 barrier），命中时廉价且稳定；但规则库只覆盖已知模式，遇到非常规数据布局或新指令组合时会给不出动作，此时必须让 agent 直接读原始指标并自行归因，代价是 token 与推理轮次上升。故事中 agent 首次看懂 NCU stall 报告并自主改 shared memory 分块，正是规则命中之外的自主归因路径生效的拐点：它把 bank conflict 的读数与分块尺寸联系起来，而不是套用固定模板。工程判断是：规则引擎负责高频、低风险的常规修正，agent 自主归因只在规则未命中且 profile 预算允许时启用，两者共用同一份指标采集结果以避免重复 replay。</p>
+<p class="paper-line">对应：book/ch6 · 第 6/12 部分</p>

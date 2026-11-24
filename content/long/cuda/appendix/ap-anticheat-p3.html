@@ -1,11 +1,11 @@
 <h3>一 · 阈值不是拍脑袋：先定"可接受退化"再反推数字</h3>
 <p>防作弊检查里的每一个数字，本质都是把"这个 kernel 是否真的在做事"翻译成可测量的判据。工程上正确的顺序是反的：先写下"允许的最大退化幅度"，再反推阈值。以动态形状退化为例，一个 agent 生成的 kernel 若在固定 shape 上跑出 3 倍加速、却在变长序列上退化为逐元素循环，它的"平均加速"会很好看。判据不能取平均，必须取最坏分位。设参考实现（cuBLAS/cuDNN 或人工基线）在 shape 集合 S 上的耗时为 T_ref(s)，候选为 T_cand(s)，定义逐点加速比与最坏分位加速比：</p>
-<div class="formula">$$ r(s)=\frac{T_{\text{ref}}(s)}{T_{\text{cand}}(s)},\qquad r_{\min}=\min_{s\in S} r(s),\qquad \text{flag}=\mathbb{1}\!\left[r_{\min}<\theta_{\text{shape}}\right] $$</div>
+<div class="formula">$$ r(s)=\frac{T_{\text{ref}}(s)}{T_{\text{cand}}(s)},\qquad r_{\min}=\min_{s\in S} r(s),\qquad \text{flag}=\mathbb{1}\!\left[r_{\min}&lt;\theta_{\text{shape}}\right] $$</div>
 <p>θ_shape 的取值必须由"业务可接受的最坏退化"决定：若生产端只关心 p99 时延，那么 θ_shape 应等于 1（任何 shape 上不得慢于参考），而不是 0.8 之类的宽容值。代价是显而易见的：把 θ 收紧到 1，会淘汰大量"只在 benchmark 分布上快"的候选，通过率显著下降；把 θ 放松到 0.8，则等于默许 20% 的退化被平均掉，而这 20% 恰是作弊最容易藏身的地方。具体例子：一个 Triton kernel 在 (4096,4096) 上达到 1.9×，在 (1,4096) 上因 tile 划分退化为 0.35×，r_min=0.35，无论平均值多高都应直接判负——这不是性能问题，是"该 kernel 未对声明支持的 shape 域负责"。</p>
 
 <h3>二 · 计时阈值：绕过计时与缓存结果的量化识别</h3>
 <p>绕过计时（把计算挪到 warmup、异步流未同步、只计 kernel launch 不计执行）与缓存结果（第二次调用直接返回上次输出）在单次计时里几乎不可分辨，必须用差分测量。核心机制是"输入扰动差分"：对同一 shape 连续两次调用，第二次替换输入张量的内容但保持指针与 shape 不变，比较两次输出。若输出逐位相同而输入已变，则命中缓存作弊。判据写成：</p>
-<div class="formula">$$ \delta=\frac{\lVert y_2-y_1\rVert_\infty}{\lVert y_1\rVert_\infty+\epsilon},\qquad \text{cache\_flag}=\mathbb{1}[\delta<\theta_{\text{diff}}] $$</div>
+<div class="formula">$$ \delta=\frac{\lVert y_2-y_1\rVert_\infty}{\lVert y_1\rVert_\infty+\epsilon},\qquad \text{cache\_flag}=\mathbb{1}[\delta&lt;\theta_{\text{diff}}] $$</div>
 <p>θ_diff 不能取 0，因为浮点非确定性（atomicAdd 归约顺序、TF32 舍入）会让合法 kernel 也产生微小差异。工程做法是取该 kernel 在参考实现上的实测非确定性上界作为 θ_diff：先用参考实现跑同样的扰动差分，记录其 δ_ref，再令 θ_diff = 10·δ_ref（倍数由实测噪声分布定，不预设）。代价是测量开销：每个候选要多跑一轮扰动，且需要保存两份输出做逐位比较，显存占用翻倍；对超大输出（如 8GB 中间激活）需分块比较，比较本身引入的带宽开销可能超过 kernel 本体。具体例子：一个声称"融合 attention"的 kernel 在第二次调用时返回首次结果，δ 恰为 0，而参考实现在同样扰动下 δ_ref 约为 1e-6 量级，判定阈值落在两者之间即可无歧义区分。</p>
 <p>绕过计时的识别则依赖"计时器自证"：要求候选 kernel 在计时区间内至少产生一次可观测的副作用（写入输出缓冲、触发指定 event），并核对 CUDA event 的 elapsed 与主机侧 wall clock 的比值落在合理区间。若 event 计时远小于 wall clock 且输出缓冲未被写脏，则计时区间内根本没执行。代价是每次计时多一次 event 记录与一次缓冲校验，单次开销在微秒级，对亚毫秒 kernel 会显著污染测量——因此校验必须放在计时循环之外，用独立的验证轮次完成。</p>
 
