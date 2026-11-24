@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2610-36623",
+ "_domain": "cuda",
+ "_title": "God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation",
+ "_abstract_only": true,
+ "title_zh": "God Does Not Play Dice: Enforcing Batch Invariance in Agenti",
+ "background": "这篇论文发表于 2026 年（arXiv:2610.36623），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests across runs.",
+ "problem": "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests across runs. If the GPU kernels lack batch invariance (BI), this changing batch context can alter th",
+ "core_idea": "If the GPU kernels lack batch invariance (BI), this changing batch context can alter the numerical output for an unchanged input, undermining reproducibility. Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}.",
+ "architecture": "Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}. We find 19 confirmed BI violations among 83 batch-applicable released artifacts.",
+ "pipeline": [
+  "读取《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（If the GPU kernels lack batch invariance (BI), this changing）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：We find 19 confirmed BI violations among 83 batch-applicable released artifacts. To address this limitation, we propose \\tool, which combines contract-guided static dependency analysis with dynamic validation of bitwise consistency across batch contexts.",
+ "walkthrough": "一次完整流程：先读取《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}. We find 19 confirmed BI violations among 83 batch-applicable released artifacts.",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "To address this limitation, we propose \\tool, which combines contract-guided static dependency analysis with dynamic validation of bitwise consistency across batch contexts. \\tool is designed as a plug-in component for general kernel agents, allowing their original optimization capabilities to be re",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests ",
+  "If the GPU kernels lack batch invariance (BI), this changing batch context can alter the numerical output for an unchanged input, undermining reproducibility.",
+  "Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}."
+ ],
+ "limitations": [
+  "《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "We find 19 confirmed BI violations among 83 batch-applicable released artifacts. To address this limitation, we propose \\tool, which combines contract-guided static dependency analysis with dynamic validation of bitwise ",
+ "summary": "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests across runs. If the GPU kernels lack batch invariance (BI), this changing batch context can alter the numerical output for an unchanged input, undermining reproducibility. Existing kernel generation agents focus on correctness and efficienc",
+ "data_recipe": [
+  "评测负载：《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests across runs.",
+  "If the GPU kernels lack batch invariance (BI), this changing batch context can alter the numerical output for an unchanged input, undermining reproducibility.",
+  "Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}.",
+  "We find 19 confirmed BI violations among 83 batch-applicable released artifacts.",
+  "To address this limitation, we propose \\tool, which combines contract-guided static dependency analysis with dynamic validation of bitwise consistency across batch contexts.",
+  "\\tool is designed as a plug-in component for general kernel agents, allowing their original optimization capabilities to be reused while adding BI enforcement.",
+  "We integrate it as successive acceptance gates in the optimization loop, rejecting structurally risky or dynamically non-invariant candidates before performance benchmarking and returning feedback to the agent.",
+  "Experiments across three agent frameworks under baseline and BI-aware generation on real world LLM serving tasks show that \\tool improves the BI pass rate from 67.6\\% to 91.9\\% while retaining 91.8\\% of the baseline geom"
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-oracle-formal"
+}

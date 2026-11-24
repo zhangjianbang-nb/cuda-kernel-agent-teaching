@@ -1,0 +1,79 @@
+{
+ "_paper_id": "paper-2608-14560",
+ "_domain": "cuda",
+ "_title": "Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA",
+ "_abstract_only": true,
+ "title_zh": "Agentic Kernel Optimization: Generating State-of-the-Art GPU",
+ "background": "这篇论文发表于 2026 年（arXiv:2608.14560），属于 基准与可信评测 方向。它要回答的问题是：We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code.",
+ "problem": "We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code. We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DS",
+ "core_idea": "We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DSA Sparse Attention, and evaluate all generated kernels under the correctness-gated FlashInfer-Bench protocol on NVIDIA B200 GP",
+ "architecture": "Starting from the PyTorch implementations, workload definitions, benchmark commands, and a compact set of CUDA optimization skills, we build a kernel optimization workflow in Houmao, a multi-agent orchestration framework for heterogeneous coding agents, to generate, debug, profile, and optimize the ",
+ "pipeline": [
+  "读取《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（We investigate this question using representative workloads ）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：Humans remain strictly in an orchestration role: defining the workflow, enforcing correctness and anti-hacking constraints, supplying key references, and redirecting the search when progress stalls, without reviewing or editing the kernel code itself. Across r",
+ "walkthrough": "一次完整流程：先读取《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Starting from the PyTorch implementations, workload definitions, benchmark commands, and a compact set of CUDA optimization skills, we build a kernel optimization workflow in Houmao, a multi-agent orchestration framework",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "Across roughly 1.9 billion agent tokens, the resulting kernels achieve speedups of 92.68x on Fused MoE, 1101.02x on DSA TopK Indexer, and 181.35x on DSA Sparse Attention relative to the PyTorch reference implementations, while also significantly outperforming the corresponding FlashInfer baselines. ",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code.",
+  "We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DSA Sparse Attention, and ev",
+  "Starting from the PyTorch implementations, workload definitions, benchmark commands, and a compact set of CUDA optimization skills, we build a kernel optimizati"
+ ],
+ "limitations": [
+  "《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Humans remain strictly in an orchestration role: defining the workflow, enforcing correctness and anti-hacking constraints, supplying key references, and redirecting the search when progress stalls, without reviewing or ",
+ "summary": "We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code. We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DSA Sparse Attention, and evaluate all generated kernels under the correctness-gated FlashInfer-Bench protocol on NVIDIA B200 GPUs. Starting f",
+ "data_recipe": [
+  "评测负载：《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code.",
+  "We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DSA Sparse Attention, and evaluate all generated kernels under the correctness-gated Fla",
+  "Starting from the PyTorch implementations, workload definitions, benchmark commands, and a compact set of CUDA optimization skills, we build a kernel optimization workflow in Houmao, a multi-agent orchestration framework",
+  "Humans remain strictly in an orchestration role: defining the workflow, enforcing correctness and anti-hacking constraints, supplying key references, and redirecting the search when progress stalls, without reviewing or ",
+  "Across roughly 1.9 billion agent tokens, the resulting kernels achieve speedups of 92.68x on Fused MoE, 1101.02x on DSA TopK Indexer, and 181.35x on DSA Sparse Attention relative to the PyTorch reference implementations,",
+  "In the official evaluation of the MLSys 2026 FlashInfer AI Kernel Generation Contest, our generated Fused MoE kernel achieves a 1.71x speedup over the FlashInfer baseline, exceeding the top result of the Fused MoE agent-",
+  "These results suggest that, under a disciplined correctness-first workflow, code agents can serve as effective autonomous optimizers for modern GPU kernel development."
+ ],
+ "anchors": [
+  "92.68",
+  "1101.02",
+  "181.35",
+  "1.71",
+  "1.68"
+ ],
+ "pitfalls": [
+  "《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

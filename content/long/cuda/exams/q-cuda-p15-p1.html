@@ -1,0 +1,70 @@
+<h3>一 · 题干的三层结构：从“生成”到“可部署收益”</h3>
+<p>《Kernel Forge》的题干不是一句“让 LLM 写 CUDA kernel”，而是一条被压缩过的工程链路。拆题时先把它还原成三层：第一层是<strong>产物层</strong>——agent 最终要交付什么（一个能编译、能跑、数值正确的 kernel 源文件，还是带 autotune 配置、带 launch 边界的完整实现）；第二层是<strong>过程层</strong>——harness 在生成与优化之间如何组织多轮交互（编译反馈、正确性 oracle、profile 反馈、失败回滚）；第三层是<strong>评价层</strong>——用什么基准、什么基线、什么指标口径判定“这件事做成了”。三层缺一层，题目就会退化成“代码补全”。</p>
+<p>考点的第一个陷阱就在这里：题干问的是“哪一类 GPU kernel 工程问题作为核心”。答案不是“CUDA 编程”，而是<strong>在给定算子语义与形状约束下，把一个参考实现替换成在目标硬件上可测量地更快、且数值可验证的 kernel</strong>。也就是说，核心问题是“优化”而非“生成”，生成只是优化的搜索动作。判据是：如果 agent 产出的 kernel 与参考实现同速，即使代码风格完全不同、编译通过、数值正确，也没有解决核心问题。这决定了后面所有指标都必须带<strong>相对基线的加速比</strong>，而不是绝对时延。</p>
+<p>第二个陷阱是“基准、基线与指标口径分别是什么”。这三者常被混为一谈。基准（benchmark）是<strong>任务集合与输入分布</strong>：一组算子、每个算子的形状/数据类型/布局、以及允许的数值容差。基线（baseline）是<strong>对照实现</strong>：通常是 PyTorch eager 或手写 CUDA 参考，也可能是库调用（如 cuBLAS/cuDNN）。指标口径（metric protocol）是<strong>测量方法</strong>：计时方式（是否含 launch 开销、是否用 CUDA event、是否 warmup、是否固定 clock）、统计量（中位数还是均值）、以及正确性判定（逐元素容差还是范数相对误差）。三者任一含糊，加速比就不可比。</p>
+<p>解题路径的第一步因此不是写 kernel，而是<strong>把题干里的“更快”翻译成可复现的测量协议</strong>：固定输入形状、固定 dtype、固定容差、固定计时窗口，再谈优化。代价在这里已经出现：为了可复现，harness 必须为每个任务跑多次 warmup 与多次计时，单任务评测的 GPU 时间被放大；如果任务集合大，评测本身就成为吞吐瓶颈。</p>
+
+<h3>二 · 考点拆解：五个必须显式回答的子问题</h3>
+<p>把题干拆成可打分的子问题，能避免答题时“讲了很多但没答到”。本条目要求给出定义与分工，因此每个子问题都要落到<strong>定义 + 与相邻工作的边界</strong>。</p>
+<ul>
+<li><strong>产物定义</strong>：交付物是单文件 kernel 还是带 host 侧 launch 与 autotune 的模块？边界在于是否允许调用库函数——若允许，任务退化为“选库”；若禁止，才逼出真正的 kernel 设计。</li>
+<li><strong>正确性 oracle</strong>：逐元素容差、相对范数误差、还是对特殊值（NaN/Inf、非对齐形状）的显式检查。边界在于 oracle 的严格度直接决定 agent 能否用“近似算法”换取速度。</li>
+<li><strong>性能口径</strong>：加速比相对哪个基线、是否计入 Python/框架开销、是否要求端到端（含数据搬运）。边界在于“kernel 微基准”与“生产端到端收益”是两种不同的验收标准。</li>
+<li><strong>搜索空间</strong>：agent 可改的是 tile 大小、线程映射、共享内存布局、向量化宽度、流水线深度，还是连算法（如 split-K、persistent kernel）都可换。边界在于搜索空间越大，验证成本越高。</li>
+<li><strong>失败处理</strong>：编译失败、数值不达标、性能回退时 harness 如何回滚与重试。边界在于这决定多轮交互的 token 预算与 wall-clock 预算。</li>
+</ul>
+<p>这五个子问题构成一条约束链：产物定义收紧 → 搜索空间收窄 → 验证成本下降 → 多轮迭代可行。反过来，若题干允许 agent 自由换算法，则 oracle 必须更强（否则近似算法会“骗过”容差），验证成本上升，单任务的编译+计时轮次增加。工程判断是：<strong>先固定 oracle 与口径，再放开搜索空间</strong>，否则加速比不可信。</p>
+<p>具体例子：一个 reduction 任务，若 oracle 只查最终标量的相对误差，agent 可以用低精度累加换速度；若 oracle 同时检查中间分块结果与非对齐长度的边界，低精度路径会被拒。前者省验证时间但放松了正确性，后者多花一次 kernel 启动与比对，却把“可信加速”守住。这个取舍就是考点本身。</p>
+
+<h3>三 · 解题路径：从题干到可执行计划的映射</h3>
+<p>给出路径而不给答案，意味着要写出<strong>步骤顺序与每步的判据</strong>。一条可复用的路径是：语义解析 → 基线复现 → 瓶颈定位 → 变换候选 → 验证闭环 → 收益核算。</p>
+<p>语义解析要把题干里的算子描述转成<strong>形状约束与访存模式</strong>：是 elementwise、reduction、matmul 还是 attention 类；是否要求原地更新；是否有广播。判据是能否写出参考实现的伪代码并确认其数值语义（累加顺序是否影响结果）。这一步的代价是 token：题干越长、约束越多，解析阶段消耗的上下文越多，且错误解析会在后续所有轮次被放大。</p>
+<p>基线复现要求先在目标硬件上跑通参考实现并记录其时延与带宽。判据是基线可复现（多次测量方差小）。若基线本身不稳定（如受 clock 波动影响），后续加速比就带噪声。这一步的代价是 GPU 时间，且必须与最终评测用同一口径，否则前后不可比。</p>
+<p>瓶颈定位是路径的分水岭：用 roofline 判断任务是<strong>带宽受限还是计算受限</strong>。设算术强度为 <span class="formula">$$I = \frac{\text{FLOPs}}{\text{Bytes}}$$</span>，硬件峰值算力为 <span class="formula">$$P_{\text{peak}}$$</span>、峰值带宽为 <span class="formula">$$B_{\text{peak}}$$</span>，则 roofline 拐点强度为 <span class="formula">$$I^* = \frac{P_{\text{peak}}}{B_{\text{peak}}}$$</span>。若 <span class="formula">$$I &lt; I^*$$</span>，优化方向是减少访存字节（向量化、合并访问、复用共享内存）；若 <span class="formula">$$I > I^*$$</span>，方向是提高指令级并行与占用率。判据是实测带宽或算力利用率是否接近 roofline 上界。代价是 profile 采集本身要额外跑一遍 kernel，且 NCU 采集会显著拖慢执行。</p>
+<p>变换候选阶段，agent 依据瓶颈选择 tile 大小、线程块形状、共享内存分块、流水线深度等。这里要给出一个可检验的伪代码思路而非具体参数：对每个候选配置，计算其共享内存占用 <span class="formula">$$S = \text{tile}_M \times \text{tile}_N \times \text{sizeof(dtype)}$$</span>，并检查 <span class="formula">$$S \le S_{\max}$$</span> 且占用率满足 <span class="formula">$$\text{occupancy} = \frac{\text{regs per thread} \times \text{threads per block}}{\text{regs per SM}}$$</span> 的约束。判据是候选配置能编译且不超资源。代价是编译时间：每个候选都要 nvcc 编译，候选越多，单任务编译开销越大，token 也随候选描述增长。</p>
+<p>验证闭环把正确性与性能合并：先跑 oracle，再跑计时，两者都过才进入下一轮。判据是“正确且不慢于当前最优”。代价是每轮至少一次编译+两次执行（正确性、计时），若 oracle 覆盖多种形状，执行次数成倍增加。</p>
+<p>收益核算要求把加速比写成相对基线的比值，并注明口径。若题干要求端到端收益，还要把 host 侧开销计入，此时 kernel 微基准的加速比会被摊薄。这一步的代价是测量脚本的复杂度，但它是“可信评测”的唯一出口。</p>
+
+<h3>四 · 需要调用的公式与代价清单</h3>
+<p>解题时需要显式写出的公式不多，但每一个都对应一个可被扣分的点。除 roofline 两式外，至少还要给出：</p>
+<ul>
+<li><strong>加速比</strong>：<span class="formula">$$S = \frac{T_{\text{base}}}{T_{\text{opt}}}$$</span>，其中 <span class="formula">$$T$$</span> 必须同口径（同形状、同 dtype、同计时窗口）。若基线含框架开销而优化版不含，<span class="formula">$$S$$</span> 被人为放大，这是最常见的口径错误。</li>
+<li><strong>有效带宽</strong>：<span class="formula">$$B_{\text{eff}} = \frac{\text{Bytes moved}}{T}$$</span>，用于判断是否接近 <span class="formula">$$B_{\text{peak}}$$</span>。若 <span class="formula">$$B_{\text{eff}}$$</span> 远低于峰值，说明访存模式有问题，而非算力不足。</li>
+<li><strong>数值误差界</strong>：<span class="formula">$$\|y_{\text{opt}} - y_{\text{ref}}\| \le \tau$$</span>，<span class="formula">$$\tau$$</span> 由 oracle 给定。若 agent 用近似算法，必须证明误差在 <span class="formula">$$\tau$$</span> 内，否则加速比无效。</li>
+</ul>
+<p>代价清单要按资源分类写清楚，因为题干问的是“工程问题”，工程判断就体现在代价权衡上：</p>
+<table class="mini">
+<thead><tr><th>资源</th><th>消耗点</th><th>对解题路径的影响</th></tr></thead>
+<tbody>
+<tr><td>时延</td><td>每候选一次编译 + 一次正确性执行 + 一次计时</td><td>候选数受 wall-clock 预算约束，多轮迭代需剪枝</td></tr>
+<tr><td>带宽</td><td>profile 采集与多次计时重复搬运输入</td><td>大形状任务评测本身成为带宽瓶颈</td></tr>
+<tr><td>显存</td><td>共享内存 tile 与多候选并行编译的中间产物</td><td>tile 过大导致占用率下降，反而变慢</td></tr>
+<tr><td>编译时间</td><td>nvcc 对每个候选的编译</td><td>模板化 kernel 编译慢，候选搜索需缓存</td></tr>
+<tr><td>token</td><td>题干解析、候选描述、失败反馈回灌</td><td>长题干与多轮失败会挤占上下文预算</td></tr>
+</tbody>
+</table>
+<p>具体例子：一个带宽受限的 elementwise 任务，roofline 判定 <span class="formula">$$I &lt; I^*$$</span>，于是候选集中在向量化宽度与合并访问上。若 agent 误判为计算受限而去调 tile，编译时间花掉却拿不到带宽收益；此时 <span class="formula">$$B_{\text{eff}}$$</span> 仍远低于 <span class="formula">$$B_{\text{peak}}$$</span>，profile 会暴露这个错误。代价是这一轮编译与计时的浪费，但闭环能在下一轮纠正方向。</p>
+
+<h3>五 · 与相邻工作的分工：定义边界而非罗列名字</h3>
+<p>题干要求“说明它和相邻工作的分工”，答题时不能只列相邻工作名称，而要给出<strong>按职责切分</strong>的边界。可分三条线：</p>
+<ul>
+<li><strong>与基准类工作分工</strong>：基准类工作提供任务集合与评测协议，回答“考什么、怎么量”；Kernel Forge 回答“agent 如何在协议内迭代产出”。前者是尺子，后者是被尺子量的过程。若把两者混同，就会把“基准设计”误答成“agent 设计”。</li>
+<li><strong>与单轮代码生成分工</strong>：单轮生成只做“题干 → 代码”，没有编译反馈、没有 profile 回灌、没有失败回滚；Kernel Forge 的核心增量是<strong>harness 的多轮闭环</strong>，把执行反馈变成搜索信号。边界在于是否允许 agent 在看到编译错误或性能数字后修改方案。</li>
+<li><strong>与形式验证分工</strong>：形式验证回答“这段 kernel 对所有合法输入都满足规范”，代价是建模成本高、覆盖形状有限；Kernel Forge 的 oracle 是<strong>采样式正确性检查</strong>，覆盖题干给定的形状集合，代价低但不保证全输入。两者是互补：oracle 做快速筛选，形式验证做关键路径的兜底。</li>
+</ul>
+<p>这三条边界对应三种不同的“可信度”来源：基准提供可比性，闭环提供可改进性，形式验证提供可证明性。答题时若只强调其中一条，就会被判为分工不清。工程判断是：<strong>先明确 oracle 的覆盖范围，再声明加速比的可信边界</strong>——采样 oracle 下的加速比只对给定形状集合成立，不能外推。</p>
+<p>具体例子：同一 matmul 任务，基准类工作规定形状与容差；单轮生成给出一个能编译的 kernel；Kernel Forge 则在编译失败时读取错误信息、在数值超差时收紧 tile、在带宽未达 roofline 时改访存模式，并把每轮的 <span class="formula">$$S$$</span> 与 <span class="formula">$$B_{\text{eff}}$$</span> 记录为下一轮的输入。形式验证则对最终候选做全输入范围的等价性检查。四者职责不重叠，缺任一条，题干里的“可信”就不成立。</p>
+
+<h3>六 · 读题时的判据清单与常见失分点</h3>
+<p>把上面的拆解压缩成一份可在读题时逐条打勾的判据清单，能直接用于答题自检。每条判据都对应一个可被扣分的具体动作，而不是泛泛的“注意”。</p>
+<ul>
+<li>是否写清了<strong>产物边界</strong>：允许调库与否、是否含 host 侧 launch、是否要求 autotune 配置随产物交付。</li>
+<li>是否写清了<strong>基线身份</strong>：PyTorch eager、手写参考还是库调用；三者加速比不可互换。</li>
+<li>是否写清了<strong>计时口径</strong>：warmup 次数、计时窗口、是否含 launch 与数据搬运、统计量取中位数还是均值。</li>
+<li>是否写清了<strong>oracle 严格度</strong>：容差形式（逐元素/范数）、是否覆盖非对齐与特殊值、是否检查中间结果。</li>
+<li>是否用 roofline 做了<strong>瓶颈判定</strong>，并据此选择变换方向，而不是盲目调 tile。</li>
+<li>是否把<strong>代价</strong>落到具体资源上：编译时间、token、显存、评测带宽，而非笼统说“有开销”。</li>
+</ul>
+<p>常见失分点有三个。其一，把“生成”当核心问题，答成代码补全，忽略优化目标与加速比口径。其二，把基准、基线、指标口径三者混写，导致加速比不可比却仍宣称“更快”。其三，只给候选参数不给判据，读者无法判断该候选为何被选中、为何被淘汰。这三点的共同根源是<strong>没有把题干翻译成可测量的约束链</strong>。</p>
+<p>具体机制上，读题时应先画出一条从题干到测量的映射：算子语义 → 形状与 dtype → 基线实现 → 计时窗口 → oracle 容差 → 加速比公式。任何一个环节缺失，后续推导都建立在未定义量上。代价是读题阶段多花几分钟写清这条链，收益是后续所有轮次的候选筛选都有统一判据，避免在错误方向上消耗编译时间与 token。工程判断落在最后一句：<strong>题干里每一个形容词（“更快”“可信”“可部署”）都必须被翻译成一个可测量的量，否则它就不是考点，而是修辞</strong>。</p>
+<p class="paper-line">对应：exams/q-cuda-p15 · 第 1/2 部分</p>

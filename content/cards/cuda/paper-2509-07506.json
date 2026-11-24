@@ -1,0 +1,76 @@
+{
+ "_paper_id": "paper-2509-07506",
+ "_domain": "cuda",
+ "_title": "Astra: A Multi-Agent System for GPU Kernel Performance Optimization",
+ "_abstract_only": true,
+ "title_zh": "Astra: A Multi-Agent System for GPU Kernel Performance Optim",
+ "background": "这篇论文发表于 2025 年（arXiv:2509.07506），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning.",
+ "problem": "GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning. Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typ",
+ "core_idea": "Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typically requires extensive manual tuning. Compiler-based systems reduce some of this burden, but still demand substantial manual de",
+ "architecture": "Compiler-based systems reduce some of this burden, but still demand substantial manual design and engineering effort. Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largely focused on translating high-level PyTorch modules into CUDA code.",
+ "pipeline": [
+  "读取《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Efficient kernels are crucial for accelerating large languag）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largely focused on translating high-level PyTorch modules into CUDA code. In this work, we introduce Astra, the first LLM-based multi-agent system for GPU kernel op",
+ "walkthrough": "一次完整流程：先读取《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Compiler-based systems reduce some of this burden, but still demand substantial manual design and engineering effort. Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largel",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "In this work, we introduce Astra, the first LLM-based multi-agent system for GPU kernel optimization. Unlike previous approaches, Astra starts from existing CUDA implementations extracted from SGLang, a widely deployed framework for serving LLMs, rather than treating PyTorch modules as the specifica",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning.",
+  "Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typically requires extensive manu",
+  "Compiler-based systems reduce some of this burden, but still demand substantial manual design and engineering effort."
+ ],
+ "limitations": [
+  "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largely focused on translating high-level PyTorch modules into CUDA code. In this work, we introduce Astra, the first LLM-ba",
+ "summary": "GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning. Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typically requires extensive manual tuning. Compiler-based systems reduce some of this burden, but still demand substantial manual design and e",
+ "data_recipe": [
+  "评测负载：《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning.",
+  "Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typically requires extensive manual tuning.",
+  "Compiler-based systems reduce some of this burden, but still demand substantial manual design and engineering effort.",
+  "Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largely focused on translating high-level PyTorch modules into CUDA code.",
+  "In this work, we introduce Astra, the first LLM-based multi-agent system for GPU kernel optimization.",
+  "Unlike previous approaches, Astra starts from existing CUDA implementations extracted from SGLang, a widely deployed framework for serving LLMs, rather than treating PyTorch modules as the specification.",
+  "Within Astra, specialized LLM agents collaborate through iterative code generation, testing, profiling, and planning to produce kernels that are both correct and high-performance.",
+  "On kernels from SGLang, Astra achieves an average speedup of 1.32x using zero-shot prompting with OpenAI o4-mini."
+ ],
+ "anchors": [
+  "1.32"
+ ],
+ "pitfalls": [
+  "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

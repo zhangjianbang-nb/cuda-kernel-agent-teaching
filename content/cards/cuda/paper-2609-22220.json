@@ -1,0 +1,80 @@
+{
+ "_paper_id": "paper-2609-22220",
+ "_domain": "cuda",
+ "_title": "Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles",
+ "_abstract_only": true,
+ "title_zh": "Measuring the Checker: Mutation Analysis for GPU-Kernel Benc",
+ "background": "这篇论文发表于 2026 年（arXiv:2609.22220），属于 基准与可信评测 方向。它要回答的问题是：Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboards and reinforcemen",
+ "problem": "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboards and reinforcement-learning rewards. Recent work agrees these checkers are weak and patches them ",
+ "core_idea": "Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recipes, tighter tolerances---with no way to \\emph{measure} whether any patch suffices. We introduce mutation analysis as an adequacy metric for kernel-ben",
+ "architecture": "We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject 10{,}303 compilable faults into verified CUDA implementations of 188 KernelBench problems, 7{,}384 of them with an independent kill witness; any test protocol is scored by the fraction it de",
+ "pipeline": [
+  "读取《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Recent work agrees these checkers are weak and patches them ）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：The official check misses \\textbf{one in six} witnessed faults (16.9%), deterministically, and the misses are skewed by family: 8.7% of arithmetic faults escape, but 78.6% of precision faults do. The metric explains why (a tolerance blind band growing with red",
+ "walkthrough": "一次完整流程：先读取《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject 10{,}303 compilable faults into verified CUDA implementations of 188 KernelBench problems, 7{,}384 of them wit",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "The metric explains why (a tolerance blind band growing with reduction size; a measured ceiling on input aggressiveness set by legitimate floating-point variance), audits the strongest existing patch (KernelBench-Verified's gain splits into $+4.0$ points from hidden inputs and $+4.5$ from tighter to",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboa",
+  "Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recipes, tighter tolerances---with no way to \\emph{meas",
+  "We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject 10{,}303 compilable faults into verified CUDA impl"
+ ],
+ "limitations": [
+  "《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "The official check misses \\textbf{one in six} witnessed faults (16.9%), deterministically, and the misses are skewed by family: 8.7% of arithmetic faults escape, but 78.6% of precision faults do. The metric explains why ",
+ "summary": "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboards and reinforcement-learning rewards. Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recipes, tighter tolerances---with no way to \\emph{measure} whether any patch suffices. We intr",
+ "data_recipe": [
+  "评测负载：《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboards and reinforcement-learning rewards.",
+  "Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recipes, tighter tolerances---with no way to \\emph{measure} whether any patch suffices.",
+  "We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject 10{,}303 compilable faults into verified CUDA implementations of 188 KernelBench problems, 7{,}384 of them wit",
+  "The official check misses \\textbf{one in six} witnessed faults (16.9%), deterministically, and the misses are skewed by family: 8.7% of arithmetic faults escape, but 78.6% of precision faults do.",
+  "The metric explains why (a tolerance blind band growing with reduction size; a measured ceiling on input aggressiveness set by legitimate floating-point variance), audits the strongest existing patch (KernelBench-Verifie",
+  "Optimizing suites over the kill matrix reaches 98.0% detection with two inputs per problem (94.8% held-out), and the measurement's fault taxonomy teaches a test generator more than the raw faults themselves.",
+  "Across 48 whole architectures, the blindness grows with scale, concentrating in deep homogeneous pipelines, and two problems prove unrefereeable: their official references violate the benchmark's own tolerance against fp",
+  "We release everything as \\href{https://huggingface.co/datasets/Elfsong/KernelBench-M}{KernelBench-M}."
+ ],
+ "anchors": [
+  "16.9",
+  "8.7",
+  "78.6",
+  "98.0",
+  "94.8"
+ ],
+ "pitfalls": [
+  "《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-oracle-formal"
+}

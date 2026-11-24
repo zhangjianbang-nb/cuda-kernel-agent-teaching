@@ -1,0 +1,80 @@
+{
+ "_paper_id": "paper-2611-03517",
+ "_domain": "cuda",
+ "_title": "Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization",
+ "_abstract_only": true,
+ "title_zh": "Ask, Don't Equip: Question-Driven Coding Agents for Deep Ker",
+ "background": "这篇论文发表于 2026 年（arXiv:2611.03517），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff.",
+ "problem": "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff. Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe applies and stal",
+ "core_idea": "Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe applies and stall where it does not. Open-ended agents let a self-directed model mutate a population of ",
+ "architecture": "Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands of evaluations, repeated edits, and wrong candidates. Both respond to hard targets by equipping the agent with more: parsed profiler output, disassembly analysis, retrieval over do",
+ "pipeline": [
+  "读取《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Scripted agents fix what the model does at each step, via a ）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：Both respond to hard targets by equipping the agent with more: parsed profiler output, disassembly analysis, retrieval over documentation and libraries, and stores of lessons. We argue that both lack direction, a hypothesis about where the remaining gap is, an",
+ "walkthrough": "一次完整流程：先读取《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands of evaluations, repeated edits, and wrong candidates. Both respond to hard targets by equipping the ",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "We argue that both lack direction, a hypothesis about where the remaining gap is, and that a short question asked at the right moment supplies it without narrowing what the agent may do next. We present KernelSeek, a question-driven agent that makes an existing CUDA kernel faster with no operator-sp",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff.",
+  "Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe appl",
+  "Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands of evaluations, repeated edits, and wron"
+ ],
+ "limitations": [
+  "《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Both respond to hard targets by equipping the agent with more: parsed profiler output, disassembly analysis, retrieval over documentation and libraries, and stores of lessons. We argue that both lack direction, a hypothe",
+ "summary": "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff. Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe applies and stall where it does not. Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands",
+ "data_recipe": [
+  "评测负载：《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff.",
+  "Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe applies and stall where it does not.",
+  "Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands of evaluations, repeated edits, and wrong candidates.",
+  "Both respond to hard targets by equipping the agent with more: parsed profiler output, disassembly analysis, retrieval over documentation and libraries, and stores of lessons.",
+  "We argue that both lack direction, a hypothesis about where the remaining gap is, and that a short question asked at the right moment supplies it without narrowing what the agent may do next.",
+  "We present KernelSeek, a question-driven agent that makes an existing CUDA kernel faster with no operator-specific knowledge and no faster implementation to imitate: a general-purpose coding agent, a minimal harness that",
+  "On the same task, evaluator, hardware, and week, a tool-rich autonomous agent built in the prevailing style plateaued at 0.50x FlashAttention-3 after 133 model-driven steps; KernelSeek reached 1.13x.",
+  "It then produced dependency-free FlashAttention forward kernels for Hopper and Blackwell, single CUDA files with no CUTLASS, CuTe, cuBLAS, or cuDNN, correct on all 182 scenarios per architecture and 1.16x FlashAttention-"
+ ],
+ "anchors": [
+  "0.50",
+  "1.13",
+  "182",
+  "1.16",
+  "1.46"
+ ],
+ "pitfalls": [
+  "《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

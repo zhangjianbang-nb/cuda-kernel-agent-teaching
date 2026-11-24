@@ -1,0 +1,46 @@
+<h3>一 · 论文要解决的两个结构性缺口</h3>
+<p>KernelZero 的问题陈述只有两句，但这两句把当前 kernel agent 的困境切得很准：一是<strong>与模型当前能力对齐的高质量训练数据稀缺</strong>，二是<strong>正确性与性能之间存在内生权衡</strong>。第一点不是“数据不够多”，而是“数据不够贴”。KernelBench 式的题目集合是静态的，难度分布由人拍定，模型在某一轮训练后可能已经能稳定通过其中大半，剩下的少数难题又远超其能力边界——于是训练信号要么冗余、要么无效。第二点是奖励设计的经典陷阱：如果 reward 只看加速比，模型会学到“删掉边界检查”“假设输入对齐”“跳过非连续 stride 分支”这类能过编译、能跑通一次、但在隐藏 shape 上崩掉的写法；如果 reward 只看正确性，模型退化为把 PyTorch 语义逐行翻译成 CUDA 的“直译器”，性能毫无增益。KernelZero 的全部方法设计，都是围绕这两个缺口展开的。</p>
+<p>值得强调的是，这两个缺口在工程上是耦合的。数据难度决定了正确性门限该设多高：题目太简单时，正确率饱和，CA-GRPO 的性能阶段几乎立刻开启，模型在缺乏正确性压力的环境下优化时延，容易滑向 reward hacking；题目太难时，正确率长期在低位徘徊，性能阶段永远不开启，训练退化为纯正确性打磨，token 预算被大量消耗在编译失败与数值不匹配的循环里。因此“数据对齐”不是数据工程的附属品，而是奖励机制能否生效的前置条件。</p>
+
+<h3>二 · 双模型共演化：Proposer 与 Coder 的分工</h3>
+<p>KernelZero 把生成链路拆成两个专用模型。<strong>Proposer</strong> 从 API 集合出发，生成 Torch 模块——也就是“题目”：一段具有明确语义、可被 PyTorch eager 执行的参考实现。<strong>Coder</strong> 接收这些 Torch 模块，把它们翻译成 CUDA 或 Triton kernel。这个拆分的关键在于：题目不再来自静态基准文件，而是由模型按需生产，因此题目的难度分布可以随 Coder 的能力变化而移动。</p>
+<p>这一分工带来一个直接的工程后果：正确性 oracle 变得廉价且可靠。因为参考实现是 Proposer 产出的 Torch 模块，它天然可在同一输入上执行，正确性检查退化为“同一输入下候选 kernel 输出与 Torch 模块输出的逐元素比对”，不需要人工编写 golden 输出，也不需要为每个算子维护参考实现库。代价是 Proposer 自身可能生成语义含糊或数值不稳定的模块（例如依赖未定义行为的归约顺序、对 NaN 传播敏感的算子），这类题目会污染训练信号，需要在模块生成侧做过滤。另一个代价是 token：一次完整样本要消耗 Proposer 生成模块的 token 加上 Coder 生成 kernel 的 token，相比单模型直接生成 kernel，单位样本的 token 成本更高，这也是为什么论文必须强调“training-efficient”——共演化的收益必须覆盖这份额外开销。</p>
+
+<h3>三 · frontier-driven 模块生成：把难度锚在 Coder 的弱点上</h3>
+<p>论文的核心机制之一是 frontier-driven module generation：持续产出<strong>与 Coder 当前能力对齐</strong>的训练模块，依据是 Coder 当前的弱点。这里的“frontier”指的是能力边界——既不是 Coder 已经稳定解决的区域（无信息量），也不是它完全无法触及的区域（无梯度）。工程上可实现的判据是：对候选模块跑一遍 Coder，若编译失败或正确性不通过，则该模块落在边界之外；若一次通过且性能已接近 roofline，则落在边界之内；只有那些“能编译、正确性偶发失败、或正确但显著慢于基线”的模块才构成有效训练样本。</p>
+<p>这个机制本质上是在做<strong>课程学习</strong>，但课程不是预先编排的，而是由 Coder 的实时表现反向驱动 Proposer。它解决的是静态基准无法解决的分布漂移问题：随着 Coder 变强，Proposer 必须生成更难的模块，否则训练信号衰减。代价体现在两个层面。其一是<strong>筛选成本</strong>：每个候选模块都要经过编译与执行才能判定是否落在 frontier 上，编译时间与 kernel 启动时延构成实打实的墙钟开销，且失败样本（编译错误）的筛选成本往往高于成功样本。其二是<strong>分布坍缩风险</strong>：如果 Proposer 只被奖励“生成 Coder 做不出的模块”，它会收敛到少数几类极端算子（超长归约、不规则稀疏访存），导致训练分布变窄，Coder 在常规算子上的泛化反而退化。论文用“交替优化”来缓解这一点，但交替的节奏本身是一个需要调参的工程量。</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>上式是论文口径下的通过率式评分：对 N 个测试用例，逐例计算候选相对基线的加速比 $s_i$，只有当 $s_i$ 达到阈值 $\tau$ 时才计为一次通过。这个定义把“正确”与“够快”压进同一个指示函数，意味着一个数值完全正确但只比基线快一点的 kernel 在评分上等价于失败。工程上必须注意 $\tau$ 的选取与基线选取的耦合：基线若未开启 TF32、或未使用厂商最强库实现，$T_{\text{base},i}$ 被高估，$s_i$ 被系统性压低，通过率虚低；反之若基线是朴素的 PyTorch eager 逐元素实现，通过率会被虚高。这也是为什么论文把基线明确为 PyTorch eager、torch.compile 与指定库实现三档——不同档位下的同一份 kernel 会得到完全不同的分数。</p>
+
+<h3>四 · CA-GRPO：先正确，再谈快</h3>
+<p>Correctness-Aware Group Relative Policy Optimization（CA-GRPO）的机制可以一句话概括：<strong>只有当正确性足够可靠之后，才把性能纳入优化目标</strong>。GRPO 本身是在同一 prompt 下采样一组候选、用组内相对优势替代价值网络；CA-GRPO 在此之上对奖励做门控——正确性未达门限时，性能项不进入优势计算，组内比较只在“正确/不正确”这一维度上发生。</p>
+<p>伪代码层面的思路是：对每个 prompt 采样 K 个候选 kernel，逐一编译、执行、与 Proposer 的 Torch 模块比对；设 $c_k\in\{0,1\}$ 为第 k 个候选的正确性指示，$s_k$ 为其加速比。若组内正确率低于门限，则奖励取 $r_k=c_k$；否则取 $r_k=c_k\cdot f(s_k)$，其中 $f$ 单调。这样做的直接效果是消除了一类特定的 reward hacking：在正确率尚未饱和时，一个“快但错”的候选不会因为加速比高而获得正优势，从而不会把“删检查、赌输入”这类策略固化进策略分布。代价是<strong>训练时延</strong>：正确性阶段每个样本都要真实执行并比对，无法用静态奖励代理；且门控意味着性能信号在早期完全缺席，收敛到高性能区间所需的轮数增加，token 预算被拉长。另一个隐性代价是门限本身的选择——门限过高会让性能阶段迟迟不开启，门限过低则门控形同虚设。</p>
+<p>与 Kevin 那类多轮 RL 的区别在于反馈粒度：多轮 RL 把编译错误、运行错误、性能反馈分轮回灌，强调“从失败中学习”；CA-GRPO 则是在单轮组内做门控，强调的是<strong>奖励结构</strong>而非交互轮次。两者可以叠加，但解决的问题不同——前者治“不会修”，后者治“学歪了”。</p>
+
+<h3>五 · 交替优化构成的自动课程</h3>
+<p>论文明确写道：通过交替优化 Proposer 与 Coder，KernelZero 形成一个<strong>自动课程</strong>，实现有针对性的、训练高效的能力提升。这个交替的机制值得拆开看。当 Coder 被优化时，Proposer 冻结，题目分布固定，Coder 在该分布上做密集的正确性与性能打磨；当 Proposer 被优化时，Coder 冻结，Proposer 被奖励去生成“当前 Coder 的 frontier 附近”的模块，从而把题目分布推向 Coder 的弱点。两阶段交替，等价于让“考题”和“考生”轮流进步，避免任何一方单独跑在前面导致信号失效。</p>
+<p>这个设计的性能代价是<strong>墙钟时间的分段浪费</strong>：每次切换阶段，被冻结的一方无法贡献梯度，且新阶段的初期往往伴随一批低质量样本（Proposer 刚更新后生成的模块可能大量不可执行）。工程判断上，交替周期过短会让两个模型都来不及收敛，周期过长则课程失去响应性。论文摘要未给出交替频率的具体口径，这属于需要读全文核验的实验细节。另一个代价是显存与算力：两个 7B 级模型同时驻留并交替训练，相比单模型方案，显存占用与调度复杂度都上升。</p>
+
+<h3>六 · 基准口径与版图位置</h3>
+<p>论文的评测口径落在 KernelBench Level 1 与 Level 2 上，指标是 pass@1 与 pass@10。给出的数字是：CUDA 侧 Level 1 pass@1 为 75.8%、Level 2 为 69.6%，pass@10 分别达到 100% 与 97%；并声称 KernelZero-7B 在 CUDA 上超过 Claude-4.5-Sonnet、在 Triton 上超过 DeepSeek-V4-Pro。另有 77.2 与 72.5 两个数字锚点，摘要级材料未标明其对应口径，需在全文核对是 Triton 侧分数还是其他层级的 pass@1。</p>
+<table class="mini"><thead><tr><th>维度</th><th>KernelZero 的口径</th><th>工程含义</th></tr></thead><tbody>
+<tr><td>题目来源</td><td>Proposer 从 API 集合生成 Torch 模块</td><td>分布随 Coder 能力漂移，非静态基准</td></tr>
+<tr><td>正确性 oracle</td><td>与 Proposer 的 Torch 模块逐例比对</td><td>免人工 golden，但受模块语义质量制约</td></tr>
+<tr><td>性能门</td><td>加速比 $s_i\ge\tau$ 才计通过</td><td>基线档位直接决定分数高低</td></tr>
+<tr><td>奖励结构</td><td>CA-GRPO，正确性门控后再优化性能</td><td>抑制“快但错”的 reward hacking</td></tr>
+<tr><td>课程机制</td><td>Proposer / Coder 交替优化</td><td>自动课程，但交替节奏需调参</td></tr>
+<tr><td>评测集</td><td>KernelBench Level 1 / 2</td><td>与静态基准可比，但训练分布不同源</td></tr>
+</tbody></table>
+<p>放到 CUDA kernel agent 的版图上，KernelZero 的位置可以用两条轴来定位。第一条轴是<strong>数据从哪来</strong>：KernelBench、Geak 一类工作在固定题集上评测与优化，CUDA-LLM、CUDA-L1 走对比式强化，Kevin、Dr. Kernel 走多轮 RL 与执行反馈，EvoEngineer、cuPilot、Astra 走演化与多智能体搜索——它们共享同一个静态题目池。KernelZero 的不同在于把题目生产本身也变成可训练对象，题目池是活的。第二条轴是<strong>正确性与性能如何耦合</strong>：多数工作把二者塞进一个标量奖励或用过滤式拒绝采样，KernelZero 用门控把二者在时间上解耦，先建立正确性下限再放开性能优化。</p>
+<p>这条路线最需要警惕的失败模式有三个。其一，<strong>基线口径漂移</strong>：若离线评测未开 TF32、未用最强库，加速比被系统性高估，75.8% 这类数字在生产环境不可复现。其二，<strong>shape 特化</strong>：Proposer 生成的模块带有特定输入分布，Coder 学到的 kernel 可能对训练时的 shape 过拟合，隐藏输入分布一变，正确率与性能同时崩塌。其三，<strong>fallback 虚高</strong>：若候选失败时回退到 Torch 参考实现并仍计为通过，正确率会被抬高而性能收益被掩盖——这正是 CA-GRPO 的门控设计想要在训练侧防住、但评测侧仍需独立核验的地方。论文的结论只在给定硬件、基线与输入分布上成立，跨硬件、跨 dtype、跨框架的迁移未经验证，这是把该方法搬进生产前必须自己补的实验。</p>
+
+<h3>双模型共演化的边界：Proposer 造题的上限、CA-GRPO 的正确性门与离线分数的失效面</h3>
+
+<p>KernelZero 的机制骨架是“造题者—解题者”闭环：Proposer 从 API 集合生成 Torch 模块，Coder 把它翻译成 CUDA 或 Triton kernel；Proposer 的生成不是随机的，而是由 frontier-driven 机制按 Coder 当前弱点定向产出“能力对齐”的训练模块，从而形成自动课程。这个闭环的边界条件很硬：Proposer 只能生成它见过的 API 组合，题目难度上限被 API 集合与 Torch 语义的表达力封顶；一旦目标算子的结构超出该集合（例如需要跨算子融合、非规则稀疏访存、动态 shape 分支），造题环节就退化为同分布采样，Coder 的改进随之饱和。换言之，这套方法的收益来自“课程覆盖”，而不是“推理时搜索”，它无法在单题上凭空造出训练分布外的解法。</p>
+
+<p>CA-GRPO 的代价体现在奖励设计与训练时延上。它把性能优化推迟到正确性足够可靠之后，可写成门控形式：<div class="formula">$$r_i=\mathbb{1}[\text{correct}_i]\cdot \text{score}_i,\qquad \text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\ s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>正确性门是硬 0/1，意味着早期大量候选拿到零奖励，组内方差塌缩，GRPO 的相对优势估计失效，需要更多采样才能凑出有效梯度——这是 token 与编译时间的直接开销：每个候选都要真编译、真跑、真计时，编译失败与超时都计入墙钟。τ 阈值的选择同样是工程判断：τ 设高则稀疏奖励、训练慢；设低则鼓励“勉强过线”的候选，性能天花板被压低。</p>
+
+<p>评测口径上的失效面比方法本身更值得警惕。论文报告 KernelZero-7B 在 KernelBench Level 1/2 上 CUDA pass@1 为 75.8% 与 69.6%，pass@10 达 100% 与 97%，并声称在 CUDA 上超过 Claude-4.5-Sonnet、在 Triton 上超过 DeepSeek-V4-Pro。这些数字的成立依赖三个未在摘要中固定的前提：基线是否开启 TF32、是否使用最强库实现、输入 shape 是否与训练课程同分布。若基线偏弱，加速比被系统性高估；若题目被 shape 特化，离线 pass 率无法迁移到生产端的动态输入。更隐蔽的是 reward hacking：候选可以通过 fallback 到 PyTorch 路径或缓存结果骗过正确性检查，使正确率虚高而真实 kernel 未被生成。因此这套方案的工程定位应是“课程生成器 + 可信评测管线”的组合，而非可直接上线的 kernel 生产器；跨硬件、跨 dtype、跨框架的迁移在摘要级证据下均未验证。</p>
+
+<table class="mini"><thead><tr><th>边界</th><th>机制根源</th><th>代价</th></tr></thead><tbody><tr><td>课程饱和</td><td>Proposer 受限于 API 集合表达力</td><td>训练 token 增长而 pass@1 不再上升</td></tr><tr><td>稀疏奖励</td><td>CA-GRPO 硬正确性门</td><td>组内方差塌缩，需更多采样与编译</td></tr><tr><td>分数虚高</td><td>弱基线 / shape 特化 / fallback</td><td>离线加速比不可迁移至生产</td></tr></tbody></table>
+<p class="paper-line">对应：papers/paper-2609-33074 · 第 1/2 部分</p>

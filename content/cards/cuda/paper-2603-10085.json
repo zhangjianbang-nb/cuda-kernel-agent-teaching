@@ -1,0 +1,80 @@
+{
+ "_paper_id": "paper-2603-10085",
+ "_domain": "cuda",
+ "_title": "KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms",
+ "_abstract_only": true,
+ "title_zh": "KernelClaw: A Multi-Agent Framework for GPU Kernel Optimizat",
+ "background": "这篇论文发表于 2026 年（arXiv:2603.10085），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：Improving GPU kernel efficiency is crucial for efficient AI systems.",
+ "problem": "Improving GPU kernel efficiency is crucial for efficient AI systems. Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization.",
+ "core_idea": "Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization. However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimiza",
+ "architecture": "However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies. This leads to inefficient trial-and-error and weakly interpretable optimizations.",
+ "pipeline": [
+  "读取《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Recent work has explored leveraging large language models (L）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：This leads to inefficient trial-and-error and weakly interpretable optimizations. Our key insight is to replace implicit heuristics with expert optimization knowledge that is aware of task trajectories.",
+ "walkthrough": "一次完整流程：先读取《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies. This leads to inefficient trial-and-error and weakly",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "Our key insight is to replace implicit heuristics with expert optimization knowledge that is aware of task trajectories. Specifically, we present KernelClaw, a multi-agent framework with a dual-level memory architecture.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Improving GPU kernel efficiency is crucial for efficient AI systems.",
+  "Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization.",
+  "However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization stra"
+ ],
+ "limitations": [
+  "《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "This leads to inefficient trial-and-error and weakly interpretable optimizations. Our key insight is to replace implicit heuristics with expert optimization knowledge that is aware of task trajectories.",
+ "summary": "Improving GPU kernel efficiency is crucial for efficient AI systems. Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization. However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies. This leads to inefficient trial-and-error and weakly i",
+ "data_recipe": [
+  "评测负载：《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Improving GPU kernel efficiency is crucial for efficient AI systems.",
+  "Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization.",
+  "However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies.",
+  "This leads to inefficient trial-and-error and weakly interpretable optimizations.",
+  "Our key insight is to replace implicit heuristics with expert optimization knowledge that is aware of task trajectories.",
+  "Specifically, we present KernelClaw, a multi-agent framework with a dual-level memory architecture.",
+  "KernelClaw operates by coordinating agents with long-term memory of reusable expert knowledge and short-term memory to prevent repetitive backtracking.",
+  "On KernelBench Levels 1-3, KernelClaw achieves a 100% success rate and average speedups of 6.98x, 7.89x, and 1.94x over Torch Eager on Levels 1, 2, and 3, respectively, outperforming prior baselines."
+ ],
+ "anchors": [
+  "100",
+  "6.98",
+  "7.89",
+  "1.94",
+  "0"
+ ],
+ "pitfalls": [
+  "《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

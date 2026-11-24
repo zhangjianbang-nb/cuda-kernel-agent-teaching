@@ -1,0 +1,76 @@
+{
+ "_paper_id": "paper-2609-30059",
+ "_domain": "cuda",
+ "_title": "KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization",
+ "_abstract_only": true,
+ "title_zh": "KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Opti",
+ "background": "这篇论文发表于 2026 年（arXiv:2609.30059），属于 基准与可信评测 方向。它要回答的问题是：Deep learning inference and training performance depends critically on GPU kernel efficiency.",
+ "problem": "Deep learning inference and training performance depends critically on GPU kernel efficiency. Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementations by",
+ "core_idea": "Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementations by wide margins. Recent LLM-assisted optimizers explore these opportunities through kernel gener",
+ "architecture": "Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated kernel improvements into model-level gains remains a challenge. We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization.",
+ "pipeline": [
+  "读取《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Modern compilers such as PyTorch Inductor automatically gene）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization. It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and refinement, then assembles and evaluates the resulting model.",
+ "walkthrough": "一次完整流程：先读取《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated kernel improvements into model-level gains remains a challenge. We present KernelOPT, a profil",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and refinement, then assembles and evaluates the resulting model. Four stages of validation combine execution checks, multi-seed numerical comparison, model-level checking with a float64 fallback",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Deep learning inference and training performance depends critically on GPU kernel efficiency.",
+  "Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementati",
+  "Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated kernel improvements into model-lev"
+ ],
+ "limitations": [
+  "《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization. It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and refinement, then assem",
+ "summary": "Deep learning inference and training performance depends critically on GPU kernel efficiency. Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementations by wide margins. Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated",
+ "data_recipe": [
+  "评测负载：《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Deep learning inference and training performance depends critically on GPU kernel efficiency.",
+  "Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementations by wide margins.",
+  "Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated kernel improvements into model-level gains remains a challenge.",
+  "We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization.",
+  "It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and refinement, then assembles and evaluates the resulting model.",
+  "Four stages of validation combine execution checks, multi-seed numerical comparison, model-level checking with a float64 fallback and end-to-end performance gating ($γ{=}1.03$).",
+  "The system supports PyTorch nn.Modules, standalone Triton kernels, and Helion kernels.",
+  "It is evaluated on all 250 KernelBench problems on NVIDIA H200 which includes 100 single-operator problems (Level1), 100 composite operators (Level2), and 50 model architectures (Level3)."
+ ],
+ "anchors": [
+  "100"
+ ],
+ "pitfalls": [
+  "《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

@@ -1,0 +1,214 @@
+{
+ "directions": [
+  {
+   "id": "dir-bench-trust",
+   "name": "基准与可信评测",
+   "name_en": "Benchmarks and Trustworthy Evaluation",
+   "question": "如何构建能区分「能跑」与「真快、真对、真可迁移」的 GPU kernel 评测基准，并量化评测器自身的误判率？",
+   "why": "KernelBench 系基准普遍存在正确性 oracle 过松、基线选择随意、测速口径不统一的问题；若不先校准评测器，后续 RL 奖励与 agent 反馈都会被污染，整个领域的结论不可复现。",
+   "core_tech": [
+    "多级正确性 oracle（随机/边界/极端输入）",
+    "变异测试校准 checker",
+    "SOL/roofline 归一化测速口径",
+    "泛化与知识迁移评测协议"
+   ],
+   "teams": [
+    "Stanford（KernelBench 团队）",
+    "NVIDIA",
+    "UIUC"
+   ],
+   "key_papers": [
+    "paper-2502-10517",
+    "paper-2605-04956",
+    "paper-2605-16819",
+    "paper-2609-22220",
+    "paper-2603-19173"
+   ],
+   "recent": "2026 年出现 KernelBenchX、AgentKernelArena 等扩展基准，把泛化性与 agent 行为纳入评测；KernelBench-Verified 与 Measuring the Checker 用变异分析暴露 oracle 假阳性，SOL-ExecBench 引入硬件极限归一化，评测从「通过率」转向「可信度+可迁移性」双口径。",
+   "challenges": [
+    "正确性 oracle 的假阴/假阳难以同时压低，变异测试成本高",
+    "不同 GPU 架构与测速工具导致跨论文数字不可比"
+   ],
+   "related": [
+    "dir-agent-harness",
+    "dir-rl-data",
+    "dir-oracle-formal"
+   ]
+  },
+  {
+   "id": "dir-agent-harness",
+   "name": "Agent 脚手架与执行反馈",
+   "name_en": "Agent Scaffolds and Execution Feedback",
+   "question": "agent 如何组织多轮编译-运行-profile-改写循环，把硬件执行反馈转化为可执行的优化决策而非盲目试错？",
+   "why": "kernel 优化是搜索问题，反馈信号稀疏且噪声大（计时抖动、编译失败、寄存器溢出）；脚手架设计直接决定样本效率与最终性能，是工程落地的核心瓶颈。",
+   "core_tech": [
+    "多轮编译/运行反馈闭环",
+    "NCU/SASS profile 驱动诊断",
+    "领域特定 DSL 约束搜索空间",
+    "预算感知的搜索与剪枝"
+   ],
+   "teams": [
+    "NVIDIA",
+    "MIT",
+    "CMU"
+   ],
+   "key_papers": [
+    "paper-2511-01884",
+    "paper-2607-24762",
+    "paper-2606-26453",
+    "paper-2603-29010",
+    "paper-2611-04331"
+   ],
+   "recent": "CudaForge 与 Kernel Forge 把硬件反馈做成 agent 一等公民；微剖面工具作为专家代理（Micro-Profiling）替代人工调参；Warpline 用二进制级追踪统一证据链；DSL 约束与预算感知搜索显著降低无效编译次数。",
+   "challenges": [
+    "profile 数据到改写动作的映射缺乏可学习中间表示",
+    "编译失败与计时噪声使反馈信号信噪比低"
+   ],
+   "related": [
+    "dir-bench-trust",
+    "dir-rl-data",
+    "dir-hw-dsl-profile"
+   ]
+  },
+  {
+   "id": "dir-rl-data",
+   "name": "多轮 RL 与可验证奖励",
+   "name_en": "Multi-Turn RL and Verifiable Rewards",
+   "question": "如何设计多轮 RL 的奖励函数与数据管线，使 kernel 生成在正确性约束下持续提升性能，而非奖励黑客或退化？",
+   "why": "kernel 奖励天然可验证（编译+正确性+加速比），但奖励稀疏、多轮信用分配困难、易被 oracle 漏洞利用；这是把 agent 能力从 demo 推向稳定的关键。",
+   "core_tech": [
+    "多轮 RL 与信用分配",
+    "结构化性能奖励塑形",
+    "可验证奖励与防黑客约束",
+    "自演化 proposer-coder 数据闭环"
+   ],
+   "teams": [
+    "NVIDIA",
+    "DeepSeek",
+    "清华"
+   ],
+   "key_papers": [
+    "paper-2507-11948",
+    "paper-2507-14111",
+    "paper-2512-02551",
+    "paper-2602-05885",
+    "paper-2602-24286"
+   ],
+   "recent": "Kevin 与 CUDA-L1/L2 证明多轮 RL 可超越 cuBLAS；Dr. Kernel 修正 Triton RL 的奖励设计缺陷；CUDA Agent 做大规模 agentic RL；LEAP 用自适应剪枝降低环境反馈成本；KernelZero 让 proposer 与 coder 协同演化。",
+   "challenges": [
+    "多轮信用分配与稀疏奖励导致训练不稳定",
+    "奖励黑客：利用 oracle 漏洞刷分而非真优化"
+   ],
+   "related": [
+    "dir-agent-harness",
+    "dir-oracle-formal",
+    "dir-prod-e2e"
+   ]
+  },
+  {
+   "id": "dir-oracle-formal",
+   "name": "正确性 oracle 与形式验证",
+   "name_en": "Correctness Oracles and Formal Verification",
+   "question": "如何为 LLM 生成的 GPU kernel 提供超越随机测试的正确性保证，覆盖边界条件、批不变性与数值误差？",
+   "why": "「正确性幻觉」普遍存在：随机测试通过但边界/批组合下出错；生产部署要求可审计的正确性契约，否则性能收益不可信。",
+   "core_tech": [
+    "契约感知的验证器审计",
+    "批不变性与确定性检查",
+    "数值误差界与浮点等价性",
+    "形式化/符号执行验证"
+   ],
+   "teams": [
+    "CMU",
+    "MIT",
+    "NVIDIA"
+   ],
+   "key_papers": [
+    "paper-2606-20128",
+    "paper-2607-16241",
+    "paper-2611-15506",
+    "paper-2610-36623",
+    "paper-2609-22220"
+   ],
+   "recent": "Correctness Illusion 系统揭示随机测试的盲区；KernelAudit 对验证器做契约感知审计；God Does Not Play Dice 强制批不变性；KernelBench-Verified 复核「超越 PyTorch」的真实性，正确性从通过率转向可审计契约。",
+   "challenges": [
+    "浮点非结合性与并行归约使形式等价难以定义",
+    "形式验证工具对 CUDA/Triton 语义覆盖不足、代价高"
+   ],
+   "related": [
+    "dir-bench-trust",
+    "dir-rl-data",
+    "dir-prod-e2e"
+   ]
+  },
+  {
+   "id": "dir-prod-e2e",
+   "name": "生产端到端部署",
+   "name_en": "Production End-to-End Deployment",
+   "question": "LLM 生成的 kernel 在真实模型与真实负载中能带来多少端到端收益，如何跨越微基准与生产之间的鸿沟？",
+   "why": "微基准加速比常被调度开销、内存布局、框架集成吞掉；只有 trace 驱动、端到端闭环的评测才能回答「是否值得部署」，这是产业落地的最后一公里。",
+   "core_tech": [
+    "trace 驱动的真实负载回放",
+    "端到端闭环优化与集成",
+    "生产就绪度分级评估",
+    "分发感知的 kernel 调度"
+   ],
+   "teams": [
+    "NVIDIA",
+    "Meta",
+    "Google"
+   ],
+   "key_papers": [
+    "paper-2607-14541",
+    "paper-2609-21058",
+    "paper-2605-23215",
+    "paper-2608-21836",
+    "paper-2609-30059"
+   ],
+   "recent": "FastKernels 与 trace 驱动基准把评测搬到生产负载；How Much of a Real Workload 量化微基准到端到端的收益衰减；LLM4LLM 建立基准到部署的闭环；KernelOPT 引入分发感知搜索，端到端收益成为核心指标。",
+   "challenges": [
+    "框架集成与调度开销吞掉微基准收益",
+    "真实负载数据难获取、隐私与可复现性冲突"
+   ],
+   "related": [
+    "dir-bench-trust",
+    "dir-oracle-formal",
+    "dir-hw-dsl-profile"
+   ]
+  },
+  {
+   "id": "dir-hw-dsl-profile",
+   "name": "硬件感知 DSL 与 profile",
+   "name_en": "Hardware-Aware DSLs and Profiling",
+   "question": "如何用 Triton/CuTe/PTX 等硬件感知 DSL 与 NCU/SASS profile 把架构特性（tensor core、TMA、warp 调度）编码进生成与优化流程？",
+   "why": "性能上限由硬件细节决定，而 LLM 缺乏架构感知；DSL 提供可组合抽象，profile 提供证据，二者结合才能逼近 SOL，而非停留在高层 API 调参。",
+   "core_tech": [
+    "Triton/CuTe/PTX 多级抽象生成",
+    "NCU/SASS 剖面与瓶颈诊断",
+    "架构特定调优与 roofline 分析",
+    "受控基准下的瓶颈归因"
+   ],
+   "teams": [
+    "OpenAI（Triton）",
+    "NVIDIA（CuTe/CUTLASS）",
+    "MIT"
+   ],
+   "key_papers": [
+    "paper-2604-01489",
+    "paper-2608-17379",
+    "paper-2608-12004",
+    "paper-2609-29067",
+    "paper-2603-12440"
+   ],
+   "recent": "CuTeGen 用 agent 生成高性能 CuTe kernel；PTXBench 评测架构特定 PTX 优化；RealisticTritonBench 把 Triton 生成放进真实框架；TileBench 做受控瓶颈诊断；KernelFoundry 做硬件感知演化搜索。",
+   "challenges": [
+    "架构特性快速迭代使 DSL 与 profile 知识迅速过时",
+    "SASS 级证据到源码级改写的映射困难"
+   ],
+   "related": [
+    "dir-agent-harness",
+    "dir-prod-e2e",
+    "dir-bench-trust"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,53 @@
+<h3>一 · 分子与分母的物理量纲对齐</h3>
+<p>SOL 分数的分子 <span class="sym">T_SOL</span> 与分母 <span class="sym">T_meas</span> 必须是同一物理量纲的时间，否则比值失去意义。分母的工程口径要显式声明三件事：计时边界（是否含 launch、是否含尾部同步）、摊销方式（单次调用还是 batch 内均摊）、测量统计量（中位数还是最小值）。这三件事任一变化都会改变 <span class="sym">T_meas</span> 的数值，从而改变分数，而 <span class="sym">T_SOL</span> 完全不变。因此把 SOL 分数写进论文或评测报告时，分母口径必须与分子假设一起冻结，否则跨论文比较就是拿两个不同定义的比值互相比。</p>
+<p>分子的量纲是“字节 / 带宽”与“浮点运算 / 峰值算力”两者取大，单位都是秒。取大的物理含义是：硬件在任一时刻只能被访存或计算之一饱和，最优实现的下界由更紧的那条腿决定。这不是把两条腿相加，因为访存与计算在时间上重叠，重叠部分不产生额外下界。若把两者相加，得到的就不是 Speed-of-Light 下界，而是串行执行的时间，会系统性高估 <span class="sym">T_SOL</span>、压低分数。</p>
+<div class="formula">$$\text{SOL}=\frac{T_{\text{SOL}}}{T_{\text{meas}}},\qquad T_{\text{SOL}}=\max\left(\frac{\text{Byte}_{\text{min}}}{B_{\text{eff}}},\;\frac{\text{FLOP}_{\text{min}}}{P_{\text{peak}}}\right)$$</div>
+<p>代价在于：<span class="sym">B_eff</span> 与 <span class="sym">P_peak</span> 本身是“可达”而非“标称”的量。若用标称峰值算 <span class="sym">T_SOL</span>，分子偏小，分数偏乐观；若用实测可达峰值，分子偏大，分数偏保守。两种口径都能自洽，但不能混用。一个具体例子：同一 GEMM kernel，用标称 FP16 峰值算出的 SOL 分数会比用可达峰值算出的高出可观一截，差异全部来自分母口径而非 kernel 本身。</p>
+
+<h3>二 · Byte_min 的计数规则决定可比性</h3>
+<p><span class="sym">Byte_min</span> 定义为“算法必需的最小 DRAM 字节数”，关键词是“必需”与“DRAM”。必需意味着只计算法语义上不可省略的读写：输入张量读入、输出张量写出、以及跨 kernel 边界必须落地的中间结果。DRAM 意味着片上缓存、共享内存、寄存器之间的搬运不计入，因为这些搬运不消耗 HBM 带宽。计数规则的第一个分歧点是中间张量：融合实现可以把中间结果留在片上，不落地 DRAM，此时 <span class="sym">Byte_min</span> 应不含该中间张量的往返；非融合实现则必须计入。两种实现对应两个不同的 <span class="sym">Byte_min</span>，分数不可直接比。</p>
+<p>第二个分歧点是是否允许重算换带宽。某些算法可以用额外 FLOP 换取更少的 DRAM 流量（例如不物化中间激活而重算），此时 <span class="sym">Byte_min</span> 下降、<span class="sym">FLOP_min</span> 上升，<span class="sym">T_SOL</span> 取大后的结果可能反而变小。这说明 <span class="sym">Byte_min</span> 与 <span class="sym">FLOP_min</span> 不是独立可调的，它们由同一份“最优实现假设”联合决定。冻结计数规则时，必须同时冻结是否允许融合、是否允许重算、中间张量落地策略，三者缺一不可。</p>
+<ul>
+<li>计数规则 A：只计输入输出，中间张量全部片上驻留，适用于融合假设。</li>
+<li>计数规则 B：每个 kernel 边界都计中间张量往返，适用于逐 kernel 评测。</li>
+<li>计数规则 C：允许重算，Byte_min 取重算后的最小值，FLOP_min 相应上调。</li>
+</ul>
+<p>代价是显存与带宽的双向挤压：规则 A 要求中间张量常驻片上，受共享内存与寄存器容量约束，形状稍大就放不下，被迫退回规则 B；规则 B 的 DRAM 流量随 kernel 数线性增长，分数被系统性压低。一个具体例子：两段式 softmax，规则 A 下 <span class="sym">Byte_min</span> 只含输入输出两趟，规则 B 下多出中间最大值与指数和两趟往返，同一 kernel 的 SOL 分数在两种规则下相差接近一倍，而 kernel 代码一字未改。</p>
+
+<h3>三 · T_SOL 未计入不可消除开销的推导缺口</h3>
+<p>推导 <span class="sym">T_SOL</span> 时默认硬件从第一条指令起就处于饱和状态，但真实执行存在两段不可消除的时间：launch 提交与尾部同步。launch 开销由驱动与硬件队列决定，与 kernel 计算量无关，是固定成本；尾部同步是最后一个线程块完成到结果可见之间的等待。这两段在 <span class="sym">T_SOL</span> 的推导中被完全略去，因为它们不属于“带宽或算力饱和”的范畴。略去的直接后果是：当 <span class="sym">T_meas</span> 小到与固定开销同量级时，分母被固定开销主导，分数可以超过 1。</p>
+<p>把固定开销显式写进分母，可以得到一个修正口径：<span class="sym">T_meas</span> ≈ <span class="sym">T_kernel</span> + <span class="sym">T_launch</span> + <span class="sym">T_sync</span>，而 <span class="sym">T_SOL</span> 只对应 <span class="sym">T_kernel</span> 的下界。于是 SOL 分数超过 1 的充要条件是 <span class="sym">T_SOL</span> &gt; <span class="sym">T_kernel</span> + <span class="sym">T_launch</span> + <span class="sym">T_sync</span>，在小 kernel 上 <span class="sym">T_SOL</span> 与 <span class="sym">T_kernel</span> 同量级而固定开销不可忽略，不等式容易成立。这不是 kernel 比硬件还快，而是分子漏掉了分母里真实存在的成本项。</p>
+<div class="formula">$$\text{SOL}_{\text{corr}}=\frac{T_{\text{SOL}}}{T_{\text{kernel}}+T_{\text{launch}}+T_{\text{sync}}}$$</div>
+<p>代价是修正口径引入了新的测量负担：<span class="sym">T_launch</span> 与 <span class="sym">T_sync</span> 需要单独标定，且随驱动版本、队列深度、并发流数变化。一个具体例子：元素级向量加法，<span class="sym">Byte_min</span> 为两读一写共三趟，<span class="sym">T_SOL</span> 在微秒量级，而单次 launch 开销与之同量级，未修正的 SOL 分数轻松越过 1；修正后分数回落到 1 以下，且随 batch 摊销增大而趋近未修正值。批量摊销的具体机制不在本部分展开，只指出它是把固定开销摊薄到多次调用、从而让分母重新由 <span class="sym">T_kernel</span> 主导的手段。</p>
+
+<h3>四 · max 取大的离散化近似在哪</h3>
+<p>真实硬件的访存与计算并非二选一饱和，而是部分重叠：当算术强度落在 roofline 拐点附近时，两条腿同时接近饱和，实际时间介于两者之间而非严格取大。取大是一种保守近似，它假设重叠完美，给出的是下界而非估计值。这个近似的误差在拐点附近最大，在远离拐点的两端最小。因此 SOL 分数在算术强度接近 <span class="sym">P_peak</span>/<span class="sym">B_eff</span> 的 kernel 上解释力最弱，分数偏低不代表实现差，可能只是近似误差。</p>
+<p>离散化的第二处在于 <span class="sym">Byte_min</span> 与 <span class="sym">FLOP_min</span> 都是整数计数，而真实流量含非对齐访问、部分缓存行浪费、事务拆分。计数规则给出的是理想对齐下的最小值，实际 DRAM 事务数高于此值，分母偏大、分数偏低。第三处在于 <span class="sym">P_peak</span> 是峰值而非持续算力，长时间运行的热降频使实际可达算力低于峰值，同样压低分数。三处近似叠加，使 SOL 分数系统性偏保守，这是可接受的方向，因为保守分数不会奖励投机实现。</p>
+<table class="mini"><thead><tr><th>近似来源</th><th>方向</th><th>影响最大的区间</th></tr></thead><tbody><tr><td>max 取大忽略重叠</td><td>分子偏小</td><td>算术强度接近拐点</td></tr><tr><td>整数计数忽略事务拆分</td><td>分子偏小</td><td>非对齐、小形状</td></tr><tr><td>峰值算力忽略降频</td><td>分子偏小</td><td>长时、高占用</td></tr></tbody></table>
+<p>代价是分数分辨率：当三处近似同时作用时，一个已经接近最优的实现可能只拿到中等分数，与一个明显次优的实现分数接近，区分度下降。一个具体例子：算术强度恰在拐点的卷积 kernel，取大近似使其 <span class="sym">T_SOL</span> 比真实下界小一截，即便实现已达硬件极限，分数仍显著低于 1；此时应改用 roofline 可达上界作为参照，而不是继续压 SOL 分数。</p>
+
+<h3>五 · 从公式到可复现口径的冻结清单</h3>
+<p>把公式变成可跨论文比较的口径，需要一份冻结清单，逐项声明而非默认。清单至少包含：<span class="sym">B_eff</span> 的取值来源（标称还是实测可达）、<span class="sym">P_peak</span> 的取值来源与精度（FP16/FP32/TF32 分别对应不同峰值）、<span class="sym">Byte_min</span> 的计数规则（融合假设、中间张量落地策略、是否允许重算）、<span class="sym">T_meas</span> 的计时边界与摊销方式、以及是否采用固定开销修正。清单缺项时，分数只能在同一份清单内部比较，不能跨清单比较。</p>
+<p>冻结清单的工程价值在于把“分数不可比”从一句警告变成可操作的检查表。两个 SOL 分数并列时，先比对清单，清单不一致则分数不可比，无论数值多接近。这与批不变性定义是同一类问题：口径不变时分数才有意义，口径变化时分数只是各自口径下的自洽量。批不变性的具体定义不在本部分展开，此处只借用其“口径冻结”的思想。</p>
+<ul>
+<li>声明 <span class="sym">B_eff</span> 与 <span class="sym">P_peak</span> 来源，禁止混用标称与可达。</li>
+<li>声明 <span class="sym">Byte_min</span> 计数规则，融合与重算假设必须显式写出。</li>
+<li>声明 <span class="sym">T_meas</span> 边界、摊销、统计量，三者缺一不可。</li>
+<li>声明是否修正固定开销，修正则给出 <span class="sym">T_launch</span> 与 <span class="sym">T_sync</span> 的标定方法。</li>
+</ul>
+<p>代价是评测流水线的复杂度：每换一个形状族或精度，清单可能都要重写一遍，因为 <span class="sym">P_peak</span> 随精度变、<span class="sym">Byte_min</span> 随融合策略变。一个具体例子：同一 Transformer 层在 FP16 与 FP8 下 <span class="sym">P_peak</span> 不同，若沿用同一份清单而不更新峰值来源，两个精度的 SOL 分数会被错误地放在同一标尺上比较，得出“FP8 实现更差”的错误结论，而实际差异全部来自分母的峰值口径。</p>
+
+<h3>六 · 推导关键步的边界条件</h3>
+<p>推导 <span class="sym">T_SOL</span> 的关键步只有两步：先分别算出访存下界与计算下界，再取大。第一步隐含“算法必需”的语义，即 <span class="sym">Byte_min</span> 与 <span class="sym">FLOP_min</span> 是算法层面的最小值，不是某个具体实现的最小值。这意味着 <span class="sym">T_SOL</span> 描述的是“任何正确实现都不可能快于此时刻”，而不是“最优实现的实际时间”。两者之间的差距就是实现可优化的空间，SOL 分数衡量的正是这个空间被填了多少。</p>
+<p>第二步取大的边界条件是两条腿的下界必须用同一份硬件状态计算：<span class="sym">B_eff</span> 与 <span class="sym">P_peak</span> 必须来自同一工况（同一时钟、同一温度、同一占用假设）。若 <span class="sym">B_eff</span> 取自空载实测而 <span class="sym">P_peak</span> 取自标称，取大就变成在两个不同工况下比较，结果不可解释。边界条件还包括：<span class="sym">Byte_min</span> 与 <span class="sym">FLOP_min</span> 必须对应同一份算法语义，不能一个按融合算、一个按非融合算。</p>
+<div class="formula">$$T_{\text{SOL}}=\max\left(\frac{\text{Byte}_{\text{min}}^{\text{(rule)}}}{B_{\text{eff}}^{\text{(cond)}}},\;\frac{\text{FLOP}_{\text{min}}^{\text{(rule)}}}{P_{\text{peak}}^{\text{(cond)}}}\right)$$</div>
+<p>代价是边界条件一旦松动，分数就失去下界语义：若 <span class="sym">Byte_min</span> 用了非融合规则而 <span class="sym">T_meas</span> 来自融合实现，分子偏大、分母偏小，分数虚高，且虚高部分无法归因到实现质量。一个具体例子：逐 kernel 评测的中间张量往返被计入 <span class="sym">Byte_min</span>，但被测实现实际做了跨 kernel 融合，此时 <span class="sym">T_meas</span> 不含中间张量流量而 <span class="sym">T_SOL</span> 含，分数被人为抬高，抬高量恰好等于被融合掉的中间张量往返时间。工程判断是：融合实现必须配套融合口径的 <span class="sym">Byte_min</span>，逐 kernel 实现必须配套逐 kernel 口径，混搭产生的分数不可用于任何跨实现比较。</p>
+
+<h3>当 SOL 越过 1：口径边界、失效条件与系统代价</h3>
+<p>公式本身只有两个分支，但每个分支的分子都是“假设出来的最小值”，分母则是“测出来的时间”，于是分数的可信度完全取决于两端的口径是否被钉死。先看 <span class="sym">Byte_min</span>：它到底是“算法语义上必须从 DRAM 读写的字节”，还是“这个 kernel 实现实际发生的字节”？若允许融合，中间张量可以完全不落 DRAM，Byte_min 会显著下降；若按逐算子独立计数，中间张量必须来回搬运，Byte_min 抬高。两种口径下同一个算子可以给出差异明显的 SOL 分数，而公式里没有任何一项记录这个选择。同理 <span class="sym">FLOP_min</span> 是否计入 padding 到 tile 边界的无效计算、是否把归约与索引算术算进去，也直接改变分母。结论是硬的：跨论文比较 SOL 之前，必须先对齐“是否计中间张量、是否允许融合、是否计 padding”这三条计数规则，否则分数只是各自口径下的自洽量，不具备横向可比性。</p>
+<p>第二个边界来自 <span class="sym">T_SOL</span> 的构造方式。它取带宽下界与算力下界的较大者，隐含假设是“计算与访存可以完美重叠、且没有任何不可消除的固定开销”。但真实 kernel 至少还有 launch 延迟与必要的同步/规约开销，这部分不随问题规模缩小而消失。于是当形状很小时，<span class="sym">T_meas</span> 被固定开销主导，而 <span class="sym">T_SOL</span> 仍按字节或 FLOP 线性缩小，比值 <span class="sym">SOL = T_SOL / T_meas</span> 就可能越过 1。这不是“实现超越了硬件”，而是口径漏项：分母里混进了模型未建模的常数项。工程上应把 <span class="sym">T_meas</span> 明确声明为“含 launch 摊销”还是“纯 kernel 执行”，并把小形状上的超 1 视为口径告警而非性能信号。</p>
+<div class="formula">$$\text{SOL}=\frac{T_{\text{SOL}}}{T_{\text{meas}}},\qquad T_{\text{SOL}}=\max\left(\frac{\text{Byte}_{\text{min}}}{B_{\text{eff}}},\;\frac{\text{FLOP}_{\text{min}}}{P_{\text{peak}}}\right)$$</div>
+<p>推导的关键步其实只有一处：把“最优实现”抽象成两个可计算的资源下界，再用 max 取瓶颈。这一步把连续的性能问题压成了离散的二选一，代价是丢失了重叠信息——当 Byte_min/B_eff 与 FLOP_min/P_peak 接近时，真实 kernel 的 roofline 拐点附近既有访存也有计算，max 给出的下界偏乐观，SOL 分数会系统性偏高。离散化还体现在 <span class="sym">B_eff</span> 与 <span class="sym">P_peak</span> 的取值上：它们通常是器件峰值而非该形状可达的有效值，小形状下有效带宽因并行度不足而远低于峰值，于是 T_SOL 被低估、分数被高估。举例来说，一个逐元素算子在大形状上是纯带宽题，SOL 接近 1 尚可信；同一算子在小形状上 launch 开销占比上升，分数轻易越过 1，此时应改用固定开销修正后的口径，而不是宣称实现超过硬件极限。</p>
+<table class="mini"><thead><tr><th>口径选择</th><th>对 T_SOL 的影响</th><th>典型失效场景</th></tr></thead><tbody><tr><td>允许融合、不计中间张量</td><td>Byte_min 下降，T_SOL 变小</td><td>跨论文比较时分数虚低</td></tr><tr><td>逐算子独立计数</td><td>Byte_min 抬高，T_SOL 变大</td><td>融合实现被误判为低效</td></tr><tr><td>T_meas 不含 launch 摊销</td><td>分母偏小，SOL 偏大</td><td>小 kernel 上 SOL &gt; 1</td></tr></tbody></table>
+<p>系统代价落在评测流水线而非单个 kernel：固定计数规则意味着需要一套与实现解耦的“算法必需量”提取器，它要能从计算图中判定哪些中间张量可消去、哪些 FLOP 属于语义必需，这本身引入编译期分析成本与误判风险；而声明 launch 摊销口径则要求测量端区分冷热启动、固定迭代次数与同步点，增加了测量脚本的复杂度与 token 级的报告篇幅。更隐蔽的代价是优化目标被口径牵引：若评分默认允许融合，agent 会倾向于生成融合 kernel 以压低 Byte_min，即便该融合在真实端到端中因寄存器压力或 occupancy 下降而变慢。因此 SOL 归一化只能作为“同口径下的相对排序器”，一旦跨口径或跨形状聚合，就必须把计数规则、T_meas 摊销方式与固定开销修正一并写入评分元数据，否则分数越接近 1 越难判断它是真实逼近下界还是口径红利。</p>
+<p class="paper-line">对应：theory/th-sol-normalized · 第 2/5 部分</p>

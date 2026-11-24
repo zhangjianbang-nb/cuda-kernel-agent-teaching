@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2506-09092",
+ "_domain": "cuda",
+ "_title": "CUDA-LLM: LLMs Can Write Efficient CUDA Kernels",
+ "_abstract_only": true,
+ "title_zh": "CUDA-LLM: LLMs Can Write Efficient CUDA Kernels",
+ "background": "这篇论文发表于 2025 年（arXiv:2506.09092），属于 基准与可信评测 方向。它要回答的问题是：Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation.",
+ "problem": "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation. However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains",
+ "core_idea": "However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains a complex challenge. In this work, we explore the use of LLMs for the automated generation and optimiz",
+ "architecture": "In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal of producing high-performance GPU kernels that fully exploit the underlying hardware. To address this challenge, we propose a novel framework called \\textbf{Feature Search and Reinf",
+ "pipeline": [
+  "读取《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（However, generating the code which is deeply hardware-specif）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：To address this challenge, we propose a novel framework called \\textbf{Feature Search and Reinforcement (FSR)}. FSR jointly optimizes compilation and functional correctness, as well as the runtime performance, which are validated through extensive and diverse ",
+ "walkthrough": "一次完整流程：先读取《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal of producing high-performance GPU kernels that fully exploit the underlying hardware. To address this",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "FSR jointly optimizes compilation and functional correctness, as well as the runtime performance, which are validated through extensive and diverse test cases, and measured by actual kernel execution latency on the target GPU, respectively. This approach enables LLMs not only to generate syntactical",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation.",
+  "However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains a ",
+  "In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal of producing high-performance GPU kernels"
+ ],
+ "limitations": [
+  "《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "To address this challenge, we propose a novel framework called \\textbf{Feature Search and Reinforcement (FSR)}. FSR jointly optimizes compilation and functional correctness, as well as the runtime performance, which are ",
+ "summary": "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation. However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains a complex challenge. In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal",
+ "data_recipe": [
+  "评测负载：《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation.",
+  "However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains a complex challenge.",
+  "In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal of producing high-performance GPU kernels that fully exploit the underlying hardware.",
+  "To address this challenge, we propose a novel framework called \\textbf{Feature Search and Reinforcement (FSR)}.",
+  "FSR jointly optimizes compilation and functional correctness, as well as the runtime performance, which are validated through extensive and diverse test cases, and measured by actual kernel execution latency on the targe",
+  "This approach enables LLMs not only to generate syntactically and semantically correct CUDA code but also to iteratively refine it for efficiency, tailored to the characteristics of the GPU architecture.",
+  "We evaluate FSR on representative CUDA kernels, covering AI workloads and computational intensive algorithms.",
+  "Our results show that LLMs augmented with FSR consistently guarantee correctness rates."
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

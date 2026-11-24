@@ -1,0 +1,65 @@
+<h3>一 · 题干的三层结构：从“加速比怎么算”到“什么时候不可比”</h3>
+<p>这道题表面只问一个公式，实际包含三层递进的考点，拆题时必须逐层识别。第一层是定义层：<strong>加速比（speedup）在 PTXBench 的报告口径中究竟以什么为分子、什么为分母</strong>。第二层是算术层：给定基线时延 T0 与候选时延 T1，写出可计算表达式，并说明单位、测量对象（是单次 kernel 调用还是端到端迭代）以及是否取多次测量的统计量。第三层是语义层，也是这道题真正的区分点：<strong>论文给出的这个数字在什么条件下不可比</strong>——即同一 speedup 数值在不同架构、不同 PTX 版本、不同基线选择下是否还能横向比较。</p>
+<p>很多读者会把这道题当成“背公式”，于是只写 <span class="formula">$$ \text{speedup} = T_0 / T_1 $$</span> 就交卷。但题干里“结合论文中的口径说明这个数字在什么条件下不可比”这一句，才是命题人埋的钩子：它要求答题者理解 PTXBench 的评测对象是<strong>架构特定（architecture-specific）的 PTX</strong>，因此加速比不是跨平台通用货币，而是被绑定在具体 SM 架构、指令集版本与基线实现上的条件量。答题路径应当是：先给公式，再给口径（谁做 T0、谁做 T1、怎么测），最后给不可比条件的清单。</p>
+
+<h3>二 · 公式本身：分子分母的选取决定了一切</h3>
+<p>设基线实现（baseline）在给定问题规模与硬件上的时延为 T0，候选实现（candidate，即 LLM/agent 生成或改写后的 kernel）在同一条件下的时延为 T1，则加速比的标准定义为：</p>
+<div class="formula">$$ \text{speedup} = \frac{T_0}{T_1} $$</div>
+<p>这个式子看似无歧义，但工程上必须补齐四个下标才能落地：<strong>测什么</strong>（kernel 本体还是含 launch 开销的端到端）、<strong>在哪测</strong>（哪一代 SM、什么 clock、是否锁频）、<strong>怎么聚合</strong>（单次、中位数还是最优值）、<strong>基线是谁</strong>（PyTorch eager、torch.compile、cuBLAS/cuDNN 库调用，还是手写 CUDA 参考实现）。PTXBench 的语境下，T1 对应的是由 LLM 依据架构特定 PTX 生成或优化的 kernel，T0 则是对照实现；两者必须在同一输入形状、同一 dtype、同一 stream 配置下测量，否则分子分母不同源，比值失去意义。</p>
+<p>代价维度要在这里点明：加速比是一个<strong>无量纲比值</strong>，它把绝对时延信息压缩掉了。一个 3× 的加速比可能来自 T0 很慢（基线选得弱），也可能来自 T1 极快（真优化）；单看比值无法区分。因此报告 speedup 时必须同时给出 T0、T1 的绝对值与测量方法，否则读者无法判断这个比值的含金量。这就是为什么题目要求“结合论文口径”——口径就是这套下标约定。</p>
+
+<h3>三 · 口径拆解：PTXBench 报告加速比时的四个约定</h3>
+<p>结合论文的定位（面向 GPU kernel 优化、以架构特定 PTX 为优化载体），其加速比口径可拆成四条约定，答题时应逐条对应：</p>
+<ul>
+<li><strong>基线约定</strong>：T0 取自一个固定参照实现，而非“任意更慢的版本”。若基线可被替换成更弱的实现，speedup 就会被注水；因此口径要求基线在论文内是统一且公开的。</li>
+<li><strong>架构约定</strong>：T1 是在<strong>特定 SM 架构</strong>上编译并执行的 PTX 所对应的时延。PTX 是虚拟指令集，同一段 PTX 在不同架构上经 ptxas 生成不同 SASS，寄存器分配、指令调度、occupancy 都不同，故 T1 是架构绑定的。</li>
+<li><strong>测量约定</strong>：时延需在剔除启动抖动、固定输入规模的条件下取得，通常取多次迭代的稳定统计量而非单次冷启动值。</li>
+<li><strong>任务约定</strong>：T0 与 T1 必须求解同一算子、同一 shape、同一数值语义（含边界条件与容差），否则是不同题目的时延相除。</li>
+</ul>
+<p>这四条约定共同构成“可比性前提”。答题时若只写公式不写这四条，等于没回答题干后半句。可以用一个具体例子说明：同一个 LayerNorm 类 kernel，在 A 架构上 T0=若干微秒、T1 为其一半，得到 2×；把同一份 PTX 搬到 B 架构，因 warp 调度与 shared memory 容量差异，T1 可能不再是一半，此时 2× 这个数字就不能跨架构引用。这里不给出具体微秒数，因为论文未提供可引用的绝对值，只做定性说明。</p>
+
+<h3>四 · 不可比条件的判定清单（答题的核心得分点）</h3>
+<p>题目问“在什么条件下不可比”，本质是问：哪些变量一旦改变，T0/T1 的比值就不再承载相同语义。可整理为如下判定表，答题时按表逐项展开即可覆盖得分点：</p>
+<table class="mini">
+<thead>
+<tr><th>变量</th><th>改变后发生什么</th><th>对 speedup 的影响</th></tr>
+</thead>
+<tbody>
+<tr><td>SM 架构代际</td><td>同一 PTX 经 ptxas 生成不同 SASS，occupancy 与指令吞吐变化</td><td>分子分母同时漂移，比值不可跨架构引用</td></tr>
+<tr><td>PTX 指令集版本</td><td>新版本指令（如更宽的 load、异步拷贝）在旧架构不可用或降级</td><td>T1 的可达下界改变，比值失真</td></tr>
+<tr><td>基线实现选择</td><td>换用更强/更弱的 T0（库调用 vs 手写）</td><td>比值可被人为放大或压缩</td></tr>
+<tr><td>输入规模与 dtype</td><td>shape 变化导致 occupancy、tiling 策略失效</td><td>T0、T1 的最优点不同步，比值非单调</td></tr>
+<tr><td>测量口径</td><td>是否含 launch 开销、是否锁频、聚合方式不同</td><td>小 kernel 上 launch 开销占比高，比值被稀释</td></tr>
+</tbody>
+</table>
+<p>其中最关键的一条是<strong>架构绑定</strong>：PTXBench 的题眼就在“architecture-specific PTX”，它意味着优化是<strong>针对某代 SM 的指令选择与调度</strong>做的，换架构后同一份 PTX 的收益不再成立。第二条关键是<strong>基线漂移</strong>：若论文内不同任务的 T0 来自不同强度的参照实现，则跨任务的 speedup 平均值没有物理意义，只能同任务内比较。答题时应明确指出：<strong>speedup 是条件量，不是标量指标</strong>，引用它必须连同（架构、基线、shape、测量法）四元组一起引用。</p>
+
+<h3>五 · 解题路径与需要调用的公式</h3>
+<p>给出可执行的答题路径，按顺序四步：</p>
+<ul>
+<li><strong>第一步，写定义式</strong>：<span class="formula">$$ \text{speedup} = T_0 / T_1 $$</span>，并声明 T0 为基线时延、T1 为候选时延，二者同 shape、同 dtype、同架构。</li>
+<li><strong>第二步，写口径</strong>：说明 PTXBench 中 T1 对应架构特定 PTX 编译产物，T0 为论文统一参照实现，测量取稳定统计量。</li>
+<li><strong>第三步，写不可比条件</strong>：按上表四元组展开，重点讲架构代际与基线选择。</li>
+<li><strong>第四步，给工程判断</strong>：指出报告 speedup 时应附绝对时延与测量配置，否则比值不可复核。</li>
+</ul>
+<p>若题目要求进一步量化“不可比”的程度，可调用一个辅助公式刻画架构迁移后的收益衰减：设原架构上 T1 相对 T0 的改善量为 Δ = T0 − T1，迁移到新架构后候选时延变为 T1′，则迁移后加速比为 <span class="formula">$$ \text{speedup}' = T_0' / T_1' $$</span>，其中 T0′ 也须在新架构上重测；只有当 T0′ 与 T0 同源、T1′ 与 T1 同源时，两个 speedup 才可并列讨论。这一步的代价是<strong>测量成本翻倍</strong>：每换一个架构就要重跑基线与候选两组 benchmark，编译时间与 GPU 机时都增加，这也是为什么论文通常只在有限架构上报告比值。</p>
+<p>再补一个正确性代价的提醒：加速比的分母 T1 只有在候选 kernel 通过正确性 oracle（数值容差、边界用例）后才有意义。若候选算错却更快，T1 虽小但不可采信；因此口径中隐含“先验证后计时”的顺序，答题时点一句即可，不必展开 oracle 细节（那是另一节的主题）。</p>
+
+<h3>六 · 落到机制：为什么这个比值必须带“架构标签”</h3>
+<p>把整道题收束到一个机制上：PTX 是<strong>虚拟指令集</strong>，它描述的是“做什么”而非“在哪个 SM 上以多少周期做”。同一段 PTX 进入 ptxas 后，寄存器压力决定 occupancy，指令混合决定 issue 槽位利用率，shared memory 与 async copy 的使用决定流水重叠度——这些都由目标架构的硬件参数决定。因此 T1 不是 PTX 文本的函数，而是 <strong>T1 = f(PTX, arch, shape, 测量法)</strong> 的多元函数。speedup 作为 T0/T1，自然继承了这个多元依赖。答题时若能把这句话写出来，就已经把“不可比”的根因说透了：不是数字算错了，而是<strong>分子分母各自依赖的架构变量没有被固定</strong>。</p>
+<p>工程判断上，这意味着阅读 PTXBench 一类工作报告时，正确的引用方式是“在某架构、某基线、某 shape 下取得某比值”，而不是“该方法平均加速 N 倍”。前者可复核、可复现，后者是把条件量误当标量，属于口径污染。这也是本题真正的考点：公式一行，口径一段，不可比条件一张表，三者缺一不可。</p>
+
+<h3>加速比口径的边界：T0 与 T1 在什么条件下才可比</h3>
+<p>PTXBench 报告的核心指标是相对加速比，其定义本身并不复杂：若基线 kernel 的实测时延为 T0、候选 kernel 为 T1，则 speedup = T0 / T1。真正决定这个数字含义的不是公式，而是 T0 与 T1 的测量契约——两者是否在同一 GPU、同一驱动与 PTX 版本、同一输入 shape 与 dtype、同一 warmup 与重复次数、同一计时后端（CUDA event 还是 wall clock）、同一 stream 与是否含 launch 开销下取得。PTXBench 的口径建立在 architecture-specific PTX 之上：候选 kernel 的 PTX 是针对目标 SM 架构生成或改写的，因此 T1 的有效性被绑定在特定架构上；一旦把该 PTX 搬到另一代 SM，JIT 会重新编译甚至拒绝加载，此时 T1 不再是同一对象的时延，比值失去意义。换言之，加速比是一个四元组 (T0, T1, 架构, 输入分布) 的函数，脱离后两项谈数字就是不可比的。</p>
+<p>失效条件可以按三类拆开。其一是基线选择：T0 取的是 PyTorch eager 参考实现、编译后的 inductor 版本、还是厂商库（cuBLAS/cuDNN）调用，量级差异极大；PTXBench 的对比若以框架级参考为 T0，则加速比中混入了框架调度与算子融合的收益，不能全部归因于 PTX 级优化。其二是计时边界：是否把 kernel launch、host-device 同步、内存分配计入 T1，会让小 kernel 的比值被 launch 开销主导——当 T1 已接近 launch 时延下限时，继续优化 kernel 主体对 speedup 的边际贡献趋零，此时报告的高加速比往往来自把 T0 测成了含同步的端到端路径。其三是正确性前提：加速比只在候选通过正确性 oracle（数值容差、边界 shape、NaN/Inf 行为）时才有资格被报告，未经校验的 T1 可能因跳过同步、缩小 grid、省略边界分支而“变快”，这类数字必须被剔除而非平均。</p>
+<p>系统代价体现在评测管线本身。为得到可比的 T0/T1，需要对每个 case 做多轮重复并取中位数或最小值，warmup 轮数不足会让首轮 JIT 编译时间污染 T1；PTX 路径还额外引入一次架构相关编译，编译时间随 unroll 与寄存器压力上升，在候选数量大时构成可观的评测墙钟成本。显存侧，若为公平比较而固定 occupancy 或 shared memory 预算，候选可能因寄存器溢出而 spill 到 local memory，带宽代价直接反映在 T1 上，却与算法优劣无关。一个具体例子：同一 reduction kernel 在固定 block 数下，PTX 手工展开带来更高 ILP，但寄存器用量跨过阈值导致 occupancy 从若干 warp 降到更低档，T1 反而劣于 T0——若不记录 occupancy 与 spill 统计，这个负加速比会被误读为优化失败，而实际是资源约束下的口径问题。</p>
+<div class="formula">$$\text{speedup}=\frac{T_0}{T_1},\qquad \text{可比条件}=\{\text{same SM arch},\ \text{same shape/dtype},\ \text{same timing scope},\ \text{oracle pass}\}$$</div>
+<table class="mini"><thead><tr><th>口径变量</th><th>对 speedup 的影响</th><th>不可比时的表现</th></tr></thead><tbody><tr><td>基线层级（eager / inductor / 厂商库）</td><td>改变 T0 量级</td><td>跨论文数字直接横向比较失真</td></tr><tr><td>计时是否含 launch 与同步</td><td>小 kernel 下主导 T1</td><td>加速比虚高，随 shape 缩小而放大</td></tr><tr><td>目标 SM 架构</td><td>决定 PTX 是否可加载</td><td>跨代迁移后 T1 需重编译，比值失效</td></tr><tr><td>正确性 oracle</td><td>决定 T1 是否合法</td><td>跳过同步/边界的候选被计入均值</td></tr></tbody></table>
+<p>因此读 PTXBench 的加速比时，应先追问三件事：T0 的层级是否与你的部署路径一致、T1 的计时边界是否排除了 launch 与 JIT、候选 PTX 的架构绑定是否与目标机器匹配。只有三者对齐，T0/T1 才是一个可迁移的工程判断；否则它只是一个在特定契约下成立的局部观测，适合作为优化方向的信号，不适合作为跨架构、跨基线的性能承诺。</p>
+
+<h3>加速比口径的边界：T0 是谁的 T0</h3>
+<p>PTXBench 一类基准里，speedup 的算式本身没有歧义：基线时延 T0、候选时延 T1，则 <span class="formula">$$\mathrm{speedup}=\frac{T_0}{T_1}$$</span> 但这个比值是否可比，几乎完全由 T0 的构造方式决定。工程上要追问三件事：T0 是框架算子（cuBLAS/cuDNN/Triton 参考实现）还是手写 CUDA 参考核？T0 与 T1 是否在同一 GPU、同一架构、同一 dtype 与同一 shape 下测得？计时是否包含 launch 开销、是否做了 warmup 与同步。任一条不满足，分子分母就不再是同一物理量，比值退化为“两个不同实验的时延相除”。论文口径的关键在于：它报告的是相对给定基线的加速，而非相对硬件峰值的效率，因此跨条目、跨架构横向比较加速比没有意义。</p>
+<p>失效条件集中在三处。其一，shape 依赖：小 shape 下 T1 的时延被 launch 与 Python 侧开销主导，T0/T1 趋近 1，加速比被“稀释”，此时应改看 kernel-only 时间或 roofline 位置而非端到端比值。其二，基线未调优：若 T0 取自未做 tiling/向量化的朴素实现，加速比虚高，不能作为“接近 SOL”的证据。其三，架构错配：PTX 是架构相关的，为某一代 SM 生成的指令序列在另一代上可能寄存器压力或 occupancy 不同，T1 的可移植性不进入 speedup 公式，却是部署代价。</p>
+<p>系统代价要单独记账。候选核的编译时间（PTX 生成、ptxas 到 SASS、cubin 加载）不计入 T1，却计入端到端收益；一次 autotune 搜索若枚举 N 个配置，代价是 N 次编译加 N 次计时，token 与 wall-clock 都随 N 线性增长。正确性侧同样有代价：每个候选需与 T0 做数值比对，容差随 dtype 收紧，fp32 累加顺序变化会引入偏差，验证成本随时延预算一起膨胀。</p>
+<table class="mini"><thead><tr><th>情形</th><th>speedup 读数</th><th>可比性判断</th></tr></thead><tbody><tr><td>同架构、同 shape、基线已调优</td><td>可信</td><td>可作条目内结论</td></tr><tr><td>小 shape、launch 主导</td><td>趋近 1</td><td>需换 kernel-only 口径</td></tr><tr><td>基线为朴素实现</td><td>虚高</td><td>不可称接近 SOL</td></tr><tr><td>跨架构复用 PTX</td><td>未定义</td><td>需重测 T1</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-p42 · 第 1/2 部分</p>

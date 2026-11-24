@@ -1,0 +1,8 @@
+# QA screenshots (regenerated locally, not part of the published site)
+site/qa/
+
+__pycache__/
+*.pyc
+content/gen-*.log
+*.bak
+.DS_Store

@@ -1,0 +1,50 @@
+<h3>一 · 论文要解决的问题：隐式启发式与试验-错误循环</h3>
+<p>KernelClaw 的出发点不是“LLM 能不能写 CUDA”，这在 KernelBench 系工作里已经被反复回答过；它盯住的是另一个更工程化的裂缝：现有 LLM kernel 优化流水线把优化策略交给模型内部<strong>隐式学到的启发式</strong>。论文摘要的原话是，这些流水线 “rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies”，后果是 “inefficient trial-and-error and weakly interpretable optimizations”。这句话拆开看是三个可观测的工程症状：其一，模型在同一个算子上反复尝试同一种无效变换（例如对已经访存受限的 kernel 继续加 shared memory 分块），因为没有任何显式记录告诉它“这条路走过、失败了、失败原因是 bank conflict 而非 occupancy”；其二，优化决策不可解释，工程师无法判断某次加速来自 tiling、向量化还是 launch 配置，也就无法把成功经验迁移到相邻算子；其三，搜索预算被摊薄在大量重复回退上，编译-运行-profile 的每一轮都付出真实时延与 token 成本。</p>
+<p>把这个问题形式化，可以把一次 kernel 优化会话看成在候选空间 <span>\(\mathcal{K}\)</span> 上的序列决策：给定参考实现 <span>\(K_0\)</span> 与输入分布 <span>\(\mathcal{D}\)</span>，agent 在第 <span>\(t\)</span> 轮提出候选 <span>\(K_t\)</span>，经编译、正确性门与计时后得到反馈 <span>\(f_t=(\text{compile},\text{pass},T_t,\text{profile}_t)\)</span>。隐式启发式意味着 <span>\(K_{t+1}\sim p_\theta(\cdot\mid K_0,f_{\le t})\)</span> 中没有任何结构化的“专家知识”项，模型只能靠上下文窗口里有限的历史自己归纳。窗口一满，早期失败信息被截断，重复回退就发生了。KernelClaw 的核心主张正是把这个缺失项补上：用 “expert optimization knowledge that is aware of task trajectories” 替代隐式启发式。注意 “task trajectories” 这个措辞——知识不是静态的算子手册，而是与具体任务轨迹绑定的、可检索的经验条目。</p>
+<p>代价方面，这一转向的直接收益是减少无效编译轮次，但引入的是<strong>记忆检索与维护开销</strong>：每次决策前要查询长期记忆、写入短期记忆，检索本身消耗 token 与一次额外的模型调用；记忆条目若质量不高，会把错误经验固化成先验，比无记忆更糟。这是本片段要反复回到的工程张力。</p>
+
+<h3>二 · 核心思想：双层记忆把“试过什么”变成一等公民</h3>
+<p>论文给出的方法一句话是：“a multi-agent framework with a dual-level memory architecture”，并且 “KernelClaw operates by coordinating agents with long-term memory of reusable expert knowledge and short-term memory to prevent repetitive backtracking”。这里有两个必须分清的东西，它们不是同一份缓存的两种粒度，而是承担不同职责：</p>
+<ul>
+<li><strong>长期记忆（long-term memory）</strong>：存放可复用的专家优化知识。它的读者是“未来遇到相似任务的其他 agent”，因此条目必须是可迁移的——例如“该算子访存受限，优先考虑向量化加载与合并访问，而非提高 occupancy”“该 shape 下 tile 尺寸超过寄存器预算会 spill”。它跨任务、跨会话存活，是知识沉淀层。</li>
+<li><strong>短期记忆（short-term memory）</strong>：存放当前任务轨迹内的尝试与结果，职责被论文明确写成 “prevent repetitive backtracking”。它的读者是“同一任务的下一次决策”，因此条目是局部的、带失败原因的：哪次变换、编译是否通过、正确性门是否过、时延变化方向、profile 指出的瓶颈。</li>
+</ul>
+<p>两者组合起来，等于把原本压在 LLM 上下文里的隐式历史，外化成两个可检查、可编辑、可审计的存储。工程上的关键差别在于：短期记忆的写入是<strong>强制</strong>的（每次试验后都要记，否则回退防护失效），长期记忆的写入是<strong>有选择的</strong>（只有被验证为可复用的知识才晋升，否则记忆会被噪声污染）。这个晋升判据论文摘要未展开，但它决定了系统的上限：晋升太松，长期记忆退化成失败日志的堆砌；晋升太严，跨任务迁移不发生，等于只有短期记忆。</p>
+<div class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}},\qquad \text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</div>
+<p>上式是这套框架的验收口径，也是记忆写入的判据来源：一个候选只有在正确性门 <span>\(\text{pass}\)</span> 通过、且加速比 <span>\(s\ge 1\)</span> 时才被接受，才配得上进入“成功经验”一侧；否则它进入短期记忆的失败分支，附带失败原因。注意 <span>\(s\ge 1\)</span> 这个阈值本身是一个工程选择：它把“与基线持平”算作接受，意味着系统允许保留中性候选以维持稳定性，但也意味着加速比分布里会混入大量 1.0 附近的样本，汇报平均加速比时必须同时给出分布而非只看均值。</p>
+<p>多 agent 协调的部分，摘要只给了“coordinating agents”这一层，没有给出角色划分与通信拓扑。从工程角度可以确定的约束是：多 agent 共享同一份双层记忆时，写入冲突与读一致性成为新代价——并发生成的候选若同时写短期记忆，需要按任务轨迹分段隔离，否则 A agent 的失败会被 B agent 误读为自身约束。这部分是本片段无法从摘要核验的，属于读全文时要重点找的机制细节。</p>
+
+<h3>三 · 方法机制：一次会话的完整回路</h3>
+<p>把论文口径的流程摊平成可执行回路，是四段：读取参考实现与基准口径 → 生成候选 → 编译并在给定输入上做正确性检查 → 用统一基线测时延与加速比 → 按反馈保留或回退。KernelClaw 在这条回路上插入了两个记忆触点，形成如下伪代码思路：</p>
+<ul>
+<li>初始化：从长期记忆检索与当前算子/形状/瓶颈类型相关的专家条目，注入规划上下文；短期记忆置空。</li>
+<li>第 <span>\(t\)</span> 轮：agent 依据 <span>\((\text{参考实现},\ \text{长期记忆命中项},\ \text{短期记忆摘要})\)</span> 提出候选 <span>\(K_t\)</span>；短期记忆摘要的作用是显式列出“已否决的变换族”，让模型不必重新推导。</li>
+<li>验证：编译（失败即回灌编译错误）、正确性门（对论文给定输入分布比对输出）、计时（统一基线，通常含 PyTorch eager 与 torch.compile）。</li>
+<li>写回：无论成败都写短期记忆；若 <span>\(\text{accept}=1\)</span> 且该变换被判定为可迁移，则候选知识晋升长期记忆。</li>
+<li>终止：达到预算或加速比收敛，输出可复现的最优候选。</li>
+</ul>
+<p>这条回路的性能代价分布在三处，且都不是零：<strong>编译时延</strong>——每轮候选都要过 nvcc/triton 编译，失败编译同样消耗时间，短期记忆防回退的价值正来自砍掉这类重复编译；<strong>计时噪声</strong>——单次 kernel 时延在微秒级，测量需要重复与同步，若计时预算不足，<span>\(s\ge 1\)</span> 的判定会被噪声翻转，导致错误接受或错误回退；<strong>token 成本</strong>——每轮决策要携带长期记忆命中项与短期记忆摘要，记忆越长上下文越贵，这就是为什么短期记忆需要“摘要”而非全文回灌。三者叠加构成每轮试验的真实单价，KernelClaw 的卖点是把单位加速所需的轮数压下来，而不是把单轮变便宜。</p>
+<p>具体例子：以 KernelBench Level 3 一类复合算子为例（如 matmul 后接激活），初始候选常是直译 PyTorch 语义的三重循环或朴素 tiling。第一次 profile 显示访存受限，短期记忆记下“朴素 tiling 失败，瓶颈为 global load”。第二轮若模型仍提出同类 tiling，短期记忆摘要会直接把它标为已否决，迫使模型转向向量化加载或融合激活以削减中间写回。融合这一步在 Level 3 尤其关键——Level 3 的平均加速比只有 1.94x，远低于 Level 1 的 6.98x，说明复合算子的优化空间被语义边界与中间张量写回吃掉，单点 kernel 微调收益有限，真正的杠杆在融合与消除中间缓冲。</p>
+
+<h3>四 · 基准口径：100% 成功率与三级加速比怎么读</h3>
+<p>论文给出的结果口径是：在 KernelBench Levels 1-3 上，KernelClaw 达到 100% 成功率，相对 Torch Eager 的平均加速比分别为 Level 1 的 6.98x、Level 2 的 7.89x、Level 3 的 1.94x，并称优于先前基线。读这三个数必须先钉住口径，否则会误读：</p>
+<table class="mini">
+<thead><tr><th>口径项</th><th>论文给定</th><th>工程含义与代价</th></tr></thead>
+<tbody>
+<tr><td>成功率</td><td>100%（Levels 1-3）</td><td>分母是基准题集合；成功率只说明正确性门全过，不说明每题都加速。<span>\(\text{accept}\)</span> 允许 <span>\(s=1\)</span>，因此 100% 与“全部加速”不是同一命题。</td></tr>
+<tr><td>基线</td><td>Torch Eager（加速比分母）；另含 torch.compile 与论文指定库</td><td>Eager 是最弱基线，对 torch.compile 的比较才是生产相关口径；摘要未给对 compile 的加速比，这是读全文要补的。</td></tr>
+<tr><td>Level 1</td><td>6.98x</td><td>单算子、语义简单，优化空间大；高分主要来自消除框架开销与朴素实现，不代表生产负载同比例收益。</td></tr>
+<tr><td>Level 2</td><td>7.89x</td><td>略高于 Level 1，说明该级算子的朴素基线更差或融合机会更多；跨级比较不能当作难度单调性的证据。</td></tr>
+<tr><td>Level 3</td><td>1.94x</td><td>复合算子，语义边界限制融合，中间张量写回成为带宽税；这一级的数字最接近真实模型里的端到端收益量级。</td></tr>
+<tr><td>输入分布</td><td>按论文口径，摘要未给全部 shape</td><td>shape 特化风险：离线分数在隐藏输入分布上会崩塌，这是 KernelBench 系基准的共性局限。</td></tr>
+</tbody>
+</table>
+<p>三个数字里最值得工程读者注意的是 Level 3 的 1.94x 与 Level 1 的 6.98x 之间的落差。它不是方法退化的证据，而是基准结构的暴露：Level 1 的加速比大量来自“PyTorch eager 在小算子上启动开销与调度开销占比高”，一个手写 kernel 消掉这些开销就能拿到数倍；Level 3 把多个算子串起来，启动开销被摊薄，剩下的全是真实的数据移动与计算，能拿到的倍数自然收敛到个位数。因此把 6.98x 当作“LLM 能带来 7 倍端到端收益”是口径误用；生产端到端收益应当以 Level 3 量级为锚，并且还要再打折——因为真实模型里的算子形状是动态的，而基准里的 shape 是固定的。</p>
+<p>另一个口径陷阱是基线强度。若基线未开 TF32、未用 cuBLAS/cuDNN 最强实现，加速比会被系统性高估；论文声称优于先前基线，但摘要未给出基线的具体配置与库版本，这属于必须核验的项。同理，<span>\(\text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]\)</span> 这个判据在计时噪声下会偏向“接受”，若计时重复次数不足，成功率与平均加速比都会虚高，这是 reward hacking 在评测层的对应物。</p>
+
+<h3>五 · 在 CUDA kernel agent 版图上的位置</h3>
+<p>把 KernelClaw 放进这条版图，它的坐标由两个轴决定。第一个轴是<strong>反馈来源</strong>：从纯静态生成（只靠 prompt 与参考实现）到编译/运行反馈，再到 profile 级反馈（NCU/SASS）。KernelClaw 明确使用编译、运行与 profile 结果回灌，属于执行反馈一侧，与 CudaForge 这类硬件反馈框架同侧，但它不把重心放在反馈信号的解析深度上，而放在反馈的<strong>记忆化</strong>上。第二个轴是<strong>知识来源</strong>：从模型隐式启发式到显式专家知识。KernelClaw 的差异化正在这一轴——它不训练新策略（区别于 Kevin、CUDA-L1、Dr. Kernel 这类多轮 RL 路线），也不做大规模代码进化搜索（区别于 EvoEngineer），而是把“专家优化知识 + 任务轨迹”做成可检索的外部结构，用脚手架而非权重来承载优化策略。</p>
+<p>这个定位带来三个可预期的工程特性。其一，<strong>可解释性</strong>：优化决策可以追溯到某条长期记忆条目或某条短期记忆的否决记录，工程师能审计“为什么这次没做 tiling”，这是纯 RL 策略给不了的。其二，<strong>冷启动成本</strong>：长期记忆从空开始，早期任务没有可复用知识，收益接近无记忆基线；随着任务积累，命中率上升，单位加速所需轮数下降——这条曲线是该方法的核心假设，也是读全文时要找的定量证据。其三，<strong>迁移边界</strong>：长期记忆里的知识若绑定在特定硬件、特定 dtype、特定 shape 上，跨硬件迁移会失效；论文结论只在给定硬件、基线与输入分布上成立，跨 dtype 与跨框架迁移未验证，这是该方法从基准走向生产的主要风险。</p>
+<p>与同批工作的关系可以用一句话各自指路：KernelBench 系给出评测口径与难度分级，是 KernelClaw 的计分板；多轮 RL 系工作在权重里内化优化策略，KernelClaw 则把策略外化到记忆；多 agent 框架系工作（Astra、cuPilot）探索角色分工与策略协调，KernelClaw 的增量在于给这些 agent 配一套双层、带晋升判据的记忆。因此它的贡献不是“又一个多 agent 脚手架”，而是把“试过什么、为什么失败、什么值得复用”从上下文窗口里搬出来，变成可审计的一等公民。</p>
+<p>最后落在机制判断上：KernelClaw 的成败取决于长期记忆的<strong>晋升判据</strong>与短期记忆的<strong>摘要压缩率</strong>这两个未在摘要中展开的参数。晋升判据决定知识沉淀的信噪比，摘要压缩率决定每轮决策的 token 单价与回退防护的召回率；两者共同决定“单位加速所需编译轮次”这条曲线能否随任务数下降。若这条曲线不下降，双层记忆就只是把上下文窗口换了个存储位置，试验-错误循环的单价并未改变——这正是评估这类脚手架时应当首先测量的量，而不是平均加速比的均值。</p>
+<p class="paper-line">对应：papers/paper-2603-10085 · 第 1/2 部分</p>

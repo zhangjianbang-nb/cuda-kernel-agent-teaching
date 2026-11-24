@@ -1,0 +1,77 @@
+<h3>一 · 题干的三层结构：谁在比、比什么、比到哪一步</h3>
+<p>这道题表面只问一个公式，实际把 KernelOPT 这篇工作里最容易混淆的三件事压在同一句话里：加速比的<strong>计算口径</strong>、加速比的<strong>比较对象</strong>、以及加速比数字的<strong>可比性边界</strong>。读题时先把题干拆成三个可独立作答的子问题，否则很容易写出一个正确但答非所问的 <span class="formula-inline">T0/T1</span> 就收笔。</p>
+<p>第一层是“如何计算”。题干已经给了符号约定：基线时延 <span class="formula-inline">T0</span>、候选时延 <span class="formula-inline">T1</span>。这一层考的是你是否知道加速比的分母是候选、分子是基线，以及时延口径必须是同一测量协议下的同一统计量（均值、中位数还是最小值），不能一边用 warmup 后的稳态均值、一边用含首次编译的冷启动时延。</p>
+<p>第二层是“dispatch-aware”这个词落在哪里。KernelOPT 的题眼不在单 kernel 的 microbenchmark，而在<strong>调度感知</strong>：一个 kernel 变快，不等于端到端变快。若候选 kernel 改变了 launch 配置、occupancy 或与相邻 kernel 的重叠关系，单点 <span class="formula-inline">T1</span> 的下降可能被调度空隙、额外的同步或 host 侧 launch 开销吃掉。这一层考的是你能否指出：论文报告的加速比究竟是 kernel-level 还是 end-to-end，两者不可互换。</p>
+<p>第三层是题干里那个“100”。它不是一个可以无条件引用的倍数，而是一个<strong>带条件的观测值</strong>。题目要求你说清“在什么条件下不可比”，本质是考可比性分析：跨硬件、跨基线选择、跨测量协议、跨问题规模、跨是否含调度开销，任意一项不同，100 这个数字就不能与别的加速比并列。答题路径应当是：先给公式，再给口径约束，最后给不可比条件的清单，而不是先抛数字。</p>
+
+<h3>二 · 公式本身与它的三个隐含参数</h3>
+<p>最朴素的写法是：</p>
+<div class="formula">$$\mathrm{speedup} = \frac{T_0}{T_1}$$</div>
+<p>但仅此一行不足以支撑“100”这个量级，因为公式里藏着三个未写出的参数。其一是<strong>基线选择</strong> <span class="formula-inline">T0</span>：是 PyTorch eager 参考实现、是 torch.compile 产物、是 cuBLAS/cuDNN 库调用、还是某个手写 CUDA 版本？同一候选 kernel 对不同基线可以给出差异极大的比值，把不同基线下的加速比放在一张表里比较是无效的。其二是<strong>计时边界</strong>：是否包含 kernel launch、是否包含 host-device 同步、是否包含数据搬运。其三是<strong>统计量</strong>：<span class="formula-inline">T0</span> 与 <span class="formula-inline">T1</span> 是否取自同一轮 warmup 次数、同一重复次数、同一分位数。</p>
+<p>把这三者显式化，可以写成一个更诚实的定义：</p>
+<div class="formula">$$\mathrm{speedup}_{b,m,s} = \frac{\mathrm{stat}_s\big(T_0 \mid b, m\big)}{\mathrm{stat}_s\big(T_1 \mid b, m\big)}$$</div>
+<p>其中 <span class="formula-inline">b</span> 是基线实现，<span class="formula-inline">m</span> 是测量模式（是否含调度/搬运），<span class="formula-inline">s</span> 是统计量。这个写法的作用不是炫技，而是让答题者在给出 100 时被迫交代下标。工程上更常用的等价形式是倒数比值 <span class="formula-inline">T1/T0</span> 表示“剩余时延比例”，以及用 <span class="formula-inline">(T_0 - T_1)/T_0</span> 表示时延削减率——后者在 <span class="formula-inline">T1</span> 接近 0 时会饱和到 1，无法区分 50 倍与 100 倍，因此报告加速比时应坚持用比值而非削减率。</p>
+<p>代价在这里第一次出现：<strong>测量协议本身就是成本</strong>。要把 <span class="formula-inline">T1</span> 测准到能支撑两位数量级的比值，需要足够的重复次数压掉方差；而每次重复若含 host-device 同步，单次测量时延被同步开销主导，反而污染小 kernel 的读数。这就是为什么 dispatch-aware 场景下必须区分“kernel 执行时延”与“launch-to-launch 间隔”：前者用 CUDA event 夹在 kernel 前后，后者用整段迭代墙钟时间除以迭代数。两者算出的 speedup 可以相差一个量级，而题干里的 100 只在其中一种口径下成立。</p>
+
+<h3>三 · 考点清单：这道题真正在测什么</h3>
+<p>把考点逐条列出，答题时按条对应，避免漏项。</p>
+<ul>
+<li><strong>考点 A：比值方向与分母语义。</strong>加速比大于 1 表示候选更快，分母必须是候选时延。写反是最常见的失分点，尤其在中文表述“提升了 100 倍”与“是原来的 1/100”之间来回切换时。</li>
+<li><strong>考点 B：基线不可替换性。</strong>100 这个数字绑定某个特定基线；换基线后同一候选的比值改变，因此不能把不同论文、不同基线的加速比直接排序。</li>
+<li><strong>考点 C：dispatch-aware 的边界。</strong>候选 kernel 的 launch 配置变化会改变调度行为，单 kernel 加速比不自动传递到端到端；需要说明论文报的是哪一级。</li>
+<li><strong>考点 D：测量协议一致性。</strong>warmup、重复次数、同步位置、是否含编译/autotune 时间，必须两侧一致。</li>
+<li><strong>考点 E：可比性条件。</strong>硬件型号、问题规模（shape）、数据类型、是否允许融合、是否含数据布局转换，任一项不同即不可比。</li>
+<li><strong>考点 F：正确性前置。</strong>加速比只在候选通过正确性 oracle 的前提下有意义；一个算错的 kernel 可以无限快，这个比值不构成工程结论。</li>
+</ul>
+<p>这六条里，A 与 D 是公式层面的，B、C、E 是可比较层面的，F 是前置条件。答题结构建议按“公式—口径—可比性—前置正确性”推进，每一条都给一句可检验的判断，而不是罗列名词。</p>
+
+<h3>四 · 解题路径：从题干到可辩护的答案</h3>
+<p>第一步，写出主公式并标注下标，即第二节的 <span class="formula-inline">speedup_{b,m,s}</span>。第二步，明确 <span class="formula-inline">T0</span> 与 <span class="formula-inline">T1</span> 的计时边界：给出“CUDA event 夹取单次 kernel 执行”与“整段迭代墙钟除以次数”两种口径，并指出论文的 100 属于哪一种需要读者自行核对，不能默认。第三步，给出不可比条件的判定规则，可以写成一个简单的伪代码式检查：</p>
+<ul>
+<li>若 <span class="formula-inline">b</span> 不同 → 不可比；</li>
+<li>若 <span class="formula-inline">m</span> 不同（一方含 launch/搬运，一方不含）→ 不可比；</li>
+<li>若 <span class="formula-inline">s</span> 不同（均值 vs 最小值）→ 弱可比，需重测；</li>
+<li>若 shape/dtype/硬件不同 → 不可比，除非同时报告 roofline 位置；</li>
+<li>若候选未过正确性 oracle → 比值无效。</li>
+</ul>
+<p>第四步，把 100 放进这套规则里定位：它是一个在特定基线、特定测量模式、特定问题规模下取得的比值，因此只能与<strong>同一下标三元组</strong>的加速比并列。若题目要求你评价“100 是否可信”，正确的回答不是质疑数字本身，而是追问它的下标是否被完整报告；下标缺失时，该数字只能作为定性证据，不能进入横向比较表。</p>
+<p>这条路径的代价在于：完整报告下标三元组会显著增加实验与写作成本。每个候选 kernel 要在至少两种测量模式下重测，warmup 与重复次数要足以让方差小于比值的不确定度；对于两位数量级的加速比，分母 <span class="formula-inline">T1</span> 很小，绝对误差被放大，重复次数不足会让 100 变成 80 或 130。这是测量成本，不是理论成本，但在 agentic search 场景下它会直接转化为 token 与编译时间预算：每次候选评估都要跑完整计时协议，搜索轮数越多，计时开销占比越高。</p>
+
+<h3>五 · 一个具体例子：同一候选、三种口径、三个比值</h3>
+<p>设某算子基线为 PyTorch eager 实现，候选为一个手写 CUDA kernel，且候选改变了 block 尺寸与 grid 配置，使 occupancy 上升但引入了额外的尾块处理。三种口径下的读数关系可以定性描述为：</p>
+<table class="mini">
+<thead>
+<tr><th>口径</th><th>分子 T0 含义</th><th>分母 T1 含义</th><th>比值特征</th></tr>
+</thead>
+<tbody>
+<tr><td>纯 kernel 执行（event 夹取）</td><td>基线 kernel 单次执行</td><td>候选 kernel 单次执行</td><td>最大，排除 launch 与搬运</td></tr>
+<tr><td>含 launch 的迭代墙钟</td><td>基线整段迭代</td><td>候选整段迭代</td><td>较小，launch 开销摊薄后仍占一定比例</td></tr>
+<tr><td>端到端含数据准备</td><td>基线全流程</td><td>候选全流程</td><td>最小，布局转换与同步被计入</td></tr>
+</tbody>
+</table>
+<p>这个例子说明：题干里的 100 若取自第一行，它就不能与取自第三行的加速比并列；而 dispatch-aware 的工程意义恰恰在第二、三行——候选 kernel 变快但 launch 配置改变导致调度空隙增大时，第二行的比值可能明显低于第一行。答题时若能指出“100 的可比性取决于它落在哪一行”，就已经命中了本题的核心考点。</p>
+<p>进一步，若候选引入了额外的尾块处理分支，纯 kernel 时延下降但分支导致的 warp 发散会在小 shape 上放大；此时第一行比值随 shape 变化，而论文若只报一个固定 shape 下的 100，则该数字对别的 shape 不具外推性。这是可比性条件 E 的具体化，也是 roofline 视角下必须交代的位置：候选是更接近带宽上限还是更接近算力上限，决定了它的加速比能否在别的 shape 上复现。</p>
+
+<h3>六 · 需要调用的公式与它们的适用边界</h3>
+<p>除主公式外，答题时可能被要求调用以下关系，需明确各自边界，不可混用。</p>
+<div class="formula">$$\mathrm{speedup} = \frac{T_0}{T_1}, \qquad \mathrm{reduction} = 1 - \frac{T_1}{T_0}$$</div>
+<p>削减率在 <span class="formula-inline">T1 \ll T0</span> 时趋近 1，无法区分高倍加速，因此报告大倍数时必须用比值。若题目追问“100 倍意味着什么”，可补充时延占比：<span class="formula-inline">T_1/T_0 = 1/100</span>，即候选仅占基线时延的百分之一；这个表述比“快 100 倍”更不易被误读为削减了 100%。</p>
+<div class="formula">$$\mathrm{roofline:}\quad \mathrm{att\_perf} = \min\big(\mathrm{peak\ FLOPs},\ \mathrm{peak\ BW} \times \mathrm{arithmetic\ intensity}\big)$$</div>
+<p>roofline 的作用不是算加速比，而是判断 100 是否落在物理可行区间：若基线远离 roofline 拐点，候选向拐点移动可以带来大倍数；若基线已接近峰值，则两位数量级加速比在物理上不可信，应优先怀疑测量口径或正确性。这是把 100 放进可信性检验的具体机制。</p>
+<div class="formula">$$\mathrm{occupancy} = \frac{\mathrm{active\ warps\ per\ SM}}{\mathrm{max\ warps\ per\ SM}}$$</div>
+<p>dispatch-aware 场景下，候选改变 occupancy 会改变 launch 配置与调度重叠，因此 occupancy 变化是解释“单 kernel 加速比与端到端加速比背离”的中间变量。答题时若能把 occupancy 变化与第二、三行口径的差异联系起来，就完成了从公式到机制的闭环。</p>
+<p>最后落在工程判断上：这道题不接受“100 倍很快”的定性结论，只接受带下标三元组的比值陈述，以及在缺失下标时明确标注“不可横向比较”。正确性 oracle 未通过时，任何比值都不进入结论；测量协议不一致时，比值降级为定性证据；硬件与 shape 不同时，比值不进入同一张表。这三条判定规则本身就是本题要考的工程判断，而非公式的附属说明。</p>
+
+
+<h3>拆题先拆“分母”：dispatch 口径决定这道题能不能算</h3>
+<p>这一节的考点不在“会不会写 speedup”，而在“知不知道该把哪一段放进分母”。题干给出基线时延 T0 与候选时延 T1，表面上只需 <span class="formula">$$ \text{speedup} = \frac{T_0}{T_1} $$</span>，但 KernelOPT 的 dispatch-aware 设定要求先回答三个前置问题：T0 是否含 kernel launch 与 dispatch 开销、T1 是否含同一套 dispatch 路径、两侧是否在同一输入形状与同一 warmup 状态下测得。若 T0 取自端到端推理步、T1 取自纯 kernel 微基准，则分子含调度、分母不含调度，比值会被系统性放大；反之若候选走的是更重的 dispatch 路径（例如多 kernel 串联、动态 shape 分支、autotune 时的候选选择），T1 被抬高，speedup 被压低。解题路径因此是：先判定计时边界，再判定是否同口径，最后才代入公式。这一步不做，后面所有数字都是不可比的。</p>
+<p>题干中“100”这个数字必须被当作口径标记而非普适结论来读。它只在“同一 dispatch 路径、同一输入分布、同一测量层级、基线为未优化参考实现”这组条件下成立；一旦换硬件代际、换 batch/shape、或把基线换成已高度调优的库实现（cuBLAS/cuDNN 级别），100 倍就不再是可比量。工程上应把它拆成两层报告：端到端加速比（含 dispatch，反映生产收益）与 kernel-only 加速比（剔除 dispatch，反映算子本身的上限）。两者差距就是 dispatch 与框架开销的占比，也是判断“这个优化值不值得进生产”的直接依据。代价在于：要拿到同口径数据，必须固定 warmup 次数、固定 CUDA Graph 或 eager 模式、固定 profiler 采样区间，测量本身引入的时延抖动会污染 T1，尤其当 T1 已接近 launch 开销量级时，相对误差被放大。</p>
+<p>失效条件要写进解题路径里，而不是留到验证阶段再补。第一，候选若依赖 autotune，首次调用含搜索时间，必须区分 steady-state 与 cold-start，否则 T1 被搜索开销主导；第二，若优化改变了数值路径（例如降低精度、改变累加顺序），speedup 必须与正确性 oracle 的通过条件绑定，否则快而无意义；第三，dispatch-aware 搜索的空间包含“减少 kernel 数量”“融合 dispatch”这类改动，其收益在 kernel-only 口径下可能为零甚至为负，只在端到端口径下为正——这正是该方案的核心边界。伪代码层面的判断可写成：先测 T0_e2e 与 T0_kernel，再测 T1_e2e 与 T1_kernel，只有当 T1_kernel &lt; T0_kernel 且 T1_e2e &lt; T0_e2e 同时成立，才把该候选标记为“双口径有效”，否则只记录单口径收益并标注不可比原因。系统代价是测量轮次翻倍、编译与 autotune 时间进入候选评估回路，token 预算被测量与重测挤占。</p><table class="mini"><thead><tr><th>口径组合</th><th>speedup 可读性</th><th>典型失效</th></tr></thead><tbody><tr><td>e2e / e2e</td><td>可比，反映生产收益</td><td>框架开销掩盖 kernel 收益</td></tr><tr><td>kernel / kernel</td><td>可比，反映算子上限</td><td>忽略 dispatch，误导部署决策</td></tr><tr><td>e2e / kernel</td><td>不可比</td><td>分子含调度，比值虚高</td></tr></tbody></table>
+
+<h3>加速比口径的边界：分母是谁、在什么条件下失效</h3>
+<p>KernelOPT 这类 dispatch-aware 搜索报告的加速比，分子分母都不是“一次 kernel 调用”的裸时延。论文给出的定义是 speedup = T0 / T1，其中 T0 是基线（通常是框架默认实现，如 eager 模式下 PyTorch 算子或未融合的多 kernel 序列）的端到端时延，T1 是候选方案在同一输入、同一 dispatch 路径下的端到端时延。关键在于 T0 与 T1 都必须包含 dispatch 开销：算子选择、形状分派、kernel launch、必要的同步与内存搬运。若把 T1 只算 kernel 本体而把 T0 算成整条调用链，比值会被系统性放大；反之若基线用了更优的 dispatch 路径而候选仍走通用分派，比值会被压缩。因此这个数字只在“同一 dispatch 决策面、同一测量边界”下可比。</p>
+<p>论文中出现的 100 这个量级，其不可比条件有三类。第一，基线选择：若 T0 取的是未做算子融合、未做 layout 变换的参考实现，而 T1 走的是融合+特化路径，则 100 反映的是“参考实现到特化实现”的差距，不能外推为“任意框架默认实现都能被加速 100 倍”。第二，问题规模：小 shape 下 dispatch 与 launch 开销占主导，T0 被固定开销撑大，比值虚高；大 shape 下进入带宽或算力受限区，比值回落到 roofline 允许的上限附近。第三，测量口径：是否计入首次编译/autotune 的冷启动、是否在同一 stream 上串行测量、是否包含 host 侧同步，都会改变分母。工程判断是：看到 100 时先问“T0 是什么实现、T1 是否含 dispatch、shape 是否落在固定开销主导区”，三者任一不成立，该数字就不能跨方案、跨硬件、跨 shape 比较。</p>
+<div class="formula">$$\text{speedup}=\frac{T_0}{T_1},\quad T_i = T^{\text{dispatch}}_i + T^{\text{kernel}}_i + T^{\text{sync}}_i$$</div>
+<table class="mini"><thead><tr><th>条件</th><th>对 T0/T1 的影响</th><th>比值方向</th></tr></thead><tbody><tr><td>基线为未融合参考实现</td><td>T0 含多次 launch 与中间写回</td><td>偏高</td></tr><tr><td>候选未计 dispatch/autotune</td><td>T1 偏小</td><td>偏高</td></tr><tr><td>shape 处于固定开销主导区</td><td>T0、T1 均被常数项撑大</td><td>不稳定</td></tr></tbody></table>
+<p>代价落在可信度上：为了让 100 可复现，必须固定 dispatch 决策面并报告 T0 的实现来源，这要求 agent 在搜索时把“基线选择”作为一个显式搜索维度而非隐含常量；否则多轮 RL 的奖励会被虚高的比值污染，策略倾向于选择那些只在特定 shape 上把分母做大的候选。具体例子：同一融合 kernel 在 batch=1 的 decode 形状下相对 eager 多 kernel 序列可报出高比值，但换到 prefill 的大 shape，T0 本身已接近带宽上限，比值迅速收敛——这不是候选变差，而是分母换了物理区间。</p>
+<p class="paper-line">对应：exams/q-cuda-p22 · 第 1/2 部分</p>

@@ -1,0 +1,53 @@
+<h3>一 · 端到端收益公式的分子与分母：为什么基线必须同 trace 同批</h3>
+<p>回归门的判决式是两件事的合取：<span class="formula">$$\text{gain}_{\text{e2e}}=\frac{T_{\text{base}}^{\text{e2e}}-T_{\text{gen}}^{\text{e2e}}}{T_{\text{base}}^{\text{e2e}}},\quad \text{merge if }\ \text{gain}_{\text{e2e}}\ge \theta\ \land\ \text{maxerr}\le\epsilon$$</span>。分子是「基线端到端时延减去候选端到端时延」，分母是基线端到端时延，因此 gain 是一个无量纲的相对收益，量纲上天然可比，但它对分母的选取极其敏感：分母若取自另一条 trace、另一个 batch 组成、另一版驱动，gain 就变成了两个不同实验的比值，失去物理意义。工程上必须把 <code>T_base</code> 与 <code>T_gen</code> 锁在同一 trace、同一 batch 序列、同一 warmup 次数、同一并发度下采集，二者唯一的差异是热点位置被替换成候选 kernel。</p>
+<p>推导的关键一步在于把端到端时延按算子分解。设模型一次迭代包含算子集合 <code>O</code>，被替换的热点算子为 <code>h</code>，其余算子时延之和为 <code>T_rest</code>，则 <code>T_base = T_rest + t_h^base + L_base</code>，<code>T_gen = T_rest + t_h^gen + L_gen</code>，其中 <code>L</code> 是框架侧开销（launch、调度、同步、内存分配）。代入 gain 得 <span class="formula">$$\text{gain}_{\text{e2e}}=\frac{(t_h^{\text{base}}-t_h^{\text{gen}})-(L_{\text{gen}}-L_{\text{base}})}{T_{\text{rest}}+t_h^{\text{base}}+L_{\text{base}}}$$</span>。这个式子直接给出三条判断：其一，分子里 kernel 的净加速必须大于框架开销的增量，否则 gain 为负；其二，分母被 <code>T_rest</code> 稀释，这正是 Amdahl 定律在回归门里的具体形态；其三，任何让 <code>L_gen</code> 上升的实现细节（多一次 kernel launch、多一次 layout 转换、多一次临时显存分配）都会直接吃掉分子。</p>
+<p>具体例子：某热点算子微基准从 40 单位时间降到 25 单位时间，微基准加速比 1.6×，但候选实现需要额外一次 layout 转换 kernel，框架侧开销增加 6 单位时间，且该算子只占端到端 12% 的时延。此时分子为 <code>15-6=9</code>，分母约为该算子时延的 8.3 倍，gain 落到 1% 量级，低于常见阈值 <code>θ</code>，回归门拒绝合入。这不是误拒，而是公式在如实报告：微基准的 1.6× 在部署语境下只值 1%。</p>
+<p>代价层面，分子与分母的采集都需要多次重复以压住系统噪声：单次端到端测量受 GPU 频率漂移、其他进程抢占、缓存冷热影响，重复次数不足会让 gain 的符号在阈值附近翻转。工程做法是对 <code>T_base</code> 与 <code>T_gen</code> 各取多次采样后使用稳健统计量（中位数或截尾均值），并把采样方差一并记录进策略池，供后续判断「这次拒绝是真实回归还是噪声」。这一步的 token 成本不高，但 wall-clock 成本高：一次完整端到端 benchmark 往往比一次微基准慢一到两个数量级，这是回归门最贵的固定开销。</p>
+
+<h3>二 · 阈值 θ 的推导：从 Amdahl 上限到最小可感知收益</h3>
+<p><code>θ</code> 不是拍脑袋的常数，它有两个下界。第一个下界来自 Amdahl 上限：若热点算子占端到端时延比例为 <code>p</code>，该算子自身加速比为 <code>s</code>，则端到端加速比上限为 <span class="formula">$$S_{\text{e2e}}\le\frac{1}{(1-p)+p/s}$$</span>，对应 gain 上限为 <code>1-1/S_e2e</code>。当 <code>p</code> 很小或 <code>s</code> 有限时，gain 上限本身就很低，此时把 <code>θ</code> 设得高于该上限等于对该类算子永久关闭合入通道。因此 <code>θ</code> 必须按算子类别分层：对 <code>p</code> 大的热点（注意力、归一化、矩阵乘主干）用较严格的 <code>θ</code>，对 <code>p</code> 小的边缘算子要么放宽 <code>θ</code>，要么直接不进入端到端门而走微基准门。</p>
+<p>第二个下界来自测量分辨率：端到端时延的重复采样标准差为 <code>σ</code>，则两次独立测量的差值标准差约为 <code>σ√2</code>，要让 gain 的判决不被噪声主导，阈值应满足 <code>θ·T_base ≥ k·σ√2</code>，<code>k</code> 取 2 到 3。这一步把 <code>θ</code> 从「业务上觉得值得」翻译成「统计上可分辨」，是回归门可信度的根基。若某次 benchmark 的 <code>σ</code> 偏大（例如并发度高、显存压力大），<code>θ</code> 应随之上调，否则门会放进大量噪声级「收益」。</p>
+<p>伪代码上，阈值判定应写成显式的分层查表而非硬编码：</p>
+<ul>
+<li>输入：算子类别 <code>cls</code>、实测占比 <code>p</code>、采样标准差 <code>σ</code>、基线时延 <code>T_base</code>。</li>
+<li>计算 Amdahl 上限 <code>g_max = 1 - 1/((1-p)+p/s_max)</code>，其中 <code>s_max</code> 为该类算子历史最优加速比。</li>
+<li>计算分辨率下界 <code>g_res = k·σ·√2 / T_base</code>。</li>
+<li>取 <code>θ = max(θ_floor[cls], g_res)</code>，并断言 <code>θ &lt; g_max</code>，否则标记该算子为「端到端不可收益」，转微基准通道。</li>
+</ul>
+<p>代价在于 <code>σ</code> 的估计本身需要采样预算：每个候选都要跑够重复次数才能估出可用的 <code>σ</code>，这直接把端到端门的时延成本乘以重复次数。具体例子：一个占比 8% 的归一化算子，历史最优 <code>s_max=2</code>，Amdahl 上限约 3.8%；若实测 <code>σ/T_base</code> 对应分辨率下界为 2.5%，则 <code>θ</code> 取 2.5% 到 3.8% 之间，任何低于 2.5% 的 gain 一律视为不可分辨。这条规则让「小算子优化被误拒」从缺陷变成设计意图：不可分辨的收益不应进入生产。</p>
+
+<h3>三 · maxerr ≤ ε 的正确性判据：从逐元素误差到可合入的界</h3>
+<p>判决式的第二个合取项是 <code>maxerr ≤ ε</code>。这里的 <code>maxerr</code> 必须是相对误差而非绝对误差，否则在动态范围大的张量上会被大值元素掩盖小值元素的错误。定义逐元素相对误差 <span class="formula">$$\text{err}_i=\frac{|y_i^{\text{gen}}-y_i^{\text{ref}}|}{\max(|y_i^{\text{ref}}|,\delta)}$$</span>，其中 <code>δ</code> 是防止除零的下限（取该张量参考值的量级下界），<code>maxerr = max_i err_i</code>。分母加 <code>δ</code> 这一步是关键：没有它，接近零的参考元素会产生爆炸性的相对误差，让门对正常实现误报；有了它，误差判据在近零区退化为绝对误差，与浮点表示的相对精度语义一致。</p>
+<p><code>ε</code> 的取值不能是一个全局常数。不同算子对精度的敏感度差异巨大：归约类算子（softmax 分母、layernorm 方差）的误差会被后续所有元素共享，单个元素的偏差会放大成整行的偏移；而逐元素算子（激活、逐点乘）的误差基本不传播。<code>ε</code> 应按算子类别与数据类型分层：fp32 主干路径用紧的 <code>ε</code>，fp16/bf16 路径按该类型的机器 epsilon 与累加顺序放宽，并显式记录放宽理由。参考值 <code>y_ref</code> 必须来自高精度路径（fp64 或高精度累加），这一点由参考 oracle 负责，本门只消费其结果。</p>
+<p>推导上有一个容易忽略的步骤：<code>maxerr</code> 是逐元素最大，它对单个离群元素极其敏感，而端到端指标对离群元素不敏感。二者组合时会出现「gain 达标但 maxerr 超标」的候选——这通常意味着候选在某个边界 shape 或某个特殊 layout 上走了不同的分支。此时不应简单拒绝，而应把该元素的索引、shape、layout 上下文一并写入策略池，作为下一轮搜索的约束。伪代码：</p>
+<ul>
+<li>对候选输出与参考输出做逐元素相对误差，分母带 <code>δ</code> 下限。</li>
+<li>取 <code>maxerr</code> 及其 argmax 索引，回查该索引对应的 shape/layout/分支。</li>
+<li>若 <code>maxerr ≤ ε[cls][dtype]</code> 则通过；否则记录失败上下文，回退。</li>
+</ul>
+<p>代价是参考路径的显存与时间：fp64 参考输出使显存占用翻倍，逐元素误差计算需要一次全张量遍历，在端到端 benchmark 之外额外增加一次前向。工程上通常只在候选首次通过性能门后才跑全量误差检查，用「先性能后正确性」的顺序省掉大部分参考计算，但这要求性能门本身不依赖正确性结果——两个门的解耦是这条流水线能跑起来的前提。</p>
+
+<h3>四 · 显存与吞吐的联合判据：为什么单看时延会漏掉回归</h3>
+<p>端到端门记录的不止时延，还有吞吐与显存峰值。吞吐与时延在单请求场景下互为倒数，但在真实并发下解耦：候选 kernel 可能降低了单请求时延却因占用更多 SM 资源或更长占用 shared memory 而压低并发吞吐。因此判决式在实际实现中应扩展为三元组：<code>gain_e2e ≥ θ</code>、<code>maxerr ≤ ε</code>、<code>mem_peak^gen ≤ mem_peak^base · (1+ρ)</code>，其中 <code>ρ</code> 是允许的显存膨胀比例。显存项的推导来自融合与临时缓冲：融合类候选常以额外 workspace 换取更少的 kernel launch，若 workspace 使峰值显存越过某个阈值，推理服务能承载的并发 batch 数会下降，端到端收益被并发损失抵消。</p>
+<p>关键一步是把显存峰值与 batch 上限联系起来。设单请求峰值显存为 <code>m</code>，设备可用显存为 <code>M</code>，则理论最大并发 <code>B_max = floor(M/m)</code>；候选使 <code>m</code> 上升 <code>Δm</code> 后，<code>B_max</code> 可能下降一档，吞吐随之按档位跌落。这条链式推导说明：显存判据不是「省一点是一点」的软约束，而是能直接翻转吞吐符号的硬约束。伪代码上，显存采样应取 benchmark 全程的峰值而非结束时刻的残留值，并在 warmup 之后开始记录，避免首次分配的峰值污染。</p>
+<p>具体例子：某融合候选把两次 kernel launch 合并为一次，单请求时延下降，但引入一块与 batch 成正比的 workspace，使峰值显存上升一档，<code>B_max</code> 从整数档降到下一档，吞吐反而下降。此时 gain 为正、吞吐为负，联合判据拒绝合入。若只看时延，这个候选会被误放行——这正是端到端门必须同时记录吞吐与显存的原因。</p>
+<p>代价是采样开销：显存峰值采样需要框架级 hook 或设备查询，采样频率过高会引入同步点、扰动时延测量；频率过低会漏掉瞬时峰值。工程折中是只在候选替换点附近与迭代边界采样，并在策略池里标注采样精度，供后续复盘「这次拒绝是否因采样漏峰而误判」。</p>
+
+<h3>五 · 奖励公式：把门判决变成可优化的标量</h3>
+<p>搜索侧需要一个标量奖励来驱动多轮迭代，而门判决是布尔合取，二者之间需要一座桥。最直接的构造是把判决式软化为 <span class="formula">$$R=\mathbb{1}[\text{maxerr}\le\epsilon]\cdot\left(\alpha\cdot\text{gain}_{\text{e2e}}-\beta\cdot\max(0,\text{mem\_ratio}-1)-\gamma\cdot\text{lat}_{\text{compile}}\right)$$</span>，其中 <code>α、β、γ</code> 是量纲归一系数，<code>lat_compile</code> 是候选的编译与 autotune 时延。这个式子的推导关键一步是：正确性项必须是硬门（指示函数）而非软惩罚，否则搜索会学会用微小但系统性的数值偏差换取性能，而这类偏差在端到端聚合后不可恢复。性能项与显存项则是软项，允许搜索在「收益略低但显存更省」的方向上探索。</p>
+<p><code>γ·lat_compile</code> 项常被忽略但很关键：Triton/CuTe 候选的 autotune 可能耗时数分钟，若奖励只看运行时收益，搜索会偏向那些需要大量编译尝试才凑出好配置的候选，把预算烧在编译上。把编译时延计入负项，等价于给搜索一个「单位时间产出」的约束，使多轮迭代的 token 与 wall-clock 预算花在真正可复用的方向上。这一步的代价是奖励尺度需要校准：<code>γ</code> 过大则搜索不敢尝试需要编译的候选，过小则编译开销失控。</p>
+<p>伪代码落到可实现：</p>
+<ul>
+<li>运行端到端 benchmark，得 <code>T_base、T_gen、mem_peak、throughput</code>。</li>
+<li>计算 <code>gain</code>；运行正确性检查得 <code>maxerr</code>。</li>
+<li>若 <code>maxerr &gt; ε</code>，奖励置零并写入失败上下文（shape、layout、argmax 索引）。</li>
+<li>否则按上式合成 <code>R</code>，并把 <code>gain、mem_ratio、lat_compile、σ</code> 一并存入策略池。</li>
+<li>策略池按算子类别聚合，供下一轮搜索采样先验。</li>
+</ul>
+<p>代价在于奖励的可比性：不同算子类别的 <code>gain</code> 量级差异巨大，若不归一，搜索会集中火力在占比大的算子上而忽略长尾。归一化应基于各类别的 Amdahl 上限而非实测 gain，这样奖励衡量的是「接近该类上限的程度」，而不是绝对收益。具体例子：两个候选 gain 分别为 2% 与 0.5%，但前者所在类别的上限是 30%、后者上限是 1%，归一后后者得分更高，搜索会优先复用后者的实现模式——这是奖励公式在引导搜索方向，而不只是打分。</p>
+
+<h3>六 · 公式落地时的三个工程约束</h3>
+<p>第一，判决式的三项必须在同一次 benchmark 运行内采集，跨运行拼接会引入不可控的系统差异。实现上应把端到端计时、显存峰值、正确性检查绑定到同一个候选执行上下文，任何一项缺失即视为该候选无效而非「默认通过」。第二，<code>θ</code> 与 <code>ε</code> 必须是配置项而非代码常量，且配置随算子类别、dtype、设备型号分层，这样同一套门逻辑可以复用到不同模型与不同硬件而不改代码。第三，所有被拒绝的候选必须带着完整的失败上下文（gain、maxerr、argmax 索引、shape、layout、σ、编译时延）进入策略池，拒绝不是丢弃，而是给下一轮搜索提供负样本。</p>
+<p>这三条约束的代价体现在流水线的固定开销上：每次候选评估都要付出一次端到端 benchmark 的 wall-clock、一次全张量误差遍历的显存与时间、以及策略池写入的存储。相对于微基准门，端到端门的单次评估成本高出一到两个数量级，因此它只应作用于已经通过微基准门与合约校验的候选，作为最后一道合入闸门。把端到端门放在流水线末端而非前端，是用「少量高成本评估」换「高置信度合入」，这也是回归门在整套评测体系里的位置：它不负责发现候选，只负责否决那些在真实模型里不成立的候选。</p>
+<p>最后一个机制细节落在门的可复现性上：端到端 benchmark 的输入 trace、batch 序列、warmup 次数、并发度必须与基线完全一致并随候选一起存档，否则同一候选在不同时间跑出的 gain 不可比，策略池的先验会被污染。工程判断是：宁可把 trace 与配置一起冻结成版本化资产，也不要在每次评估时重新抽样——重新抽样会让 gain 的方差混入输入方差，使 <code>θ</code> 的统计推导失效。</p>
+<p class="paper-line">对应：algorithms/alg-end2end-regression · 第 3/8 部分</p>

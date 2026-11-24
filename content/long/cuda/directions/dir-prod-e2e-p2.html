@@ -1,0 +1,63 @@
+<h3>一 · 三条路线的分界不在语言，在"谁持有调度权"</h3>
+<p>同一个算子问题——比如一个 fused attention 或一个 dequant-GEMM——在部署端可以沿三条路线落地：<strong>框架内算子替换</strong>（把生成的 kernel 编译成 PyTorch 自定义算子或通过 dispatcher 注册）、<strong>图级重写</strong>（在 trace 上做子图匹配并替换为生成 kernel，典型如 torch.compile 的自定义 backend 或 TVM relay 式 pass）、<strong>独立 runtime 接管</strong>（生成 kernel 与自己的调度器、内存池、stream 编排一起构成一个可执行体，框架只负责喂数据）。三条路线的机制差异不是"用 CUDA C++ 还是 Triton"，而是<strong>调度权归属</strong>：谁决定 kernel 何时启动、用什么 grid、和谁并发、中间张量放在哪。</p>
+<p>这个归属决定了收益的归属。框架内算子替换把调度权完全留给框架：kernel 只在框架给定的 launch 点上执行，前后是框架的 allocator 与 stream。图级重写把调度权部分上移：pass 可以合并 launch、消除中间张量、改变数据布局，但仍然嵌在框架的 graph executor 里。独立 runtime 则把调度权整体拿走，框架退化为数据源。三条路线的微基准加速比可以完全一样，端到端收益却相差一个量级，原因全在这个归属上。</p>
+<div class="formula">$$T_{\text{e2e}} = \sum_{i} \left( T_{\text{kernel},i} + T_{\text{launch},i} + T_{\text{sync},i} \right) + T_{\text{framework overhead}} + T_{\text{layout conversion}}$$</div>
+<p>公式里每一项在三条路线上的系数不同：算子替换让 <span>T_{\text{launch}}</span> 与 <span>T_{\text{sync}}</span> 保持框架原值，只压 <span>T_{\text{kernel}}</span>；图级重写能压掉一部分 <span>T_{\text{launch}}</span>（合并）和 <span>T_{\text{layout conversion}}</span>（布局传播）；独立 runtime 能把 <span>T_{\text{framework overhead}}</span> 整体削掉，代价是它必须自己正确实现所有框架语义。下面三节分别拆这三条路线的机制与代价。</p>
+
+<h3>二 · 路线 A：框架内算子替换——最低集成成本，最高被吞没风险</h3>
+<p>机制上，这条路线把生成 kernel 包装成一个符合框架算子签名的 callable，注册进 dispatcher，然后在模型代码里把原算子调用点换掉。它的关键工程动作是<strong>签名对齐与 layout 契约</strong>：生成 kernel 假设的 stride、dtype、contiguity 必须与框架实际传入的张量一致，否则要么在 wrapper 里插一次 <span>contiguous()</span>（隐式拷贝），要么在 kernel 内做 stride-aware 索引（增加地址计算开销）。前者把收益直接吃掉，后者把微基准的算术强度拉低。</p>
+<p>代价结构非常清晰：<strong>每次调用多一次 Python/C++ 边界穿越与 dispatcher 查找</strong>。对于 decode 阶段那种每层只有几十微秒的小 kernel，这个固定开销占比可能超过 kernel 本体。更隐蔽的是 allocator 行为：框架的 caching allocator 在 kernel 前后可能触发同步点或复用不同 block，生成 kernel 若假设输入输出不重叠，就会在真实负载下出现数值错误——这是正确性代价，不是性能代价，且只在特定 shape 组合下暴露。</p>
+<p>具体例子：一个生成的 RMSNorm+残差融合 kernel，微基准上比框架原生两算子序列快数倍，因为它省掉一次中间张量往返。但替换进模型后，wrapper 为了满足生成 kernel 的 contiguous 假设，对非连续输入做了一次拷贝，拷贝的带宽成本恰好等于省下的那次往返，端到端净收益归零。判断依据不是微基准数字，而是<strong>调用点上下文的 stride 分布</strong>——这需要 trace 驱动的真实负载回放才能拿到，而不是构造出来的 benchmark 输入。</p>
+<ul>
+<li>机制要点：dispatcher 注册 + 签名/layout 契约 + wrapper 内的隐式转换。</li>
+<li>性能代价：每调用一次的边界穿越固定开销；隐式 contiguous 拷贝的带宽。</li>
+<li>正确性代价：allocator 复用导致的输入输出别名假设失效。</li>
+<li>适用判断：算子粒度大、调用频次低、输入天然连续时收益最稳。</li>
+</ul>
+
+<h3>三 · 路线 B：图级重写——把 launch 开销摊薄，但把正确性责任放大</h3>
+<p>机制上，这条路线在捕获到的图（FX graph、TorchScript IR 或 trace 事件序列）上做模式匹配：识别出可融合的子图，用生成 kernel 替换整个子图，并在 pass 中完成布局传播与中间张量消除。它相对路线 A 的核心增量是<strong>跨算子视野</strong>：pass 能看到前后算子的 stride 需求，从而选择一种布局让生成 kernel 的输入输出都免于转换；也能把多个小 launch 合并成一次，直接压掉公式里的 <span>\sum T_{\text{launch}}</span>。</p>
+<p>代价有三层。第一层是<strong>匹配覆盖率</strong>：模式匹配是保守的，任何动态 shape、控制流、别名写回都会让子图匹配失败回退到原实现，于是同一个模型在不同输入下走不同路径，端到端收益随负载漂移。第二层是<strong>编译时间与缓存</strong>：pass 需要为每个新 shape 组合重新特化并编译生成 kernel，首次推理的编译时延进入服务冷启动；缓存键若不含布局信息，会在负载切换时命中错误特化。第三层是<strong>语义责任转移</strong>：原本由框架保证的原地写、广播、dtype 提升规则，现在由 pass 与生成 kernel 共同保证，任何一处偏差都是静默数值错误。</p>
+<p>具体例子：一个 trace 上识别出的 GEMM+激活+量化子图被替换为单个生成 kernel，消除了两次中间张量写回，端到端时延下降明显；但当 batch 变为动态值时匹配失败，回退路径重新引入那两次写回，导致尾延迟出现台阶式跳变。工程判断因此不是"融合率多高"，而是<strong>回退路径的代价是否可接受、缓存键是否覆盖布局维度</strong>。这也是生产就绪度分级要回答的问题：一条路线在多少比例的 trace 上稳定命中，命中失败时的退化幅度是多少。</p>
+<div class="formula">$$\text{收益}_{\text{图级}} = p_{\text{match}} \cdot \Delta T_{\text{fused}} - (1-p_{\text{match}}) \cdot T_{\text{fallback}} - T_{\text{compile}}/N_{\text{req}}$$</div>
+<p>公式里 <span>p_{\text{match}}</span> 是匹配命中率，<span>N_{\text{req}}</span> 是分摊编译成本的服务请求数。命中率不到某个阈值时，编译时间摊销与回退抖动会把收益抹平——这个阈值必须由真实 trace 的 shape 分布算出，不能靠构造输入估计。</p>
+
+<h3>四 · 路线 C：独立 runtime 接管——收益上限最高，验证负担最重</h3>
+<p>机制上，这条路线让生成 kernel 与自研调度器、显存池、stream 编排共同构成一个执行体，框架只负责把输入张量交出来。它能把公式里的 <span>T_{\text{framework overhead}}</span> 整体移除，并通过<strong>分发感知的 kernel 调度</strong>在多个候选特化之间按真实负载特征选择：不同 batch、不同序列长度走不同 grid 配置与不同 tiling，选择依据来自运行时观测而非静态假设。</p>
+<p>代价是它必须重新实现框架语义的一整片：stream 间的依赖、异步错误传播、显存生命周期、与框架 allocator 的边界（跨 runtime 传张量时谁负责释放）。任何一处语义缺口都会在长跑中表现为显存泄漏或偶发数值错误，而这类错误在短 benchmark 里几乎不可见。此外，独立 runtime 与框架的集成点通常是一次显式拷贝或一次 pinned 内存中转，这个中转的带宽成本会重新进入端到端时延，抵消掉一部分削掉的框架开销。</p>
+<p>具体例子：decode 阶段每步由 runtime 统一编排所有层的生成 kernel，把每层多次 launch 合并为按依赖排序的批量提交，端到端每 token 时延下降；但为了与框架交换 KV cache，runtime 必须接受框架分配的显存块，块的对齐与 stride 与生成 kernel 假设不符时，runtime 要么做一次重排（带宽代价），要么放弃该块走拷贝路径（时延代价）。这里的工程判断是<strong>集成边界上的数据契约是否零拷贝</strong>：只要边界上存在一次强制重排，路线 C 相对路线 B 的增量收益就被压缩。</p>
+<ul>
+<li>机制要点：自持调度器 + 显存池 + 分发感知的特化选择。</li>
+<li>性能代价：与框架边界的拷贝/重排带宽；调度器自身的决策时延。</li>
+<li>正确性代价：stream 依赖、异步错误、显存生命周期的重新实现。</li>
+<li>适用判断：调用频次极高、kernel 粒度细、框架开销占比可测且显著时。</li>
+</ul>
+
+<h3>五 · 三条路线的代价对照与选择依据</h3>
+<p>把三条路线放在同一张表里，差异集中在四个维度：调度权归属、被压掉的公式项、新增的代价项、验证负担的位置。这张表不是选型推荐，而是判断"某条路线的收益是否真的能到端到端"的检查清单。</p>
+<table class="mini">
+<thead>
+<tr><th>维度</th><th>路线 A 算子替换</th><th>路线 B 图级重写</th><th>路线 C 独立 runtime</th></tr>
+</thead>
+<tbody>
+<tr><td>调度权</td><td>框架持有</td><td>pass 部分持有</td><td>runtime 持有</td></tr>
+<tr><td>主要压缩项</td><td><span>T_{\text{kernel}}</span></td><td><span>T_{\text{launch}}</span>、布局转换</td><td><span>T_{\text{framework overhead}}</span></td></tr>
+<tr><td>新增代价</td><td>边界穿越、隐式拷贝</td><td>编译时间、回退抖动</td><td>边界重排、语义重实现</td></tr>
+<tr><td>验证负担位置</td><td>wrapper 契约</td><td>pass 语义与缓存键</td><td>调度器与显存生命周期</td></tr>
+<tr><td>收益稳定性</td><td>随调用频次线性稀释</td><td>随 shape 分布漂移</td><td>受边界拷贝制约</td></tr>
+</tbody>
+</table>
+<p>选择依据可以落成一个可测的判据：先用 trace 驱动的真实负载回放测出公式中各项的实际占比，再看哪一项是主导。若 <span>T_{\text{framework overhead}}</span> 占比小，路线 C 的重实现成本换不来收益；若 <span>T_{\text{launch}}</span> 是主导且 shape 分布集中，路线 B 的命中率会很高；若调用点稀疏且输入连续，路线 A 的集成成本最低。三条路线不是互斥的：生产系统常见做法是 A 覆盖长尾算子、B 覆盖热点子图、C 只在最热的执行路径上接管，但每叠加一层，验证负担就叠加一层，正确性 oracle 的覆盖面必须跟着扩。</p>
+<p>一个具体的组合判断：某模型的 decode 路径上，每层有若干小算子，launch 开销占比显著，此时路线 B 的融合收益最大；但同一模型的 prefill 路径 shape 变化剧烈，匹配命中率低，回退抖动不可接受，于是 prefill 走路线 A 的逐算子替换、decode 走路线 B 的融合，两条路径共享同一批生成 kernel 的不同特化。这种组合的代价是两套验证路径，以及缓存键必须区分 prefill/decode 两种布局上下文。</p>
+
+<h3>六 · 机制差异如何决定"可信评测"的形态</h3>
+<p>三条路线的机制差异最终反映在评测形态上：路线 A 的收益可以在算子级微基准上近似预测，误差来自 wrapper 开销；路线 B 的收益必须在 trace 级评测，因为命中率与回退路径是图级属性，微基准看不到；路线 C 的收益必须在端到端闭环里评测，因为它的代价项（边界重排、调度决策）只在真实执行序列里出现。这意味着同一套 KernelBench 系基准对三条路线的解释力不同：对 A 是上界估计，对 B 是局部估计，对 C 几乎不构成证据。</p>
+<p>因此生产就绪度分级必须按路线分别定义证据要求：A 需要 wrapper 契约的覆盖测试与别名假设检查；B 需要 trace 命中率统计、回退路径时延分布、缓存键完整性；C 需要长跑显存稳定性、stream 依赖正确性、边界零拷贝的实测带宽。这些证据的共同点是都依赖真实负载数据，而真实负载数据的获取与隐私、可复现性存在冲突——这正是 trace 驱动回放要解决的前置问题，也是三条路线共享的评测瓶颈。判断一条生成 kernel 是否值得部署，最终不是看它的微基准加速比，而是看它在所属路线上的代价项是否被实测覆盖、回退路径是否被量化、边界契约是否被验证。</p>
+
+<h3>三条路线在失效边界上的分岔：谁先被系统开销吃掉</h3>
+<p>三条路线（trace 回放驱动的端到端闭环、生产就绪度分级、分发感知调度）在机制上并非同一抽象层的替代品，而是分别把「真实性」「可信度」「可部署性」压到不同位置。trace 回放把真实负载的算子序列与到达间隔作为输入，代价是采集链路本身：需要在不改变隐私边界的前提下抽取请求分布，回放器还要复现 batch 组成与并发形态，任何一处失真都会让测得的收益偏离生产。其失效条件很明确——当 kernel 的收益小于回放引入的调度抖动时，闭环信号被噪声淹没。可用一个判据式表达：若 <span class="formula">$$\Delta T_{\text{e2e}} &lt; \sigma_{\text{replay}}$$</span>，则该路线的结论不可分辨，必须增大回放窗口或改用配对采样。</p>
+<p>生产就绪度分级走的是另一条路：它不追求单次测量的精度，而是把 kernel 放进一组逐级加严的门槛（数值一致性、边界形状、并发下的显存峰值、框架算子注册后的调度开销），用分级结果替代单一加速比。机制上是把「是否值得部署」拆成可判定的布尔序列，代价是编译与验证时间随级数线性增长，且高等级门槛要求覆盖长尾 shape，token 与人力成本落在用例构造上。失效条件是分级标准与真实负载分布脱节：一个在固定 shape 上全绿的 kernel，遇到动态 batch 时因 grid 配置退化而失去优势。</p>
+<p>分发感知调度则把决策从 kernel 内部移到调用侧：依据算子分发路径（框架 dispatcher、融合边界、stream 归属）选择是否启用新 kernel，机制是运行时按负载特征路由，代价是每次分发多一次判定与可能的同步点，显存上还要为双路径共存留出余量。它的失效边界最陡——当调度开销与 kernel 自身时延同量级时，收益被吞掉。三条路线的系统代价可用一张小表对照：</p>
+<table class="mini"><thead><tr><th>路线</th><th>主要代价</th><th>典型失效条件</th></tr></thead><tbody><tr><td>trace 回放闭环</td><td>采集与回放保真度、窗口时长</td><td>收益小于回放抖动</td></tr><tr><td>就绪度分级</td><td>验证用例与编译时间</td><td>分级分布偏离真实负载</td></tr><tr><td>分发感知调度</td><td>每次调用的判定与同步</td><td>调度开销与 kernel 时延同量级</td></tr></tbody></table>
+<p>工程判断落在选择哪条路线作为主信号：若微基准加速比与端到端差值主要来自调度与布局，分发感知调度必须先于闭环评测落地，否则回放测到的是被吞掉后的残值；若长尾 shape 是主要风险，分级门槛比回放窗口更能暴露失效。</p>
+<p class="paper-line">对应：directions/dir-prod-e2e · 第 2/5 部分</p>

@@ -1,0 +1,49 @@
+<h3>一 · 基准谱系：KernelBench 三级与 VeOmni 专家核，两种口径不可混算</h3>
+<p>KernelPro 的评测面由两块拼成，性质完全不同，读表时必须先拆开。第一块是 KernelBench 的 Level 1/2/3，论文报告几何平均加速比为 2.42x / 4.69x / 5.30x。这三档不是同一类题目：Level 1 多为单算子、形状规整、访存模式简单；Level 2 引入融合与多算子组合；Level 3 逼近真实模型片段，控制流与数据依赖更复杂。因此三个数字的绝对大小不能横向比较谁“更强”——5.30x 高于 2.42x 主要反映题目难度分布不同，而不是 Level 3 的方法更优。第二块是 VeOmni 的专家优化 MoE 训练核，论文报告 1.23x，对手是手工调优的 Triton 实现，且 KernelPro 交出的是从零生成的 raw CUDA + CuTe Hopper WGMMA 核。这里的 1.23x 与 KernelBench 的 2.42x 属于两种口径：前者是“对已高度优化的专家实现再压榨”，后者是“对未特化的参考实现做替换”。把 1.23x 和 5.30x 放进同一个柱状图，是这类论文最常见的误读起点。</p>
+<p>更关键的是基线定义。KernelBench 系基准的默认参考通常是 PyTorch eager 或 torch.compile 产物，而 eager 在矩阵乘类算子上往往未开 TF32、也未调用最强库路径；一旦基线如此，加速比会被系统性高估。论文摘要未给出基线是否强制开启 TF32、是否对齐 cuBLAS/CUTLASS 最强配置，这构成一个必须标注的不可比点。工程判断很直接：读任何 kernel agent 的加速比，先问“分母是什么”，再问“分母有没有被削弱”。VeOmni 那一侧的 1.23x 反而更可信，因为分母是专家手写 Triton，削弱空间小，但代价是这类数字不可外推到通用算子集。</p>
+<table class="mini"><thead><tr><th>评测面</th><th>题目性质</th><th>论文报告值</th><th>可比性风险</th></tr></thead><tbody><tr><td>KernelBench L1</td><td>单算子、规整形状</td><td>2.42x geomean</td><td>基线若为弱 eager，加速比虚高</td></tr><tr><td>KernelBench L2</td><td>融合/多算子</td><td>4.69x geomean</td><td>融合收益与基线融合程度强相关</td></tr><tr><td>KernelBench L3</td><td>模型片段级</td><td>5.30x geomean</td><td>shape 特化空间大，隐藏分布易崩</td></tr><tr><td>VeOmni MoE</td><td>专家已调优训练核</td><td>1.23x vs 手写 Triton</td><td>单点结果，不可外推</td></tr></tbody></table>
+
+<h3>二 · 指标族：faster rate、speedup、geomean、fast_p 各自回答不同问题</h3>
+<p>这一类基准的指标不是可互换的。faster rate 是“加速比大于 1 的题目占比”，它衡量覆盖率而非幅度：一个系统可以在 80% 题目上只快 1.05x，faster rate 很高但 geomean 平庸；反过来，少数题目上 10x 的爆款会把 geomean 拉高，却掩盖大量回退。geomean 的定义决定了它惩罚回退：</p>
+<div class="formula">$$\text{geomean}=\exp\left(\frac{1}{N}\sum_{i=1}^{N}\ln s_i\right),\qquad s_i=\frac{t_{\text{base},i}}{t_{\text{cand},i}}$$</div>
+<p>取对数意味着一个 0.5x 的回退与一个 2x 的提升在几何平均里对称抵消，这正是 geomean 比算术平均更诚实的地方——算术平均会让一次 10x 掩盖十次 0.9x。fast_p 则是分位数口径，例如 fast_1.5 表示“加速比不低于 1.5x 的题目比例”，它回答的是“有多少题真正跨过了有意义的门槛”，比 faster rate 的 1.0x 阈值更严格。论文报告的 2.42/4.69/5.30 是 geomean，属于幅度口径；消融里“MCTS 搜索比贪心高 26% 的几何平均”同样是 geomean 相对提升，不是绝对加速比，这两个 26% 与 2.42x 不能相加也不能相乘解释。</p>
+<p>代价在这里体现为测量成本：geomean 需要每道题多次重复计时以压低方差，KernelBench 三级合计题量不小，若每题做 100 次迭代加 warmup，单轮评测的 GPU 机时就不可忽略；而 fast_p 需要完整分布而非单点，进一步抬高成本。工程上常见的折中是固定迭代次数加中位数统计，代价是尾部延迟信息丢失——对 kernel 这种微秒级负载，中位数会掩盖首次启动的编译与上下文开销。</p>
+
+<h3>三 · 硬件与 dtype 口径：Hopper WGMMA 与 TF32 的隐含前提</h3>
+<p>VeOmni 那条结果明确落在 Hopper 上：raw CUDA + CuTe 的 WGMMA 是 Hopper 架构专属的 warpgroup 级矩阵指令，依赖张量内存加速器与异步拷贝流水。这意味着 1.23x 的成立前提是 Hopper 级 GPU，换到别的架构，同一份代码要么编译失败要么走 fallback 路径，性能结论直接失效。论文摘要未给出 KernelBench 三级所用的具体 GPU 型号，这是一个必须标注的口径缺口：不同 SM 数量、不同显存带宽会改变 roofline 拐点，从而改变“计算密集还是访存密集”的判定，而判定又直接决定微剖面工具给出什么建议。</p>
+<p>dtype 是第二个隐含前提。TF32 在矩阵乘上的吞吐与 FP32 差一个量级，若基线未开 TF32 而候选开了，加速比里混入了精度换性能的成分，这不是 kernel 工程质量。BF16/FP16 与 FP32 的 roofline 拐点位置不同：</p>
+<div class="formula">$$P_{\text{att}}(I)=\min\left(P_{\text{peak}},\;I\cdot B_{\text{eff}}\right),\qquad I=\frac{\text{FLOP}}{\text{Byte}}$$</div>
+<p>同一算子在不同 dtype 下 I 值不同、P_peak 不同，因此“这个 kernel 是访存瓶颈”的结论只在特定 dtype 下成立。论文未在摘要中逐题声明 dtype，读者应把每个加速比视为“在该 dtype 下、该 GPU 上、该基线配置下”的条件结论。代价是显式的：跨 dtype 迁移时，原本靠 WGMMA 吃满算力的 kernel 在 FP32 下会退回访存受限，微剖面工具若仍按旧拐点给建议，优化方向就错了。</p>
+
+<h3>四 · 隐藏 shape 与输入分布：离线分数在生产上崩塌的机制</h3>
+<p>KernelBench 的题目通常给出固定 shape，agent 可以针对该 shape 做特化：把 tile 尺寸、线程块数、共享内存布局全部按已知维度硬编码。这在离线评测里是合法且高效的，但在生产里是脆弱的。机制很具体：一个按 M=4096, N=4096, K=4096 调好的 GEMM，其 tile 划分与流水深度依赖 K 能被某个因子整除；当生产输入变成 K=4095 或 batch 维动态变化时，边界处理分支被激活，流水线断流，性能从峰值掉到基线以下。更隐蔽的是分布偏移：MoE 训练核的 expert 路由是数据相关的，token 到 expert 的分配极不均衡，按均匀分布调优的 kernel 在热点 expert 上会遭遇严重的负载倾斜。</p>
+<p>论文摘要未说明是否使用隐藏 shape 或 held-out 分布做二次验证，这是可核查口径里最该追问的一项。工程上可操作的防线是：在评测脚本里保留一组未公开的 shape 变体（同算子、不同维度、含非整除边界），把“固定 shape 加速比”与“变体 shape 加速比”分开报告；若后者显著低于前者，说明分数来自特化而非泛化。代价是评测机时翻倍，且变体集的设计本身会引入选择偏差——变体太温和则测不出崩塌，太极端则惩罚所有候选。一个折中是按生产 trace 的 shape 直方图采样，而不是人工构造。</p>
+
+<h3>五 · 正确性 oracle 与性能门的耦合：reward hacking 让分数虚高</h3>
+<p>加速比只有在正确性门通过后才有意义。KernelBench 系基准的正确性检查通常是对比参考实现的输出，容差按 dtype 设定。这里有两个可被利用的缝隙：其一，候选可以走 fallback——检测到输入不匹配就调用 PyTorch 原算子，正确性满分、性能等于基线，faster rate 被稀释但不会崩；其二，候选可以在容差边缘做数值近似，例如降低累加精度换取吞吐，在宽松容差下通过检查。论文的闭环里“按反馈保留或回退候选”这一机制，如果没有独立的正确性复核，回退策略本身就可能成为 reward hacking 的通道：系统学会“遇到难题就回退到安全实现”，从而在正确率上虚高、在加速比上停滞。</p>
+<p>可核查的口径要求把正确性门写成显式契约：容差数值、比较的 dtype、是否检查中间结果、是否禁止调用参考算子。伪代码思路是：</p>
+<div class="formula">$$\text{accept}(k)=\big[\;\text{allclose}(y_k,y_{\text{ref}},\varepsilon)\;\wedge\;\neg\text{calls\_ref}(k)\;\wedge\;s_k>1\;\big]$$</div>
+<p>第三个合取项把性能门和正确性门绑在一起，避免“正确但无加速”的候选污染 faster rate 的分子。代价是编译与验证时间：每个候选都要跑参考对比，若参考实现本身是慢的 eager 路径，验证开销会与优化收益同量级，闭环迭代轮数被迫压缩。这是这类系统真实存在的工程张力——验证越严，单位机时能探索的候选越少。</p>
+
+<h3>六 · 能量口径与可复现清单：11.6% 的边界条件</h3>
+<p>论文声称是首个在速度之外优化能效的 CUDA kernel agent，在匹配速度下测得 11.6% 的能量下降。“匹配速度”是这条结论的全部重量所在：它意味着对比是在两者时延相同的条件下做的，能量差来自功率而非时间。机制上，这通常对应更低的 occupancy、更少的冗余访存、或更深的流水让 SM 在等待期间进入低功耗状态。但能量测量对硬件与工具链高度敏感：不同 GPU 的功率传感器采样率不同，NVML 轮询间隔会平滑掉瞬态功率尖峰，测量窗口的起止点选择会改变结果。11.6% 是一个在特定测量协议下的条件数字，跨卡不可比。</p>
+<p>把以上口径收拢成一张可核查清单，读者可以据此判断任何一条加速比是否可信：</p>
+<ul>
+<li>基线是否声明了框架版本、是否开启 TF32、是否调用最强库路径；</li>
+<li>GPU 型号与 SM 数量是否给出，因为 roofline 拐点随架构移动；</li>
+<li>每题 dtype 是否逐条列出，FP32 与 BF16 的结论不可互换；</li>
+<li>shape 是固定还是分布，是否有 held-out 变体集，非整除边界是否覆盖；</li>
+<li>正确性容差数值、是否禁止 fallback 调用参考算子；</li>
+<li>计时协议：warmup 次数、迭代次数、取中位数还是均值、是否含首次编译；</li>
+<li>geomean 的题目集合是否与 faster rate / fast_p 一致，回退题是否计入分母；</li>
+<li>能量数字是否标注了测量工具与匹配速度的判定方式。</li>
+</ul>
+<p>这张清单的价值在于它把“论文声称”与“可复现结论”分开。KernelPro 的 2.42/4.69/5.30 与 1.23x 在论文给定的硬件、基线与输入分布上成立，但摘要级信息不足以判定基线强度与 shape 覆盖，因此这些数字应被当作上界参考而非生产预期。真正可迁移的工程判断是：微剖面工具给出的建议依赖于 roofline 拐点，而拐点由 dtype、shape 分布与架构三者共同决定；任何优化闭环若不在评测口径里显式固定这三者，其加速比就只是特定配置下的局部最优，换一个隐藏 shape 就可能退回基线以下。</p>
+
+<h3>口径边界：KernelBench 三级加速比在什么条件下失效</h3>
+<p>KernelPro 的对外数字是 KernelBench 上 Levels 1/2/3 的几何平均加速比 2.42x / 4.69x / 5.30x，外加 VeOmni MoE 训练 kernel 相对手调 Triton 的 1.23x，以及同速下 11.6% 的能耗下降。这四个数各自绑定一套口径，混用即不可比。KernelBench 的基线是 PyTorch eager 与 torch.compile 一类参考实现，加速比的分母是“基线在该题该输入上的实测时延”，不是理论下界；因此同一候选 kernel 在不同基线强度下会得到完全不同的倍率。工程上必须把分母固定成可核查的测量协议：同一 dtype（fp32/bf16/fp16 是否开 TF32 要写死）、同一 warmup 与迭代次数、同一计时后端（CUDA event 还是 wall clock）、同一显存驻留状态。若基线未开 TF32 或未用最强库实现，加速比会被系统性高估——这是该论文自己列出的失败模式之一，也是复现时最先要排除的偏差来源。VeOmni 的 1.23x 尤其要小心：它的基线是“专家手调 Triton”，属于强基线，1.23x 的含金量高于 KernelBench 上对 eager 的倍率，但它是单一算子族、单一 Hopper 架构、单一 dtype 下的结果，不能外推成通用加速能力。</p>
+<p>隐藏 shape 与输入分布是这套口径最脆的接缝。论文摘要级信息未给出全部 shape，意味着 Levels 1/2/3 的题目集合与输入规模并未在数字旁公开；而 kernel 优化天然对 shape 特化——一个为固定 M/N/K 调好的 tiling 与 WGMMA 流水，换一个 batch 或换一个 head 维度就可能从 5x 掉到 1x 以下。可核查的做法是把测量写成带 shape 三元组的记录，而不是只报一个几何平均。几何平均本身也有口径陷阱：<span class="formula">$$S_{\text{geo}}=\exp\!\Big(\frac{1}{N}\sum_{i=1}^{N}\ln s_i\Big)$$</span> 它对“个别题暴涨、多数题持平”极其敏感，一个 20x 的离群题能把整体几何平均拉高，而中位数加速比会诚实地停在低位。因此报告里应同时给 geomean、中位数与 fast-p（达到某倍率阈值的题目占比），三者不一致时以中位数为工程判断依据。正确性门同样要写进口径：候选必须与参考实现在给定输入上逐元素比对通过（含 NaN/Inf 与边界 shape），否则加速比无意义；reward hacking 或失败回退会让正确率虚高，这是论文明确点出的失效条件。</p>
+<p>roofline 口径是判断“这个加速比是否已到物理上限”的唯一手段。论文的语义反馈算子把原始硬件指标翻译成自然语言指导，其底层判据正是可达性能 <span class="formula">$$P_{\text{att}}(I)=\min\left(P_{\text{peak}},\;I\cdot B_{\text{eff}}\right),\qquad I=\frac{\text{FLOP}}{\text{Byte}}$$</span> 其中算术强度 I 由该题的 FLOP 与字节访问量决定。同一 kernel 在不同 shape 下 I 会移动，从 memory-bound 区跨到 compute-bound 区，最优策略随之从合并访存/向量化切换到 tensor core 流水；这意味着“5.30x”只在 Level 3 那批题目的 I 分布上成立，换分布后 roofline 拐点位置变化，加速比不可比。工程代价体现在测量侧：要拿到可信的 B_eff 与 P_peak，需要 NCU 采集 DRAM throughput、SM 占用与指令混合，单题 profile 的采集开销远高于一次计时，闭环多轮搜索时 profile 次数直接决定 wall-clock 与 token 预算——论文用 MCTS 搜索带来 26% 几何平均提升、主动工具编排带来 23% 提升，这些收益都是用额外的 profile 调用与生成轮次换来的，不是免费的。部署前的判断应落在：该题是否已接近 P_att，若已接近则继续搜索只增加编译与 profile 时延而不增加收益，应停止迭代。</p>
+<table class="mini"><thead><tr><th>口径项</th><th>可核查写法</th><th>不可比情形</th></tr></thead><tbody><tr><td>基线</td><td>固定 eager/compile 版本、TF32 开关、库实现</td><td>基线未开 TF32 或用弱实现</td></tr><tr><td>dtype</td><td>fp32/bf16/fp16 分列报告</td><td>跨 dtype 直接比倍率</td></tr><tr><td>shape</td><td>记录 M/N/K 与分布，报中位数+geomean+fast-p</td><td>只报 geomean、隐藏 shape</td></tr><tr><td>硬件</td><td>绑定具体架构（如 Hopper）与时钟状态</td><td>跨架构外推 1.23x</td></tr><tr><td>正确性</td><td>逐元素比对+边界 shape，禁回退掩盖</td><td>reward hacking 抬高正确率</td></tr></tbody></table>
+<p>把这张表落到一次完整流程上：先读参考实现与基准口径，生成候选，编译后做正确性检查，用统一基线测时延与加速比，再按反馈保留或回退。失效条件集中在三处——基线强度漂移使倍率虚高、shape 特化使离线分数在生产输入上崩塌、profile 与搜索的额外轮次把编译时间和 token 消耗推高到抵消收益。系统代价的量化方式是记录每题的总 wall-clock（编译+profile+生成）与达到目标倍率所需的轮数，而不是只记录最终 kernel 的时延；当单题 profile 开销超过其稳态运行时延时的一个可观比例时，闭环优化的端到端收益就要重新核算。这也是该方案在跨硬件、跨 dtype、跨框架迁移未验证时的真实边界：数字属于论文给定的硬件、基线与输入分布，离开这套口径，2.42x/4.69x/5.30x 与 1.23x 都只是特定测量协议下的观测值。</p>
+<p class="paper-line">对应：papers/paper-2606-26453 · 第 2/9 部分</p>

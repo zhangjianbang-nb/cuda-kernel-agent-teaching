@@ -1,0 +1,42 @@
+<h3>一 · 瓶颈判定的分段函数：阈值为何落在 0.8</h3>
+<p>回灌链路的第一块拼图不是指标本身，而是把连续计数器压成离散标签的那个分段函数。给定事实里的形式是：</p>
+<div class="formula">$$\text{Bound}=\begin{cases}\text{memory}, & \frac{\text{DRAM}_{\text{throughput}}}{B_{\text{peak}}}>0.8\\ \text{compute}, & \frac{\text{SM}_{\text{util}}}{1}>0.8\\ \text{latency}, & \text{otherwise}\end{cases},\quad \text{Feedback}=f(\text{Bound},\text{Top-3 stalls})$$</div>
+<p>逐项拆解。第一项的分母 $B_{\text{peak}}$ 是设备峰值 DRAM 带宽，分子是 NCU 报出的 achieved DRAM throughput，二者之比即“带宽饱和度”。第二项写成 $\text{SM}_{\text{util}}/1$ 是把 SM 利用率视作已归一化到 $[0,1]$ 的量，除以 1 只是显式声明量纲，工程上等价于直接与 0.8 比较。第三分支 otherwise 是兜底：既不饱和带宽、也不饱和计算单元，说明时间花在了等待上——访存延迟未被掩盖、同步开销、occupancy 不足导致的发射空隙，都落进这一类。</p>
+<p>阈值取 0.8 而非 1.0，关键一步在于认识到 NCU 的 achieved 指标本身带系统性折损：理论峰值带宽在真实访问模式下不可完全达到，实测天花板通常显著低于标称值；SM 利用率同样受指令混合与发射端口限制。若把判据设在 1.0，绝大多数真实 kernel 永远落进 latency 分支，分类器退化为常数函数。0.8 是给“接近饱和”留出的容差带，使分类在实测可达上限附近触发。代价是明确的：容差带越宽，越容易把“带宽 75% 但已是该访问模式上限”的 kernel 误判为 latency-bound，进而让 agent 去做增加 occupancy 的无用功。工程上应把这两个比值同时写进反馈块，而不是只给标签——数值让 agent 有机会自行修正规则。</p>
+<p>一个具体例子：某归约 kernel 的 DRAM 吞吐比为 0.83、SM 利用率为 0.4，按上式判 memory-bound；agent 收到的动作建议应是“减少访存字节数或提高复用”，而非“加大 tile 提升计算密度”。反过来，若某 GEMM 变体 SM 利用率 0.85、DRAM 比 0.5，判 compute-bound，动作空间转向指令级并行与寄存器压力。两个分支的动作集合互斥，这正是分段函数存在的意义：它把“时延没降”这句无信息量的话，翻译成有方向的约束。</p>
+
+<h3>二 · 派生量的推导：从原始计数器到可比较的比值</h3>
+<p>NCU 采集的 10–20 个关键指标是原始计数，不能直接进 prompt——量纲不一、绝对值随 shape 漂移。派生量的推导必须做两件事：归一化与去量纲。以 achieved occupancy 为例，其定义是活跃 warp 数与硬件可容纳 warp 上限之比，推导的关键一步是把“平均活跃 warp”替换为时间加权平均，因为 occupancy 在 kernel 生命周期内是波动的，采样点的瞬时值会高估尾部空转阶段。写成伪代码思路：</p>
+<p>对每个采样区间 $i$，记录活跃 warp 数 $w_i$ 与区间时长 $t_i$；则 $\text{occ}=\sum_i w_i t_i / (W_{\max}\sum_i t_i)$，其中 $W_{\max}$ 为每 SM 最大常驻 warp 数。这一步把“瞬时快照”变成“时间积分”，代价是 NCU 需保留时间序列而非单点聚合，profile 数据体积上升，但换来的是 occupancy 与真实执行时间对齐，避免把启动/收尾阶段的低占用误读为整体占用不足。</p>
+<p>L2 命中率的推导同理，但有一个易错点：命中率必须与访问总量配对解读。设 L2 命中率为 $h$、总访存请求数为 $N$、单次未命中回填字节为 $b$，则回填 DRAM 字节约 $N(1-h)b$。关键一步是把命中率换算成“实际 DRAM 压力”，因为高命中率既可能来自良好的数据复用，也可能来自极小的工作集——后者在放大 shape 后会瞬间崩塌。反馈块里若只写“L2 命中率 0.9”，agent 可能误判为访存已优化到位；写成“命中率 0.9，但 DRAM 吞吐比 0.2，工作集可能过小，放大 shape 后需重测”，才构成可执行的信号。</p>
+<p>性能代价在这里体现为采集成本：这些派生量要求 NCU 以区间粒度而非单点粒度输出，采集的 metric 数从个位数升到十几二十个，单次 profile 的重放次数与时延随之上升。给定事实已明确 profile 耗时是裸跑的 10–100×，因此派生量不能每轮全量计算——工程判断是：分类所需的三个比值（DRAM 比、SM 利用率、occupancy）每轮必算，L2 命中率与 stall 细分按轮次抽样，例如每三轮做一次全量、其余轮次只跑轻量 metric 集。</p>
+
+<h3>三 · Top-3 stall 的压缩：从计数器到 ≤200 token 反馈块</h3>
+<p>分类标签只回答“哪类瓶颈”，不回答“卡在哪条指令的等待上”。stall 原因是 NCU 的 warp 状态采样，原始输出是十几个 stall 槽位的计数分布，直接拼接会撑爆 prompt 预算。压缩的关键一步是排序后取前三，并把计数转成占比而非绝对值——绝对值随 kernel 规模漂移，占比才跨 kernel 可比。伪代码思路：对每个 stall 槽位 $s$，计算 $r_s = c_s / \sum_{s'} c_{s'}$，按 $r_s$ 降序取前三，输出形如“long scoreboard 0.42 / barrier 0.21 / short scoreboard 0.11”。</p>
+<p>为什么是三个而不是全部？因为反馈块有硬预算：给定事实要求压缩到 ≤200 token。一个 stall 槽位的自然语言描述加数值约占 15–25 token，加上分类标签、三个比值、动作提示，三到四个槽位恰好填满预算。超过这个数，要么挤掉分类信息，要么触发截断，截断后的反馈块对 agent 是噪声。代价是信息损失：第四、第五位的 stall 可能恰是某个特定优化动作的靶点（例如某个变体里 MIO throttle 排第四，但改指令混合正好能压它）。缓解手段是把完整分布留在本地日志供人工审计，只把前三送进 prompt，让 token 预算花在最高杠杆的信号上。</p>
+<p>具体例子：某 kernel 分类为 latency-bound，Top-3 为 long scoreboard 0.42、barrier 0.21、short scoreboard 0.11。long scoreboard 指向全局访存延迟未被掩盖，barrier 指向同步等待。两条信号合起来指向“增加流水深度、减少块内同步次数”，而不是“提高计算密度”。若反馈块只给“latency-bound”一个词，agent 的动作分布会摊平到所有 latency 类优化上；加上 stall 排序后，动作被收窄到两三个具体方向。这就是 $f(\text{Bound},\text{Top-3 stalls})$ 中 $f$ 的实际内容：它不是查表，而是把离散标签与排序后的等待原因做笛卡尔积式的组合，生成带优先级的动作提示。</p>
+
+<h3>四 · 奖励整形：把 profile 中间量接进可验证奖励</h3>
+<p>端到端时延作为奖励的问题是稀疏：一轮生成只有一个标量，且被测量噪声与 shape 波动污染。profile 派生量提供了稠密的中间信号，可用于 reward shaping。设端到端奖励为 $R_{\text{e2e}}$（时延改善的归一化值），profile 奖励为 $R_{\text{prof}}$，组合形式可写为：</p>
+<div class="formula">$$R = R_{\text{e2e}} + \lambda \cdot R_{\text{prof}},\quad R_{\text{prof}} = \mathbb{1}[\text{Bound}_{t}\neq\text{Bound}_{t-1}] + \alpha\cdot\Delta(\text{DRAM ratio})$$</div>
+<p>逐项解释。第一项是主奖励，只在正确性 oracle 通过时非零——这是硬门槛，profile 信号不能替代正确性。第二项的第一部分是瓶颈类别迁移的指示函数：若本轮优化把 kernel 从 latency-bound 推到 memory-bound，说明优化方向生效，给正信号；若类别不变，说明动作未触及瓶颈，给零。第二部分是带宽饱和度的增量，$\alpha$ 控制其权重。关键一步在于：$R_{\text{prof}}$ 必须相对上一轮计算，而非相对绝对阈值——绝对阈值会把“本来就在 0.85”的 kernel 永久判为已优化，失去梯度。</p>
+<p>代价有三。其一是 profile 成本：每轮都算 $R_{\text{prof}}$ 意味着每轮都要跑 NCU，而单次 profile 是裸跑的 10–100×，在搜索循环里这是数量级的时间开销。工程折中是隔轮采样，未采样轮次用上一轮的 $R_{\text{prof}}$ 做衰减估计。其二是规则误判的传染：若分类规则把高 L2 命中率误判为 compute-bound，$R_{\text{prof}}$ 会奖励错误方向，而 $R_{\text{e2e}}$ 因噪声未能及时纠正，agent 会被引导到局部最优。其三是 $\lambda$ 的标定：$\lambda$ 过大则 agent 追逐 profile 指标而牺牲真实时延（典型是刷高 occupancy 却不减时延），过小则稠密信号不起作用。可行做法是把 $\lambda$ 设为随训练轮次衰减，早期靠 profile 稠密信号探索方向，后期让端到端时延主导。</p>
+<p>具体例子：某轮 agent 把 tile 从 64 增到 128，端到端时延持平（噪声内），但 DRAM 吞吐比从 0.55 升到 0.78、occupancy 从 0.3 升到 0.5。$R_{\text{e2e}}\approx 0$，但 $R_{\text{prof}}$ 因带宽比大幅上升而为正，agent 得到“这个方向对，继续加压”的信号，下一轮继续增大 tile 直至越过 0.8 触发 memory-bound 分类，动作转向减少访存。若没有 $R_{\text{prof}}$，这一轮会被判为无效变异而回退，搜索在此处断掉。</p>
+
+<h3>五 · 反馈块的拼装与注入：模板、预算与去重</h3>
+<p>压缩后的分类、比值、stall 排序要拼成一段可注入 prompt 的文本。拼装不是字符串拼接，而是有固定槽位的模板填充，伪代码思路：模板含四个槽——bound 标签、三个比值、Top-3 stall、动作提示；每个槽位有 token 上限，超限时按优先级截断（bound 标签与比值不可截，stall 可截到前二，动作提示可截到一句）。总预算 ≤200 token，实测应在拼装后做一次 token 计数校验，超限则回退到更短的模板变体。</p>
+<p>去重是容易被忽略的一环。连续多轮反馈块若内容高度相似（同一 bound、同一 stall 排序、比值仅微动），注入相同文本对 agent 是冗余上下文，挤占本可用于代码上下文的预算。工程做法是对反馈块做指纹：把 bound 标签与 stall 排序的槽位名拼接成短哈希，与上一轮指纹比较，相同则只注入“比值变化量”而不重复整块。代价是 agent 失去完整上下文，可能误以为指标未采集；缓解是在变化量前加一行“指标同上轮，变化：DRAM 比 +0.06”。</p>
+<p>具体例子：某轮反馈块为“Bound: memory；DRAM ratio 0.84；SM util 0.31；occ 0.62；stalls: long scoreboard 0.38, barrier 0.19；建议：减少全局访存、提高数据复用，勿增计算密度”。这段约 60 token，远低于预算，剩余预算留给代码 diff 与错误信息。若下一轮比值变为 0.86/0.30/0.63、stall 排序不变，指纹命中，注入缩短为一行变化量，省下的 token 用于让 agent 看到更完整的上一轮 kernel 源码——这直接影响它能否做出正确的访存改写。</p>
+
+<h3>六 · 可实现性边界：规则引擎而非模型</h3>
+<p>整套公式与伪代码的落地形态应是一个确定性规则引擎，而不是让另一个模型去“解读” NCU 输出。理由是可复现性与审计：同一份 NCU 报告必须产出同一段反馈块，否则 RL 的奖励信号不可归因。规则引擎的输入是 NCU 导出的结构化报告（含各 metric 的 achieved 值与 stall 分布），输出是模板填充后的字符串与结构化奖励分量。关键一步是把阈值、权重、模板全部外置为配置，使分类规则的修正不需要改代码——当发现某类 kernel 被系统性误判时，调阈值即可，且改动可被版本追踪。</p>
+<p>代价是规则引擎的表达力上限：它只能处理预设的指标组合，遇到新型 kernel（例如大量使用异步拷贝的流水线）时，预设的 stall 槽位语义可能失配，规则给出误导性排序。此时需要人工介入扩充槽位映射，而不是放任 agent 自行解读原始计数器。工程判断是：规则引擎覆盖高频路径，低频异常路径回退到“只给原始比值、不给动作提示”的保守模式，让 agent 在信息不足时倾向于做小步变异而非激进重构。</p>
+<p>最后一个具体机制落在采集调度上：由于 profile 是裸跑的 10–100×，规则引擎必须与采集调度协同——轻量 metric 集（bound 三比值）每轮跑，重量 metric 集（stall 全分布、L2 细分）按轮次抽样，且抽样轮次与搜索的 keep-revert 决策点对齐，使昂贵的 profile 恰好发生在需要判断“是否换方向”的时刻。这样反馈块的 token 成本与 profile 的时间成本都被压在搜索循环可承受的预算内，而公式里的每一个比值仍然来自真实计数器，不是估计值。</p>
+
+<h3>分类阈值的失效边界与 profile 预算</h3>
+<p>三分类规则本身是硬阈值，失效点集中在两个方向。其一是双高情形：当 DRAM 吞吐占比与 SM 利用率同时越过 0.8，两个分支条件同时为真，若实现里用顺序 <code>if/elif</code> 判定，结果取决于判断顺序而非真实瓶颈，agent 收到的 Bound 标签就带上了实现偶然性。工程上应把两条件同时成立显式标为 <code>mixed</code> 并保留两个数值，让下游 prompt 自行取舍，而不是强行归入 memory 或 compute。其二是 occupancy 缺位：公式只用了 DRAM 与 SM 两个维度，一个 SM 利用率不足 0.8、DRAM 也不饱和但 achieved occupancy 极低的 kernel 会被判成 latency-bound，反馈块里若不显式写出 occupancy 数值，agent 会误以为问题在指令级依赖而非并行度不足。阈值 0.8 本身也需按架构校准，同一 kernel 在峰值带宽不同的卡上可能跨过边界。</p>
+<div class="formula">$$\text{Bound}=\begin{cases}\text{memory}, & \frac{\text{DRAM}_{\text{throughput}}}{B_{\text{peak}}}>0.8\\ \text{compute}, & \frac{\text{SM}_{\text{util}}}{1}>0.8\\ \text{latency}, & \text{otherwise}\end{cases},\quad \text{Feedback}=f(\text{Bound},\text{Top-3 stalls})$$</div>
+<p>系统代价落在采集侧：ncu 需串行化并重放 kernel，单次 profile 是裸跑的 10–100×，因此不能每轮全量跑。可行的预算是分层采样——每轮只跑自定义 metric 集（10–20 个计数器）做快速分类，仅当 Bound 标签在连续两轮未变化时才触发一次 <code>--set full</code> 拿完整 stall 分布。伪代码上，反馈块生成应是纯函数：输入指标字典，输出 ≤200 token 文本，便于缓存与单测。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>误判后果</th><th>代价</th></tr></thead><tbody><tr><td>DRAM 与 SM 同时 &gt;0.8</td><td>标签随判断顺序漂移</td><td>一轮无效优化</td></tr><tr><td>L2 命中率高被当作 compute-bound</td><td>agent 加计算而非调 tile</td><td>时延不降、token 浪费</td></tr><tr><td>每轮全量 <code>--set full</code></td><td>—</td><td>profile 耗时 10–100×</td></tr></tbody></table>
+<p>具体例子：一个 tiled GEMM 变体 DRAM 占比 0.85、SM 利用率 0.6，判 memory-bound，Top-3 stall 含 long scoreboard，反馈块写“DRAM 已饱和，优先增大 tile 复用与 swizzle，勿增计算”，agent 下一轮改 tile 尺寸而非加 unroll；若采集端把高 L2 命中率误读为 compute 瓶颈，反馈就会诱导反向动作，这一轮的 profile 开销与 token 全部沉没。</p>
+<p class="paper-line">对应：algorithms/alg-ncu-metric-feedback · 第 3/8 部分</p>

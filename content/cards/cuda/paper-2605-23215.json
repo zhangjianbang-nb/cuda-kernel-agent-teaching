@@ -1,0 +1,75 @@
+{
+ "_paper_id": "paper-2605-23215",
+ "_domain": "cuda",
+ "_title": "FastKernels: Benchmarking GPU Kernel Generation in Production",
+ "_abstract_only": true,
+ "title_zh": "FastKernels: Benchmarking GPU Kernel Generation in Productio",
+ "background": "这篇论文发表于 2026 年（arXiv:2605.23215），属于 基准与可信评测 方向。它要回答的问题是：LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs and weak baselines, ",
+ "problem": "LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs and weak baselines, rewarding sandbox speedups that break or vanish in real inference systems. We in",
+ "core_idea": "We introduce FastKernels, a benchmark of 384 tasks drawn from 47 representative architectures across 8 categories, whose kernels suffice to reimplement 94.6% (472/499) of HuggingFace Transformers architectures with outputs matching the native implementations. ",
+ "architecture": "Each task mirrors the interface of the corresponding production module and is scored against the kernels production frameworks ship, and tasks form a compositional hierarchy, from primitives to full models, in which higher-level modules import lower-level ones. Candidates are scored at the kernel le",
+ "pipeline": [
+  "读取《FastKernels: Benchmarking GPU Kernel Generation in Production》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（We introduce FastKernels, a benchmark of 384 tasks drawn fro）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：Candidates are scored at the kernel level and end to end inside the models they come from, on the production execution path, and MacroEval aggregates calibrated correctness, coverage, and speedup into a leaderboard. Seeding it with five representative agents (",
+ "walkthrough": "一次完整流程：先读取《FastKernels: Benchmarking GPU Kernel Generation in Production》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Each task mirrors the interface of the corresponding production module and is scored against the kernels production frameworks ship, and tasks form a compositional hierarchy, from primitives to full models, in which high",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《FastKernels: Benchmarking GPU Kernel Generation in Production》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "Seeding it with five representative agents (6,900 agent-hours), we find that kernel-level speedups of $1.6$-$6.6\\times$ shrink to at most $1.25\\times$ end to end, only 20% of winning kernel sets run correctly as-is, and kernel-level scores mis-rank agents: Claude Code matches or beats KDA at every l",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs ",
+  "We introduce FastKernels, a benchmark of 384 tasks drawn from 47 representative architectures across 8 categories, whose kernels suffice to reimplement 94.6% (4",
+  "Each task mirrors the interface of the corresponding production module and is scored against the kernels production frameworks ship, and tasks form a compositio"
+ ],
+ "limitations": [
+  "《FastKernels: Benchmarking GPU Kernel Generation in Production》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Candidates are scored at the kernel level and end to end inside the models they come from, on the production execution path, and MacroEval aggregates calibrated correctness, coverage, and speedup into a leaderboard. Seed",
+ "summary": "LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs and weak baselines, rewarding sandbox speedups that break or vanish in real inference systems. We introduce FastKernels, a benchmark of 384 tasks drawn from 47 representative architectures across 8 categories, whose kernels suffice to reimp",
+ "data_recipe": [
+  "评测负载：《FastKernels: Benchmarking GPU Kernel Generation in Production》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs and weak baselines, rewarding sandbox speedups that break or",
+  "We introduce FastKernels, a benchmark of 384 tasks drawn from 47 representative architectures across 8 categories, whose kernels suffice to reimplement 94.6% (472/499) of HuggingFace Transformers architectures with outpu",
+  "Each task mirrors the interface of the corresponding production module and is scored against the kernels production frameworks ship, and tasks form a compositional hierarchy, from primitives to full models, in which high",
+  "Candidates are scored at the kernel level and end to end inside the models they come from, on the production execution path, and MacroEval aggregates calibrated correctness, coverage, and speedup into a leaderboard.",
+  "Seeding it with five representative agents (6,900 agent-hours), we find that kernel-level speedups of $1.6$-$6.6\\times$ shrink to at most $1.25\\times$ end to end, only 20% of winning kernel sets run correctly as-is, and ",
+  "Code is available at https://github.com/Snowflake-AI-Research/fastkernels."
+ ],
+ "anchors": [
+  "94.6",
+  "20"
+ ],
+ "pitfalls": [
+  "《FastKernels: Benchmarking GPU Kernel Generation in Production》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

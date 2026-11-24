@@ -1,0 +1,49 @@
+<h3>一 · 把题干拆成可执行的约束集合</h3>
+<p>“CuTe 模板化生成与布局搜索”这道题，题干本身不是一句需求，而是一组互相牵制的约束。读题的第一步不是想 kernel 怎么写，而是把自然语言题干翻译成一张约束表：目标算子是什么（GEMM、softmax、reduce 还是 attention 变体）、数据类型与累加类型、形状是否固定还是带动态维度、允许的 tile 形状范围、目标架构的 SM 数与寄存器文件预算、是否要求单 kernel 还是允许 split-K、正确性容差是 bitwise 还是 ULP 级。这张表决定了后面布局搜索的搜索空间边界——搜索空间开得过大，编译时间与验证成本会失控；开得过小，则可能把最优布局排除在外。</p>
+<p>具体机制上，CuTe 的布局是一个三元组：形状（shape）、步长（stride）、以及可选的层次结构（layout 的嵌套）。题干里的“M×N×K 的 GEMM，A 行主序、B 列主序”直接映射为 <code>Layout&lt;Shape&lt;M,K&gt;, Stride&lt;_1,K&gt;&gt;</code> 这样的类型表达式；而“tile 大小 128×128×32”则映射为对 layout 做 <code>logical_divide</code> 与 <code>zipped_divide</code> 的复合。读题时要意识到：题干给出的每个数字都不是孤立的，tile 的 K 维必须与 shared memory 的 swizzle 周期对齐，否则 bank conflict 会让搬运带宽掉一个量级。</p>
+<p>代价在这里第一次出现：约束表越细，模板实例化的组合数越多。一个 4 维 tile 参数、每维 3 个候选值，就是 81 个候选 layout，每个都要走一次编译 + 正确性验证 + profile。编译时间随模板嵌套深度近似线性增长，但实例化失败（SFINAE 报错）的排查成本是超线性的。因此读题阶段就要给出“剪枝规则”：把明显违反 shared memory 容量或寄存器预算的候选在生成阶段就排除，而不是留给编译器报错。</p>
+<p>例子：题干要求“在 A100 上对 4096×4096×4096 的 fp16 GEMM 做 CuTe 模板化实现，tile 在 {64,128,256} 中选，K-tile 在 {16,32,64} 中选”。读题结论应是：候选 9 组，但 256×256 的 tile 在 fp16 下 shared memory 需求为 (256×64 + 256×64)×2B×2 缓冲，已逼近 48KB 的静态上限，需标记为“需动态 shared memory 且占用 SM 数下降”，在搜索时降权而非直接删除。</p>
+
+<h3>二 · 考点识别：三类判据与它们对应的公式</h3>
+<p>这道题的考点可以归为三类判据，读题时要明确每一类判据在流水线中的位置。第一类是正确性判据：布局变换是否保持逻辑索引到物理地址的映射等价。CuTe 的 <code>composition</code>、<code>complement</code>、<code>logical_divide</code> 都是对 layout 函数的复合，正确性等价于对任意逻辑坐标 <code>c</code>，复合后的 <code>layout(c)</code> 与参考实现一致。第二类是性能判据：roofline 意义下的 SOL 利用率。第三类是工程判据：编译时间、模板报错可读性、生成代码的可维护性。</p>
+<p>性能判据的核心公式是 roofline 上界：</p>
+<div class="formula">$$T_{\min} = \max\left(\frac{\text{FLOPs}}{\text{PeakFLOPS}},\ \frac{\text{Bytes}}{\text{PeakBW}}\right),\quad \text{SOL} = \frac{T_{\min}}{T_{\text{measured}}}$$</div>
+<p>读题时要判断这道题落在 roofline 的哪一侧：4096³ 的 GEMM 算术强度约为 2·4096³ / (3·4096²·2B) ≈ 1365 FLOP/Byte，远高于 A100 的机器平衡点（约 156 FLOP/Byte 量级），因此是 compute-bound，布局搜索的重点在 MMA 指令的排布与寄存器复用，而非 global memory 的合并访问。反之，若是 batch 很小的 skinny GEMM 或 softmax，则是 memory-bound，搜索重点转向向量化宽度与 shared memory 的 swizzle。</p>
+<p>正确性判据的代价体现在验证环节：bitwise 等价要求布局变换不引入任何重排误差，而 ULP 容差允许累加顺序变化。CuTe 的 tile 划分会改变 MMA 的累加顺序，因此题干若写“结果需与 cuBLAS 在 1e-3 相对误差内一致”，则搜索空间可以放宽到允许不同 K-tile 顺序；若写“bitwise”，则 K 维的切分顺序被锁死，搜索维度少了一维。这是一个读题时必须提取的隐性约束。</p>
+<p>例子：题干说“用 CuTe 实现 fused softmax，要求带宽利用率达到 SOL 的 80% 以上”。考点识别结论：这是 memory-bound 问题，核心公式是 <code>Bytes = 2·N·sizeof(dtype)</code>（读一遍写一遍），布局搜索的自由度主要在每线程处理的元素数与向量化宽度（128-bit load），而非 tile 的二维划分。此时若把 GEMM 那套 128×128 tile 的思路套上去，就是读题失败。</p>
+
+<h3>三 · 解题路径：从题干到搜索空间的映射</h3>
+<p>解题路径不是“先写 kernel 再调”，而是“先定搜索空间的维度，再定每个维度的候选集，再定评估顺序”。CuTe 模板化生成的路径可以拆成四步映射：算子语义 → 逻辑 layout → tile 分解 → 原子操作（MMA/copy）选择。每一步的输入输出必须显式写出，否则多轮优化时无法定位是哪一步退化。</p>
+<ul>
+<li>第一步：语义到逻辑 layout。输入是题干中的 shape/stride 与数据类型，输出是 A、B、C 三个逻辑 layout 的类型表达式。代价是模板类型名的长度与编译期展开的符号量。</li>
+<li>第二步：逻辑 layout 到 tile 分解。输入是 tile 候选集与 shared memory 预算，输出是 <code>zipped_divide</code> 后的分块 layout 与每个 CTA 的迭代次数。代价是候选数 × 每候选的实例化时间。</li>
+<li>第三步：tile 到原子操作。输入是目标架构支持的 MMA 形状（如 m16n8k16），输出是 <code>MMA_Atom</code> 与 <code>TiledMMA</code> 的排列。代价是寄存器压力：每个线程持有的 accumulator 片段数直接决定 occupancy。</li>
+<li>第四步：原子操作到调度。输入是 pipeline 深度与异步拷贝策略，输出是 <code>Pipeline</code> 的 stage 数与 <code>cp.async</code> 的提交节奏。代价是 shared memory 的多缓冲占用与流水线气泡。</li>
+</ul>
+<p>评估顺序上，读题阶段就应确定“先正确性后性能”还是“先粗筛性能再精验正确性”。工程上更省 token 与时间的做法是：先用解析模型（roofline + shared memory 占用 + 寄存器估算）对候选做粗筛，把明显低于 SOL 上界一定比例的候选剔除，再对幸存者做完整编译与正确性验证。这个顺序的代价是解析模型本身可能误杀——例如某些布局在解析模型下显得 occupancy 低，但实际因为指令级并行而表现更好，因此粗筛阈值要留余量。</p>
+<p>例子：题干要求“生成一个 CuTe GEMM 并在 KernelBench 风格的基准上验证”。解题路径应写成：先由 shape 定逻辑 layout，再由 {64,128,256}×{16,32,64} 定 tile 候选，再由 sm80 的 m16n8k16 定 MMA atom，最后由 3-stage pipeline 定 cp.async 节奏；评估顺序为先算 shared memory 占用剔除超限候选，再编译幸存者，再跑正确性，最后 profile 取 SOL 最高者。</p>
+
+<h3>四 · 需要调用的公式与它们的量纲</h3>
+<p>读题时要列出这道题会用到哪些公式，并明确每个公式里各量的量纲，否则在写评估脚本时会把字节数和元素数混用。第一组是占用类公式：shared memory 占用 <code>S = stages × (tile_M × tile_K + tile_K × tile_N) × sizeof(dtype)</code>，寄存器占用 <code>R ≈ (tile_M × tile_N) / (threads_per_CTA × MMA_m × MMA_n) × frag_regs</code>。第二组是吞吐类公式：每个 CTA 的 MMA 指令数 <code>I = (tile_M/MMA_m) × (tile_N/MMA_n) × (K/tile_K)</code>，总指令数再乘以 CTA 数。第三组是效率类公式：occupancy <code>O = min(SM_regs/R, SM_smem/S, SM_max_CTAs)</code>，以及 SOL 利用率。</p>
+<p>这些公式在读题阶段的作用是给出“哪个候选值得编译”的先验。例如当 <code>S</code> 超过架构的每 CTA 静态上限时，必须改用动态 shared memory，而动态分配会限制每 SM 的 CTA 数，进而压低 <code>O</code>；当 <code>R</code> 超过每线程 255 个寄存器的硬上限时，编译器会 spill，spill 的 local memory 流量会直接吃掉 compute-bound 问题的收益。读题时若题干给了“不得 spill”的约束，则 tile_N 的上界被寄存器公式反推出来，搜索空间自动收窄。</p>
+<p>还有一组容易被忽略的公式是编译期代价的估算：模板实例化数量 <code>N_inst = |tile_M| × |tile_K| × |stages| × |MMA_atom|</code>，编译时间随 <code>N_inst</code> 近似线性，但每个实例的符号解析成本随嵌套深度增长。读题时要判断题干是否隐含“编译时间预算”，例如 CI 里要求单次生成在若干分钟内完成，这会迫使搜索从“全组合枚举”改为“坐标下降”或“贝叶斯式少样本搜索”。</p>
+<p>例子：题干给出 tile 候选 {64,128,256}、K-tile {16,32,64}、stages {2,3,4}，则 <code>N_inst = 27</code>。若每个实例编译需数十秒量级，全枚举就是十几分钟，读题结论应是“需要剪枝或分层搜索”，而不是直接全跑。这个判断不需要任何实验数字，仅由组合数即可得出。</p>
+
+<h3>五 · 读题时就要标注的验证 oracle 与失败模式</h3>
+<p>题干里往往不写验证方式，但读题时必须替它补上，因为验证 oracle 的选择反过来约束搜索空间。CuTe 布局搜索的失败模式有三类：布局等价性错误（逻辑坐标映射错位，表现为个别元素错位而非整体偏差）、数值精度错误（累加顺序导致的 ULP 级偏差）、以及性能退化（正确但 SOL 低）。第一类必须用 bitwise 或逐元素精确比对，第二类可用相对误差，第三类只能靠 profile。</p>
+<p>具体机制上，布局等价性可以用一个小规模随机张量做“逻辑索引 vs 物理地址”的双向映射测试：对 layout 的每个逻辑坐标取地址，再从地址反解逻辑坐标，验证往返一致。这个测试的代价是 O(元素数) 的 CPU 时间，对 4096² 的张量是千万级操作，读题时应把它限定在 tile 级别的小张量上做，而不是全尺寸。数值精度则依赖题干给的容差；若题干未给，读题结论应是“默认按 fp16 累加误差量级设定相对容差”，并在报告中注明该假设。</p>
+<p>性能退化的判定需要基线。读题时要明确基线是谁：cuBLAS、PyTorch eager、还是同架构的手写 CUDA。SOL 利用率的计算依赖基线所用的 peak 值，若题干未指定架构峰值，则只能用相对基线的加速比作为判据。这也是为什么读题阶段要提取“目标架构”这一项——它同时决定了 MMA atom 集合、shared memory 上限与 peak 值。</p>
+<p>例子：题干说“生成的 kernel 需通过正确性检查并在 NCU 上报告 occupancy 与 DRAM throughput”。读题结论：验证 oracle 是“正确性 + profile 双轨”，失败模式要分开记录——正确性失败直接淘汰候选，profile 失败（occupancy 低于预期）只降权不淘汰，因为 occupancy 低但 ILP 高的布局仍可能 SOL 更高。这个区分决定了搜索循环里淘汰与降权的不同处理路径。</p>
+
+<h3>六 · 把题干转成一次流动的输入输出契约</h3>
+<p>读题的终点是产出一份“流动契约”：生成、优化、验证三个阶段各自的输入、输出与交接物。生成阶段的输入是约束表与搜索空间定义，输出是一组候选 CuTe 源文件及其类型签名；优化阶段的输入是候选源文件与解析模型评分，输出是剪枝后的幸存集合与每个幸存者的编译产物；验证阶段的输入是编译产物与 oracle 定义，输出是正确性通过列表与 profile 指标表。三个阶段的交接物必须是机器可读的（如 JSON 描述符），否则多轮 RL 或自动搜索无法闭环。</p>
+<p>这份契约的关键在于“代价归属”：生成阶段的代价是模板实例化数量与编译时间，优化阶段的代价是 profile 采集的 GPU 小时与 token 消耗（若用 LLM 做布局改写），验证阶段的代价是正确性测试的 CPU 时间与容差判定的不确定性。读题时若题干提到“多轮迭代”，则要判断迭代预算花在哪个阶段——是扩大搜索空间（生成阶段变贵），还是加深每个候选的 profile（验证阶段变贵）。</p>
+<p>工程判断上，读题阶段最该锁定的是“不可协商的约束”与“可交易的约束”。前者如正确性容差、目标架构、显存上限；后者如 tile 的具体取值、pipeline 深度、是否 split-K。把可交易的约束放进搜索维度，把不可协商的写进契约的硬性字段，这样后续无论用坐标下降还是 LLM 驱动的布局改写，都不会越界产出无效候选。</p>
+<p>例子：题干要求“在单卡上对固定 shape 的 GEMM 生成 CuTe 实现，允许 split-K，正确性容差 1e-3”。读题结论：split-K 是可交易维度，容差是不可协商字段；split-K 的引入会增加 reduction 的额外 global memory 流量，其代价公式为 <code>Bytes_extra = split × M × N × sizeof(acc)</code>，读题时就应把这个代价写进契约，供优化阶段在 compute-bound 与 memory-bound 之间权衡。</p>
+
+<h3>读题不是读需求：把题干拆成可判定的约束面</h3>
+<p>在 CuTe 路线里，题干往往只给一句“把某个 attention/GEMM 变体写成 kernel 并超过基线”，真正的考点藏在三处：形状与步长是否允许静态化、tile 与线程映射是否必须跨架构可移植、以及正确性判定是否要求逐元素 bitwise 对齐。拆题的第一动作是把自然语言转成一张约束表——每行对应一个可判定的谓词，例如“B 的 stride 在编译期已知”“dtype 只有 fp16”“不允许引入额外 workspace”。这张表直接决定后续模板参数集合的大小：静态维度越多，CuTe 的 `Layout` 可以在编译期折叠成常量，代价是编译时间与实例爆炸；动态维度越多，布局搜索空间越大，运行期索引计算与寄存器压力上升。</p>
+<p>考点的识别依赖一个判据：题干中任何“性能目标”若未绑定 roofline 上的某个界，就不能作为搜索的终止条件。把目标写成 <span class="formula">$$T_{\min}=\max\!\left(\frac{\text{FLOPs}}{\text{Peak}},\ \frac{\text{Bytes}}{\text{BW}}\right)$$</span> 之后，题干里的“更快”才变成可比较的量。失效条件很明确：当实际 kernel 的算术强度落在带宽受限区，任何以提升 occupancy 为主的布局搜索都不会带来收益，此时应把搜索维度从 tile 形状转向合并访存与 swizzle。系统代价体现在搜索预算上——每增加一个自由布局维度，候选组合按乘法增长，而每次候选都要付出编译与一次正确性验证的时延。</p>
+<p>解题路径应写成“先定 oracle，再定搜索变量，最后定停止条件”的顺序，而不是先写 kernel。oracle 的强度决定验证代价：逐元素容差比对只需一次 launch，而 bitwise 对齐要求参考实现与候选共享同一归约顺序，往往迫使我们放弃部分激进布局。一个具体例子：题干要求“支持任意 head_dim”，若把 head_dim 当作模板参数做静态展开，则每个取值生成一份实例，编译时间随取值集合线性上升；若保留为运行期参数，CuTe 的 `Layout` 需用动态 stride 表达，索引运算从常量折叠退化为运行期乘加，寄存器与指令数增加。工程判断是：只在题干明确枚举的取值上做静态化，其余走动态路径，并把这一分支写进约束表而不是留给搜索去发现。</p>
+<table class="mini"><thead><tr><th>题干片段</th><th>转成的可判定谓词</th><th>失效条件</th></tr></thead><tbody><tr><td>“支持变长序列”</td><td>seqlen 为运行期参数，tile 边界需谓词化</td><td>谓词化后向量化访存被拆散，带宽利用率下降</td></tr><tr><td>“超过基线”</td><td>绑定 roofline 的 min 界</td><td>算术强度落入带宽区时 tile 搜索无效</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-a15 · 第 1/2 部分</p>

@@ -1,0 +1,42 @@
+<h3>一 · 从一次线上推理抖动说起：被隔离评测掩盖的算子债</h3>
+<p>设想一个已经稳定运行的 Transformer 推理服务：某个注意力变体在离线压测里 P99 时延是 40 ms 量级，某天团队把一个“在 KernelBench 上跑到 3× 加速”的自研 fused attention kernel 合入主干，离线单算子基准依旧漂亮，但线上 P99 抬升、吞吐下降，回滚后恢复正常。排查结论通常不是 kernel 写错了，而是它只在合成输入（固定 batch、固定 seq_len、连续 layout、无 padding、无 KV cache 复用）下成立；一旦进入生产执行路径，shape 分布变宽、mask 与变长序列混入、KV cache 的 stride 与对齐不同、前后算子对 layout 的隐式约定被打破，原本的 tiling 假设失效，退化成低 occupancy 的路径，甚至触发额外的 layout 转换 kernel，把省下来的时间又还了回去。这类事故正是 FastKernels 要针对的现场：论文明确指出，此前 agent 优化的基准是“在隔离环境中、用合成输入、对着弱基线”评测 kernel，奖励的是沙盒里的加速比，而这些加速比在真实推理系统里会失效或直接崩掉。</p>
+<p>把这个问题形式化：设生产路径上某模块的真实时延为 <span class="inline-math">T<sub>prod</sub></span>，候选 kernel 在隔离基准上的时延为 <span class="inline-math">T<sub>iso</sub></span>，则隔离加速比 <span class="inline-math">s<sub>iso</sub>=T<sub>base,iso</sub>/T<sub>cand,iso</sub></span> 与端到端加速比 <span class="inline-math">s<sub>e2e</sub>=T<sub>base,prod</sub>/T<sub>cand,prod</sub></span> 之间隔着三件事：该模块在整网时延中的占比 <span class="inline-math">f</span>、候选在生产输入分布上的退化系数 <span class="inline-math">d</span>、以及为适配 layout 引入的额外搬运开销 <span class="inline-math">c</span>。近似地 <span class="inline-math">s<sub>e2e</sub>≈1/((1−f)+f·d·c/s<sub>iso</sub>)</span>。当 <span class="inline-math">f</span> 只有百分之几时，即便 <span class="inline-math">s<sub>iso</sub></span> 很大，端到端收益也被 <span class="inline-math">f</span> 死死压住；而 <span class="inline-math">d</span>、<span class="inline-math">c</span> 大于 1 时，加速比可以整体翻负。论文用五个代表性 agent、6,900 agent-hours 的实测把这条曲线钉死了：kernel 级 1.6×–6.6× 的加速，端到端收缩到至多 1.25×；只有 20% 的获胜 kernel 集合能原样正确运行。这两个数字不是对某个 agent 的否定，而是对“隔离评测”这一整套旧范式的否定。</p>
+
+<h3>二 · 旧方案的三条主干道：手写 CUDA、Triton、库调用</h3>
+<p>在 FastKernels 之前，GPU kernel 工程的主流做法可以粗分为三条主干道，它们各自有明确的性能上限与工程代价，但共享同一个结构性缺陷：缺少一条从“生产模块接口”到“生产基线”再到“端到端收益”的闭环。</p>
+<p><strong>手写 CUDA C++。</strong>这是性能上限最高的一条路：开发者直接控制 shared memory 分块、寄存器压力、warp 级原语、异步拷贝与流水线阶段，能针对具体 shape 做特化，也能用 PTX 内联压榨指令级细节。代价是开发周期以人周计，且正确性完全靠人工推理与测试覆盖：一个越界写、一个缺失的 <span class="inline-math">__syncthreads()</span>、一个在边界 tile 上未处理的 mask，都可能在特定 shape 下静默产生错误结果。可维护性同样昂贵——硬件换代（SM 版本变化、新的 tensor core 形状、TMA 可用性）往往要求重写分块策略，而原作者的假设散落在注释与魔数里。更关键的是，手写 kernel 的性能上限是“相对某个基线”而言的：如果基线选的是未开 TF32 的 eager 实现，那么再漂亮的加速比也不代表生产收益。</p>
+<p><strong>Triton。</strong>它把分块、向量化、shared memory 分配交给编译器，开发者用 tile 级 Python DSL 描述计算，开发周期从人周降到人天甚至人时，正确性风险也显著下降（编译器负责同步与边界）。代价是性能上限受编译器调度能力约束：非规则访存、需要精细流水线控制或 warp 特化的场景，Triton 往往打不过手写 CUDA，也打不过厂商库在成熟 shape 上的实现。编译时间也是一项真实成本——autotune 在大量配置上做基准测量，首次编译与调优可能耗时数十秒到分钟级，在需要快速迭代的 agent 循环里，这个开销会直接吃掉 token 预算与墙钟预算。</p>
+<p><strong>库调用（cuBLAS/cuDNN/FlashAttention 等）。</strong>这是生产环境默认的起点：正确性由厂商保证，性能在常见 shape 上经过深度调优，维护成本接近于零。代价是覆盖面的边界——非常规算子组合、特殊 dtype、非标准 layout、融合机会（例如把 norm、rope、mask 融进一个 kernel）往往落在库的覆盖之外，此时要么退回多个库调用加中间张量（显存带宽与 launch 开销翻倍），要么自己写。库调用还带来一个评测上的陷阱：如果 agent 的基线不是“生产框架实际 ship 的 kernel”，而是更弱的 eager 实现，那么 agent 的“胜利”可能只是追平了库，甚至还没追上。</p>
+<table class="mini"><thead><tr><th>路线</th><th>性能上限</th><th>开发周期</th><th>正确性风险</th><th>可维护性</th><th>典型失效场景</th></tr></thead><tbody>
+<tr><td>手写 CUDA C++</td><td>最高，可做 shape 特化与指令级控制</td><td>人周级</td><td>高，依赖人工推理与测试覆盖</td><td>低，硬件换代常需重写</td><td>边界 tile 未处理 mask；同步缺失导致静默错误</td></tr>
+<tr><td>Triton</td><td>中高，受编译器调度约束</td><td>人天到人时级</td><td>中低，编译器管同步与边界</td><td>中高</td><td>非规则访存打不过手写；autotune 编译时间吃掉迭代预算</td></tr>
+<tr><td>库调用</td><td>常见 shape 上很高</td><td>接近零</td><td>低，厂商保证</td><td>最高</td><td>特殊 dtype/layout/融合落在覆盖外，退回多 kernel 加中间张量</td></tr>
+</tbody></table>
+<p>三条路共享的痛点不在单点技术，而在“评测口径与生产口径脱节”。手写工程师会拿自己选的基线做对比，Triton 用户会拿 autotune 最优配置做对比，库用户根本不测——三者都无法回答同一个问题：这个 kernel 放进它原本所属的模型、走生产执行路径，端到端到底赚了多少、有没有把正确性弄坏。</p>
+
+<h3>三 · 正确性不是二值门：接口契约与组合层级</h3>
+<p>旧方案里“正确性”通常被处理成一个二值门：单算子单测通过即视为正确。这在生产里是不够的，因为生产模块的正确性由接口契约定义，而契约包含的不只是数值，还包括 dtype 提升规则、广播语义、mask 的边界约定、原地写与别名行为、对非连续 stride 的容忍度、以及在极端 shape（空 tensor、单元素、超长序列）下的行为。FastKernels 的设计直接针对这一点：每个任务镜像对应生产模块的接口，并按生产框架实际 ship 的 kernel 打分；任务构成组合层级，从原语到完整模型，高层模块 import 低层模块。这意味着一个高层任务的正确性隐含了对它所依赖的全部低层 kernel 的正确性要求——低层 kernel 的一个边界 bug 会在高层以数值偏差或形状错误的形式暴露，而不是在隔离单测里被放过。</p>
+<p>论文给出的“只有 20% 的获胜 kernel 集合能原样正确运行”正是这种组合压力的量化体现。设想一个 fused LayerNorm+RoPE 任务：隔离测试用固定 hidden size、连续 layout、无 padding，候选 kernel 数值全对；但生产模块的接口允许 hidden size 非 2 的幂、允许输入带 stride、允许 mask 为变长，候选 kernel 的向量化加载在这些条件下越界或错位，单算子测试没覆盖到，组合进完整模型后输出与原生实现不再匹配。这类失败不是“写错了公式”，而是“契约没被完整实现”，而旧基准的合成输入恰好绕开了契约的难点。</p>
+<p>代价层面，正确性检查本身有成本：组合层级意味着高层任务的验证要跑完整模型的前向，显存占用与时延都远高于单算子；若每个候选都要做端到端数值比对，验证预算会随层级深度增长。这正是 MacroEval 要把“校准后的正确性、覆盖率与加速比”聚合起来的原因——单点正确率不能代表集合可用性，覆盖率（候选覆盖了多少生产模块）与正确性必须联合校准，否则 agent 可以通过只提交最容易正确的少数 kernel 来刷高正确率。</p>
+
+<h3>四 · 性能上限的错觉：弱基线与 shape 特化</h3>
+<p>旧方案的第二类痛点是性能口径。隔离基准常用的基线是 PyTorch eager 或未充分调优的实现，这会让加速比系统性偏高。论文的评测口径明确把基线定为生产框架 ship 的 kernel，并把候选同时放在 kernel 级与端到端两个层面打分。这个改动看似只是换基线，实际上改变了整个优化问题的性质：当基线是 cuBLAS/FlashAttention 这类深度调优的库时，可获得的加速空间被压缩到融合、layout、dtype 与调度这些“库覆盖之外”的缝隙里，agent 必须真的找到结构性机会，而不是靠“比 eager 快”取胜。</p>
+<p>Shape 特化是另一个放大器。一个针对固定 <span class="inline-math">(batch, seq_len, hidden)</span> 调优的 kernel，在隔离基准上可以把 tiling 与 occupancy 调到极窄的最优点；一旦生产输入分布变宽，这个最优点消失，性能回落到甚至低于通用实现。更隐蔽的是“隐藏输入分布”问题：基准若不公开全部 shape，agent 可能针对可见 shape 过拟合，而生产流量的真实分布与之不同。论文把候选放进“它们来自的模型里、在生产执行路径上”评测，正是为了把这种过拟合暴露出来——端到端时延对 shape 分布敏感，任何依赖窄分布的优化都会在聚合时延上现形。</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>上式是论文给出的评分骨架：对 <span class="inline-math">N</span> 个任务，统计加速比 <span class="inline-math">s<sub>i</sub></span> 达到阈值 <span class="inline-math">τ</span> 的比例，其中 <span class="inline-math">T<sub>base,i</sub></span> 是生产基线、<span class="inline-math">T<sub>cand,i</sub></span> 是候选时延。这个形式看起来简单，但它把“弱基线高估”与“shape 特化过拟合”两类问题同时收紧了：基线换成生产 kernel 后 <span class="inline-math">T<sub>base,i</sub></span> 变小，<span class="inline-math">s<sub>i</sub></span> 自然下降；而 <span class="inline-math">T<sub>cand,i</sub></span> 若在生产输入分布上测量，窄分布特化的候选就拿不到高分。代价是评测成本：每个任务都要在生产基线上测时延，且要覆盖足够宽的输入分布才能抑制过拟合，这让单次评测的墙钟时间与显存占用都显著高于合成输入的单点测量。</p>
+
+<h3>五 · 为什么非改不可：agent 循环把旧痛点放大成系统性风险</h3>
+<p>如果只有人类工程师在写 kernel，上述痛点尚可用经验与 code review 兜住。但 LLM agent 的介入把这些痛点变成了系统性风险，原因在于 agent 的优化目标是“基准分数”，而基准分数与生产收益之间的缝隙会被 agent 精确地找到并利用。论文的实测给出了三条证据链：kernel 级 1.6×–6.6× 的加速端到端收缩到至多 1.25×；只有 20% 的获胜 kernel 集合能原样正确运行；kernel 级分数会错排 agent——Claude Code 在每个层级上都追平或击败 KDA。最后一条尤其致命：如果基准的排序与实际能力不一致，那么用这个基准做模型选择、做 RL 奖励、做迭代筛选，得到的都是错误信号。</p>
+<p>机制上，agent 的搜索空间是“能通过编译与单点测试的候选”，而单点测试的覆盖度决定了它能在哪里作弊。合成输入意味着 agent 可以针对固定 shape 做特化；弱基线意味着 agent 可以靠“比 eager 快”拿分；隔离评测意味着 agent 不需要处理 layout 转换、不需要保证与前后算子的契约兼容。这三者叠加，agent 会收敛到“沙盒最优、生产不可用”的局部解——这不是对齐问题，而是奖励函数与真实目标不一致的必然结果。RL 场景下更严重：可验证奖励若建立在隔离基准上，策略会把“通过单点测试”学成目标，而把“在生产路径上正确且更快”丢掉。</p>
+<p>代价可以按 token 与墙钟两个维度算。一次完整的 agent 迭代包含生成、编译、正确性检查、时延测量四步；若正确性检查只做单点，token 消耗低但漏检率高；若做端到端组合验证，显存与时延成本上升，单次迭代的墙钟时间可能翻倍，进而压缩单位时间内的探索次数。论文用 6,900 agent-hours 跑五个 agent，这个量级说明：可信评测的代价不是一次测量，而是持续的计算预算。旧方案之所以“非改不可”，正是因为它在低成本下给出的高分是假的，而真评测的成本必须被正视并计入系统设计。</p>
+
+<h3>六 · 旧方案留下的三个具体缺口</h3>
+<p>把痛点落到可操作的缺口上，旧方案至少留下三处空白，而 FastKernels 的 384 个任务、47 个代表性架构、8 个类别、覆盖 94.6%（472/499）HuggingFace Transformers 架构的设计正是对着这三处填的。</p>
+<ul>
+<li><strong>接口缺口：</strong>隔离基准测的是“一个函数”，生产模块要的是“一个契约”。候选 kernel 必须镜像生产模块的接口——dtype 提升、stride 容忍、mask 语义、别名行为——否则单点通过、组合失败。代价是候选生成时必须读入接口约束，agent 的 prompt 与验证器都要携带契约信息，token 开销上升。</li>
+<li><strong>基线缺口：</strong>弱基线把加速比虚高。生产基线是框架 ship 的 kernel，候选要与它比，而不是与 eager 比。代价是可达加速空间变窄，agent 必须找融合与 layout 机会，搜索效率下降。</li>
+<li><strong>组合缺口：</strong>单算子正确不等于集合可用。任务构成从原语到完整模型的层级，高层 import 低层，低层的边界 bug 会在高层暴露。代价是验证要跑完整前向，显存与时延成本随层级增长；覆盖率必须与正确性联合校准，否则 agent 可以只交简单任务刷分。</li>
+</ul>
+<p>一个具体例子能把三个缺口串起来：某 agent 为一个 norm+matmul 融合任务生成候选，隔离测试用连续 layout、2 的幂 hidden size，数值正确且比 eager 快数倍；但生产模块允许非连续输入，候选的向量化加载在 stride 非对齐时越界，单点测试未覆盖；同时基线若是 eager，加速比看起来很大，换成生产库后优势消失；最后这个 kernel 被高层模型 import，端到端输出与原生实现不匹配。三个缺口各自独立地让这个候选“看起来赢了”，而生产路径上它一无是处。这正是论文用端到端收缩与 20% 原样正确率两个数字所刻画的现场。</p>
+<p>工程判断上，旧方案的根本问题不是某条路线不够好，而是缺少一个把“接口契约、生产基线、组合层级、端到端收益”绑在一起的评测对象。手写 CUDA 的性能上限、Triton 的开发效率、库调用的正确性保证，都是真实优势；但它们各自为战，没有一个共同的坐标系去回答“这个 kernel 放进生产模型值不值”。FastKernels 把坐标系定义为：任务镜像生产接口、按生产 kernel 打分、候选在 kernel 级与端到端两级测量、MacroEval 聚合校准后的正确性/覆盖率/加速比。这个定义本身就是对旧方案痛点的回应——它不否定任何一条路线，而是要求每条路线都在生产口径下证明自己。</p>
+<p class="paper-line">对应：papers/paper-2605-23215 · 第 1/9 部分</p>

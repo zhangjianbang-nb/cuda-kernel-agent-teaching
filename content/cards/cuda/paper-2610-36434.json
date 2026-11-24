@@ -1,0 +1,78 @@
+{
+ "_paper_id": "paper-2610-36434",
+ "_domain": "cuda",
+ "_title": "JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels",
+ "_abstract_only": true,
+ "title_zh": "JustGoal: With Only a Goal, the AI Baseline Is Above the Exp",
+ "background": "这篇论文发表于 2026 年（arXiv:2610.36434），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：A small number of GPU kernels often determines the efficiency of large language model training and inference.",
+ "problem": "A small number of GPU kernels often determines the efficiency of large language model training and inference. High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or ",
+ "core_idea": "High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or specialized agents equipped with domain knowledge, evaluation methods, and search workflows. We investigate ho",
+ "architecture": "We investigate how much value this knowledge provides as foundation models become stronger. We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined wo",
+ "pipeline": [
+  "读取《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（High-performance kernel development typically relies on expe）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined workflows, and builds its own evaluation loop. On NVID",
+ "walkthrough": "一次完整流程：先读取《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：We investigate how much value this knowledge provides as foundation models become stronger. We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constr",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "On NVIDIA B200 GPUs, JustGoal outperforms open-source libraries on 8 of 10 operators, achieving per-operator geometric mean speedups of 1.14x to 2.34x. It also surpasses the fastest publicly released specialized-agent kernel on 5 of 9 operators with available comparisons.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "A small number of GPU kernels often determines the efficiency of large language model training and inference.",
+  "High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or specialize",
+  "We investigate how much value this knowledge provides as foundation models become stronger."
+ ],
+ "limitations": [
+  "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined workflows, and",
+ "summary": "A small number of GPU kernels often determines the efficiency of large language model training and inference. High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or specialized agents equipped with domain knowledge, evaluation methods, and search workflows. We investigate how much value this knowledge pr",
+ "data_recipe": [
+  "评测负载：《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "A small number of GPU kernels often determines the efficiency of large language model training and inference.",
+  "High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or specialized agents equipped with domain knowledge, evaluation methods,",
+  "We investigate how much value this knowledge provides as foundation models become stronger.",
+  "We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined workflows, and",
+  "On NVIDIA B200 GPUs, JustGoal outperforms open-source libraries on 8 of 10 operators, achieving per-operator geometric mean speedups of 1.14x to 2.34x.",
+  "It also surpasses the fastest publicly released specialized-agent kernel on 5 of 9 operators with available comparisons.",
+  "In a controlled same-model comparison using Fable 5.1 on single shapes, the KDA-0.5 harness reaches 0.95x of JustGoal's performance, while single-mechanism ablations show no consistent benefit from domain knowledge or pr",
+  "These results indicate that specialized machinery should be justified by clear gains over a same-model, same-scope goal-only baseline and reevaluated whenever the foundation model changes."
+ ],
+ "anchors": [
+  "1.14",
+  "2.34",
+  "0.95"
+ ],
+ "pitfalls": [
+  "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

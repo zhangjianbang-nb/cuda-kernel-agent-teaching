@@ -1,0 +1,56 @@
+<h3>一 · 双记忆的失效面：长记忆污染与短记忆振荡</h3>
+<p>KernelClaw 的可靠性完全押在两层记忆的写入策略上，而这两层记忆恰好各自对应一种可复现的失效模式。长记忆（long-term memory）存放“可复用的专家优化知识”，其写入单位是任务轨迹提炼出的策略条目；短记忆（short-term memory）存放本轮尝试的失败记录，作用是“防止重复回溯”。问题在于：长记忆一旦写入一条在特定 shape 或特定 dtype 下成立、但被错误泛化的条目，后续所有 agent 都会把它当作先验，错误会沿着任务序列放大而不是被纠正。短记忆则相反——它的容量与淘汰策略决定了 agent 是否会陷入“改一个参数、失败、回退、再改同一个参数”的振荡，摘要里“prevent repetitive backtracking”正是针对这一点的设计目标，但也说明该失效模式在无短记忆时是常态。</p>
+<p>把这两层记忆的交互写成一个判定式，可以看清代价落在哪里。设第 $t$ 轮候选为 $k_t$，长记忆检索出的策略集合为 $M_L$，短记忆中的失败签名集合为 $M_S$：</p>
+<div class="formula">$$\text{accept}(k_t)=\mathbb{1}\big[\text{pass}(k_t)\land s_t\ge 1\big]\land \mathbb{1}\big[\text{sig}(k_t)\notin M_S\big]$$</div>
+<p>第二个指示函数是短记忆的硬门：签名重复即拒绝，省下的是编译与 profile 的时延，付出的是可能误杀“参数微调后本可成立”的候选。签名粒度取得太粗（例如只按算子名 + 失败阶段），会把合法的重试全部挡掉；取得太细（按完整源码哈希），短记忆几乎不起作用，振荡回归。这是纯工程取舍，没有理论最优解，只能按任务的搜索空间宽度调。</p>
+<p>具体例子：一个 reduction 类 kernel 在 Level 2 上首轮因 shared memory 超限编译失败，短记忆记下“bank-conflict 缓解方案 + 该 tile 尺寸”这一组合签名；第二轮 agent 换 tile 尺寸但仍沿用同一缓解方案，若签名只按方案名匹配，则合法候选被拒，加速比停在 1x 附近。反过来，若长记忆把“某 tile 尺寸在该算子族上有效”写成通用条目，迁移到另一 shape 时 occupancy 骤降，性能门 $s\ge1$ 通过但实际远低于基线库——这就是长记忆污染的典型表现：正确性门形同虚设，性能门只挡绝对值不回退，挡不住“比最优库慢但仍快于 eager”的伪胜。</p>
+
+<h3>二 · 加速比分母的陷阱：基线口径决定一切</h3>
+<p>论文报告的 6.98x / 7.89x / 1.94x 分别对应 KernelBench Levels 1、2、3 相对 Torch Eager 的平均加速比，配合 100% 成功率。这组数字的可信度不取决于 agent 有多强，而取决于分母有多弱。Torch Eager 作为基线，在 matmul、softmax、layernorm 这类算子上与 cuBLAS/cuDNN 的差距是数量级级别的；一个仅做到“正确调用库函数并避开框架调度开销”的候选，就能在 Level 1 上拿到数倍加速。因此这三个数字不能读作“agent 逼近了硬件 roofline”，只能读作“agent 越过了 eager 的解释器与调度税”。</p>
+<p>把这一点形式化：设 $T_{\text{eager}}$ 为基线，$T_{\text{lib}}$ 为厂商库最优，$T_{\text{agent}}$ 为候选。论文口径的加速比与“相对库的剩余空间”分别是</p>
+<div class="formula">$$s_{\text{paper}}=\frac{T_{\text{eager}}}{T_{\text{agent}}},\qquad \rho=\frac{T_{\text{lib}}}{T_{\text{agent}}}\ \ (\rho\ge 1\text{ 才算真赢})$$</div>
+<p>$s_{\text{paper}}$ 大而 $\rho&lt;1$ 是完全可能的，且在多 agent 框架里概率不低：agent 的搜索目标被写成“超过基线”，一旦越过就停止，没有动力继续压到库的水平。Level 3 的平均 1.94x 明显低于前两级，恰好符合“算子越复杂、eager 与库的差距越小、可捡的调度税越少”的规律——这不是 agent 变弱，是分母变强。</p>
+<p>工程上的直接后果：把这套框架搬进生产前，必须把基线换成“当前生产实际使用的实现”，而不是 eager。若生产端已用 torch.compile 或手写库调用，KernelBench 口径下的 6.98x 会瞬间塌缩到接近 1x，甚至为负（编译时间与调度开销计入端到端）。代价是可测量的：一次完整评测要跑 eager、torch.compile、指定库三套基线，编译与 profile 的机时翻三倍，而这部分成本在论文口径里被隐藏了。</p>
+
+<h3>三 · 适用边界：什么时候这套脚手架是净负收益</h3>
+<p>KernelClaw 的收益结构是“用多轮试错的机时换单 kernel 时延”，因此它的适用边界由三个量共同划定：单次编译+profile 的时延 $c$、期望轮数 $n$、以及该 kernel 在生产端到端时延中的占比 $f$。净收益为正的必要条件近似为</p>
+<div class="formula">$$f\cdot\Big(1-\frac{1}{s}\Big)\cdot T_{\text{e2e}} \;>\; n\cdot c$$</div>
+<p>左侧是端到端节省，右侧是搜索成本。这条不等式解释了三类不该用它的场景。</p>
+<ul>
+<li><b>kernel 占比极低的模型。</b>注意力之外的 elementwise、norm、小算子堆叠，单算子即便加速 2x，端到端也只动几个百分点；而 agent 的 $n\cdot c$ 是实打实的机时与 token。此时正确做法是融合（fusion）而不是逐 kernel 优化，KernelClaw 的按任务分解结构天然不擅长跨算子融合。</li>
+<li><b>已被厂商库覆盖且接近 SOL 的算子。</b>大 shape 的 GEMM、标准卷积，cuBLAS/cuDNN 已在 roofline 附近；agent 的搜索空间里没有剩余带宽可捡，$\rho\ge1$ 几乎不可达，多轮试错纯属浪费。判断依据是 NCU 报告的 DRAM throughput 与 SM occupancy 是否已顶到 SOL 线。</li>
+<li><b>编译时间敏感的场景。</b>多 agent 框架产出的候选常带大量模板特化与展开，编译时间从秒级涨到分钟级；若部署链路要求 JIT 在请求路径上完成，这部分时延直接进 P99。摘要未给出编译时间口径，这本身就是需要补测的项。</li>
+</ul>
+<p>具体例子：一个 decode 阶段的 fused residual + layernorm，生产端到端占比不足 3%，单 kernel 即便从 1.0 压到 0.6（1.67x），端到端收益约 1.2%；而 agent 在 Level 1 口径下要跑数十轮编译与正确性检查，token 与机时成本远超收益。这类任务应直接交给手写模板或 torch.compile，把 agent 预算留给 attention 与 GEMM 这类占比高、搜索空间大的算子。</p>
+
+<h3>四 · 与相邻工作的差别：知识注入 vs 隐式启发 vs 对比式 RL</h3>
+<p>把 KernelClaw 放进同批工作里，差别不在“是否多 agent”，而在“优化策略从哪来”。论文的立论是现有 pipeline 依赖 LLM 内部“opaque, implicitly learned heuristics”来决定优化策略，导致低效试错与弱可解释性；它的替代方案是把专家优化知识显式化，并让它“aware of task trajectories”。这条路线与三类相邻工作形成清晰分界。</p>
+<table class="mini">
+<thead><tr><th>路线</th><th>策略来源</th><th>反馈用法</th><th>主要代价</th></tr></thead>
+<tbody>
+<tr><td>KernelClaw（本工作）</td><td>长记忆中的显式专家知识条目</td><td>短记忆抑制重复回溯，轨迹感知</td><td>记忆污染与签名误杀；编译机时</td></tr>
+<tr><td>隐式启发式 agent（如以 LLM 内建经验驱动的单/多 agent 优化）</td><td>模型权重内的隐式先验</td><td>试错为主，反馈仅作通过/失败</td><td>试错轮数不可控，优化不可解释</td></tr>
+<tr><td>对比式/多轮 RL（CUDA-L1、Kevin、Dr. Kernel 一类）</td><td>策略网络经奖励训练得到</td><td>可验证奖励驱动策略更新</td><td>训练成本与奖励设计；跨任务泛化未证</td></tr>
+<tr><td>硬件反馈 agent（CudaForge 一类）</td><td>profile 指标直接进入决策</td><td>NCU/SASS 回灌</td><td>profile 采集时延与噪声</td></tr>
+</tbody>
+</table>
+<p>关键差别在“可解释性”的落点。RL 路线把策略压进权重，可解释性靠奖励函数间接体现；KernelClaw 把策略写成记忆条目，可解释性直接可见，但代价是条目质量完全依赖提炼环节——一条错误的专家知识比一个错误的权重更难被后续训练纠正，因为它不会被梯度更新。这也解释了为什么短记忆必须存在：它是唯一能在运行时否决长记忆的机制。</p>
+<p>另一个差别是评测口径的一致性。RL 类工作通常在同一基准上报告训练前后的增益，基线固定；KernelClaw 的 100% 成功率与三级加速比是在 KernelBench Levels 1-3 上对 Torch Eager 报告的，与 RL 工作的数字不可直接横向比较，因为分母与是否允许 fallback 都不同。跨条目比较加速比时，必须先对齐基线、dtype（TF32 开否）、以及是否计入编译时间，否则数字没有意义。</p>
+
+<h3>五 · 迁移风险：shape 特化、dtype 与跨框架</h3>
+<p>论文结论只在给定硬件、基线与输入分布上成立，这一点在摘要层面就已声明。迁移到生产时，最先崩的是 shape 特化。agent 在基准的固定 shape 上搜索出的 tile 尺寸、unroll 因子、shared memory 布局，全部是针对该 shape 的 occupancy 与 bank 冲突调出来的；换一个 batch 或序列长度，最优 tile 就移位。表现形式是离线分数漂亮、线上 P50 持平、P99 劣化——因为线上 shape 分布有长尾，而长尾恰好落在特化点之外。</p>
+<p>dtype 是第二个断点。TF32 开关直接改变 GEMM 类 kernel 的有效算力上限，若基线未开 TF32 而候选开了，加速比会被系统性高估；反之若候选为保正确性退回 FP32 累加，性能门通过但实际吞吐下降。正确性 oracle 在这里也有盲区：FP32 与 TF32 的结果差异在容差内可能被判 pass，但下游对数值敏感的任务会暴露。</p>
+<p>第三个断点是框架与工具链。论文工具链覆盖 CUDA / Triton / CuTe / PTX，但记忆条目往往绑定具体后端：一条“用 Triton 的 block pointer 改写”的知识，迁到纯 CUDA C++ 路径上无效；一条 PTX 内联汇编级别的条目，迁到 Triton 上根本不可表达。跨后端迁移不是“换个编译器”，而是记忆条目整体失效，需要重新积累轨迹。</p>
+<p>具体代价可以定性描述：每换一个 shape 族或 dtype，长记忆的命中率下降，短记忆重新从空开始积累，等效于把 $n$ 轮搜索重跑一遍；若生产侧有数十个算子族，这个重置成本按族数线性叠加。工程判断是：把 KernelClaw 的产出当作“离线候选池 + 专家知识库”而非在线服务，先在离线基准复现、再做端到端回归，回归不通过就回退到库实现，而不是让 agent 在请求路径上实时搜索。</p>
+
+<h3>六 · 不该用它的判据：三条硬线与一个替代动作</h3>
+<p>综合以上，给出可执行的否决判据，而不是笼统的“视情况而定”。第一条硬线是 SOL 余量：若 NCU 显示目标 kernel 的 DRAM throughput 或 SM 利用率已接近 roofline，搜索空间里没有可捡的带宽，agent 的期望增益趋零，此时应把预算转向融合或算法级改写。第二条硬线是端到端占比：按第三节的不等式，$f$ 低于阈值时净收益为负，直接放弃逐 kernel 优化。第三条硬线是可验证性：若该 kernel 没有稳定的正确性 oracle（浮点容差难定、输入分布不可枚举），agent 的 accept 判定会退化为“编译通过即接受”，reward hacking 与 fallback 会让正确率虚高，这类任务不该交给自动搜索。</p>
+<p>三条硬线之外还有一个常被忽略的判据：基线是否已是最强实现。若生产端已用 torch.compile 或厂商库，KernelBench 口径的加速比不构成决策依据，必须先补测 $\rho$。补测动作很具体：固定输入分布，跑 eager、torch.compile、指定库、agent 候选四路，记录时延与资源占用，只有当 $\rho\ge1$ 且端到端回归通过时才进入部署候选池。</p>
+<p>替代动作也应明确：对占比低、易融合的算子，优先做算子融合与图级重写，而不是单 kernel 搜索；对已接近 SOL 的算子，优先调 shape 分派与库版本，而不是让 agent 重写；对正确性 oracle 不稳定的算子，优先补形式化或参考实现比对，而不是靠多轮试错收敛。KernelClaw 的双层记忆在这些场景里不是加速器，而是把不确定性从“模型内部”搬到“记忆条目”上——不确定性没有消失，只是变得可审计了。这一点恰恰是它相对隐式启发式路线的真实价值：不是更快，而是错得可见、错得可回退。</p>
+
+<h3>边界与失效：双记忆脚手架在哪里失灵</h3>
+<p>KernelClaw 的收益来源是“专家知识可复用”与“短时记忆防重复回溯”这两条假设。一旦任务分布使这两条假设失效，框架的代价就从收益转为纯开销。长时记忆的命中依赖任务轨迹的相似性：若算子集合中每个 kernel 的优化路径都高度特化（例如不同 dtype、不同 layout、不同归约轴），检索到的专家知识无法迁移，多 agent 的协调轮次与记忆读写就变成额外 token 与时延支出，而加速比仍停留在基线附近。短时记忆的失效更隐蔽：它阻止 agent 重复尝试同一失败路径，但当失败原因是编译期错误而非性能不佳时，回退策略可能把“正确但慢”的候选误判为可保留项，从而在正确性门上留下缝隙。</p>
+<p>系统代价可以用一个简单的收支式刻画。设单轮候选生成与验证的成本为 <span class="formula">$$C_{\text{round}}=t_{\text{gen}}+t_{\text{compile}}+t_{\text{profile}}+t_{\text{mem}}$$</span>，其中 <span class="formula">$$t_{\text{mem}}$$</span> 是记忆检索与写入的 token 与时延开销。框架的净收益为 <span class="formula">$$\text{gain}=\frac{T_{\text{base}}}{T_{\text{agent}}}-1-\frac{N\cdot C_{\text{round}}}{T_{\text{base}}}$$</span>。当 <span class="formula">$$T_{\text{base}}$$</span> 本身很小（小 shape、低算术强度的 elementwise 算子），<span class="formula">$$N\cdot C_{\text{round}}$$</span> 很容易吞掉全部加速比；论文在 KernelBench Level 3 上平均加速比只有 1.94x，而 Level 1/2 达到 6.98x 与 7.89x，这一梯度本身就提示：任务越接近真实复合算子，脚手架开销占比越高。编译时间与 profile 轮次是硬成本，无法靠更多 agent 并行摊薄。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>机制</th><th>可观测代价</th></tr></thead><tbody><tr><td>shape 特化</td><td>候选按离线输入分布调参，隐藏分布改变 occupancy 与分块</td><td>离线加速比在生产崩塌，正确性门不报警</td></tr><tr><td>基线未开 TF32/未用最强库</td><td>基线时延被高估，speedup 分子虚高</td><td>加速比不可跨实现比较</td></tr><tr><td>记忆未命中</td><td>专家知识不可迁移，多 agent 反复协调</td><td>token 与时延上升，收益趋零</td></tr><tr><td>回退策略宽松</td><td>失败候选被保留，正确率虚高</td><td>reward hacking 风险</td></tr></tbody></table>
+<p>与相邻工作的差别落在“知识来源”而非“搜索规模”上。纯 LLM 试错管线把优化策略隐式编码在模型权重里，不可解释但迁移成本低；编译器自动调优（如基于代价模型的搜索）不依赖语言模型，但对新算子的表达力受限；KernelClaw 把专家知识外置为可检索记忆，换取可解释性与防重复回溯，代价是记忆库的构建与维护，以及跨硬件、跨 dtype、跨框架迁移未经验证这一事实边界。因此不该用它的场景很具体：基线本身已是高度调优的库实现、任务 shape 在生产中漂移且无法预先枚举、单 kernel 时延低于脚手架单轮成本、或团队无法承担记忆库的版本管理与复现口径维护。此时更稳的选择是把预算投在固定基线的正确性 oracle 与端到端回归上，而不是再加一层 agent 协调。</p>
+<p class="paper-line">对应：papers/paper-2603-10085 · 第 2/2 部分</p>

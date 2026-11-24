@@ -1,0 +1,37 @@
+<h3>一 · 编译产物落盘：cubin 哈希作为版本锚</h3>
+<p>一次 kernel 生成流水线的第一道可观测动作发生在编译完成之后、launch 之前。agent 拿到源码（CUDA C++ 或 Triton 生成的中间产物）后，nvcc/ptxas 或 Triton 编译器产出 cubin，此时必须立刻做两件事：计算二进制哈希，并把编译上下文（源码版本号、编译 flag、目标架构 sm 版本、寄存器上限设定）一并写入一条待定记录。哈希的对象是 cubin 而非源码，理由是源码到二进制的映射不唯一——同一份源码在不同 flag、不同 ptxas 优化等级下会产出指令序列显著不同的 SASS，而 agent 的修改往往正是通过 flag 或内联 PTX 影响最终指令选择。以源码哈希为锚会把“改了编译选项”和“改了算法”混为一谈，导致后续 delta 归因失效。</p>
+<p>这一步的输入是编译产物与编译元数据，输出是一条 <code>(version_id, cubin_hash, sm_arch, flags)</code> 记录，代价是哈希计算本身（对典型 kernel cubin 是毫秒级，可忽略）与落盘一次元数据。真正的代价在编译时间：agent 每轮修改都要重新编译，编译时间进入单轮 wall-clock，而 trace 文件里必须记录这一段时间，否则后续无法区分“kernel 变快了”与“编译变慢了”对端到端收益的贡献。工程上把编译时间作为独立字段写入 trace，与 kernel 时延并列，避免二者混淆。</p>
+<p>具体例子：agent 把一段手写 reduction 改为使用 <code>__shfl_down_sync</code> 的 warp 内归约。源码 diff 很小，但 cubin 哈希变化剧烈，SASS 中 <code>SHFL</code> 指令数量与 <code>BAR.SYNC</code> 数量此消彼长。若只记录源码版本，这次修改在 trace 里看起来只是“改了几行”；若记录 cubin 哈希与 SASS 差分，则能直接定位到同步指令消失这一事实，为后续 warp stall 剖析提供锚点。哈希在这里的作用不是安全校验，而是把“一次修改”定义为一个二进制上可判等的事件。</p>
+
+<h3>二 · launch 拦截：参数、时间戳与流 ID 的采集</h3>
+<p>第二道动作是拦截 kernel launch。两条主流路径：CUPTI 的 runtime/activity 回调，或在用户态用 <code>LD_PRELOAD</code> 替换 <code>cudaLaunchKernel</code> 等符号。前者由驱动侧回调进入，能拿到 CUPTI 提供的 launch 参数与 activity 记录；后者在进程内拦截，控制粒度更细但需要自己解析参数包。无论哪条路径，采集的最小字段集是：grid/block 维度、shared memory 字节数、kernel 参数（尤其是 shape 与 dtype 这类决定计算图的量）、起止时间戳、stream ID，以及本次 launch 关联的 cubin 哈希。</p>
+<p>时间戳的取法决定测量语义。CUPTI activity 记录的是 GPU 侧的执行区间，适合算 kernel 自身时延；进程内 <code>cudaEventRecord</code> 夹在 launch 前后则包含 launch 开销与排队延迟。trace 必须显式标注时间戳来源，否则不同轮次的时延不可比。stream ID 的作用是还原并发结构：agent 若把单流拆成多流，单 kernel 时延可能不变而端到端时延下降，只有带上 stream ID 才能把这种修改的收益归因到正确的位置。</p>
+<p>代价在这里第一次变得可观：CUPTI 回调路径引入 5–20% 的时延开销，且开销随 launch 频率上升。这意味着 trace 模式下测得的时延不能直接作为评分依据——它系统性偏高，且偏高幅度与 launch 密度相关。工程判断是：trace 模式用于建立因果链与做 keep/revert 的相对比较，绝对评分另走无插桩的干净路径。具体例子：一个每轮迭代 launch 数十个小 kernel 的算子，插桩后单次 launch 的固定开销被放大到与 kernel 本体同量级，此时 trace 里的时延数字只可用于“这轮比上轮快还是慢”的符号判断，不可写入性能报告。</p>
+
+<h3>三 · 计数器快照关联：低频采样与对齐</h3>
+<p>第三道动作是把 ncu 采集的计数器快照挂到 trace 上。这一步是可选但关键的：没有计数器，trace 只能回答“变快还是变慢”，不能回答“为什么”。做法是在若干代表性轮次（而非每轮）触发一次 ncu profile，采集关键计数器——DRAM 吞吐、L2 命中、warp stall 分布、指令发射率——然后把快照按 <code>(cubin_hash, launch 参数)</code> 与 trace 记录对齐。低频采样的理由是 ncu 本身会串行化并重放 kernel，开销远高于 CUPTI 回调，逐轮采集会把流水线拖垮。</p>
+<p>对齐的难点在于 launch 参数必须逐字段匹配。同一个 cubin 在不同 shape 下跑出的计数器差异巨大，若只按哈希对齐会把不同 workload 的 profile 混在一起。因此 trace 记录里的 shape/dtype 字段在此处从“元数据”升级为“对齐键”。采样策略上，按修改轮次分层抽样：每个 keep 的版本至少采一次，revert 的版本按需采一次以留下反例证据。</p>
+<p>代价是双重的：ncu 采集使被观测 kernel 的时延膨胀数倍且不可用于计时，同时快照文件体积远大于 trace 记录本身。具体例子：agent 把 shared memory tile 从 32×32 改为 64×64，CUPTI trace 显示时延下降，但仅凭时延无法判断是 bank conflict 减少还是 occupancy 变化。挂上计数器快照后，<code>L1 bank conflict</code> 相关 stall 占比与 occupancy 字段同时变化，才能把这次修改的因果链闭合。这一步的输出不是数字而是证据：一条 trace 记录加上一份对齐的快照，构成“修改—指令—计数器—时延”的完整链条。</p>
+
+<h3>四 · 版本对齐与 delta 计算</h3>
+<p>前三步产出的原始记录是流水账，第四步把它变成可比较的差分。对齐键是代码版本：git diff 的 commit 或 agent prompt 轮次编号，映射到第一步的 cubin 哈希。对齐后按前文给出的公式计算每轮的 delta：</p>
+<div class="formula">$$\Delta_{\text{trace}}^{(t)}=\left(T^{(t)}-T^{(t-1)},\ \text{SASS}^{(t)}\oplus\text{SASS}^{(t-1)},\ \text{metrics}^{(t)}-\text{metrics}^{(t-1)}\right),\quad \text{Keep}=\mathbb{1}\left[\Delta T&lt;0\wedge\text{Correct}\right]$$</div>
+<p>公式里三个分量各有分工：时延差给出方向，SASS 异或给出指令级变化的位置与规模，计数器差给出微架构层面的解释。SASS 差分不是逐字节比较，而是按指令助记符与操作数类型归一后做多重集差分，否则寄存器分配变化会淹没真正的指令增删。正确性项 <code>Correct</code> 来自独立的 oracle 通道，trace 本身不判定正确性——这一点必须严格，插桩层只负责观测，判定交给验证层。</p>
+<p>代价在于 delta 的计算成本随 trace 长度线性增长，且 SASS 差分对大型 kernel 的解析开销不可忽略。工程上对 SASS 差分做两级缓存：按 <code>(hash_prev, hash_curr)</code> 缓存差分结果，同一对版本重复比较时直接命中。具体例子：agent 连续三轮只改 launch 配置（block 大小）而不改源码，cubin 哈希不变，SASS 差分为空，delta 里只有时延与计数器分量在动。这种情形下 trace 能明确告诉审计者“这三轮没有指令变化”，避免把配置调优的收益误记为算法改进。</p>
+
+<h3>五 · keep/revert 决策与反例留存</h3>
+<p>第五步把 delta 转成动作。判据是 <code>ΔT&lt;0 ∧ Correct</code>：时延改善且正确性通过则 keep，否则 revert。这里的关键设计是决策基于 trace delta 而非单点时延。单点时延受测量噪声、GPU 频率漂移、同机其他负载影响，直接拿两次单点比较做回滚会频繁误判。trace delta 的做法是在同一插桩条件下比较相邻版本，噪声在差分中部分抵消；更进一步，对同一版本做多次重复 launch 取中位数再入 trace，把噪声压到决策阈值以下。</p>
+<p>revert 时必须留存反例：被回滚版本的完整 trace 记录、SASS 差分、计数器快照一并归档，标注回滚原因（时延退化、正确性失败、或二者兼有）。这些反例是后续搜索策略的负样本，也是审计时回答“为什么没走这条路”的唯一凭据。代价是存储：trace 文件随轮次线性增长，反例留存加剧这一趋势，必须配合采样与压缩——对 keep 版本保留全量，对 revert 版本保留差分与快照摘要，原始 launch 记录按时间窗口滚动淘汰。</p>
+<p>具体例子：agent 尝试把循环展开因子从 4 提到 8，CUPTI trace 显示时延下降 但 ncu 快照显示寄存器压力上升导致 occupancy 掉档，随后在另一 shape 上出现时延退化。单点比较会先 keep 后 revert，来回震荡；trace delta 把两个 shape 的记录放在同一版本下比较，直接判定该修改在目标分布上净收益为负，一次回滚并留下“展开因子 8 在长 shape 上退化”的反例。决策的稳定性来自证据的完整性，而非判据本身的复杂。</p>
+
+<h3>六 · trace 文件的增长控制与解析成本</h3>
+<p>整条流水线的固定成本落在 trace 文件的存储与解析上。每条 launch 记录包含参数、时间戳、哈希、stream ID，量级是百字节级；一个中等规模 agent 搜索跑数千轮、每轮数十次 launch，文件规模进入百 MB 级，若叠加计数器快照则再上一个量级。解析成本同样不可忽视：delta 计算要反复读取历史记录，朴素实现是每轮全量扫描，复杂度随轮次平方增长。</p>
+<p>控制手段有三类。其一是采样：对重复性 launch（同一 cubin、同一 shape 的基准测试循环）只保留首末与中位数样本，中间记录折叠为统计摘要。其二是压缩：SASS 差分以补丁形式存储而非全文，计数器快照只存与上一版本的差值。其三是索引：按 <code>cubin_hash</code> 与 <code>version_id</code> 建两级索引，delta 计算退化为按索引取记录，避免全量扫描。这三类手段的代价是信息损失：折叠后的记录无法回答“第 37 次 launch 的精确时间戳”这类问题，因此索引与摘要必须保留指向原始记录的偏移，按需回查。</p>
+<p>工程判断落在取舍上：trace 的目的是因果链可审计，而非完整日志。可审计性要求每个 keep/revert 决策都能追溯到具体的指令变化与计数器证据，这只需要保留决策点附近的完整记录；远离决策点的海量重复 launch 只需统计摘要。把存储预算按“决策密度”而非“launch 数量”分配，是让这套机制在长轮次搜索中可持续的关键。具体例子：一次搜索中同一 kernel 在固定 shape 上被重复 launch 上千次用于计时，若全量留存，trace 体积被这些重复记录主导而决策相关信息被淹没；按采样折叠后，文件规模回落到可解析范围，而每个版本切换点的证据仍然完整。</p>
+
+<h3>插桩 trace 的失效边界：何时证据链本身开始说谎</h3>
+<p>这套机制最脆弱的地方不在采集，而在“对齐”这一步。trace 按代码版本（git diff 或 prompt 轮次）切分，隐含假设是：一次版本变更对应一次可归因的 kernel 行为变更。当一轮修改同时动了 launch 配置（grid/block/shape/dtype）与 kernel 内部实现时，cubin 哈希变了、launch 参数也变了，此时 <span class="formula">$$\Delta_{\text{trace}}^{(t)}$$</span> 里的时延差与计数器差就无法拆分成“配置贡献”与“代码贡献”，keep/revert 判据 <span class="formula">$$\text{Keep}=\mathbb{1}[\Delta T&lt;0\wedge\text{Correct}]$$</span> 会把两者的混合效应记到一次修改头上。更隐蔽的失效是编译器行为漂移：同一份源码在不同编译选项或不同 nvcc 版本下产出不同 SASS，哈希变化但语义未变，trace 会把编译噪声误记为“修改导致的指标变化”，反例库因此被污染。工程上的处理是把一轮修改拆成配置变更与实现变更两条独立 trace 记录，并强制在配置冻结后再测实现 delta，代价是每轮多一次编译与一次基线重测，编译时间与 GPU 占用翻倍。</p>
+<p>第二个边界是低频计数器采样与短 kernel 的错配。CUPTI 回调记录起止时间戳与流 ID 的开销落在 host 侧，而 ncu 计数器快照是低频采样，二者时间基准不同。对一个执行时间在微秒量级的 kernel，5–20% 的回调时延开销足以让 trace 测得的 <span class="formula">$$T^{(t)}$$</span> 被 host 侧抖动主导，此时 <span class="formula">$$\Delta T&lt;0$$</span> 可能只反映回调排队顺序而非 kernel 真实提速。失效条件是：当 kernel 时延与单次回调开销同量级时，trace 时延不可用于 keep/revert，只能退化为“方向性参考”，评分必须回到无插桩的干净测量。具体例子是逐元素激活类 kernel，block 数极大、单次 launch 极短，trace 模式下相邻两轮的时延差符号可能随机翻转，而关闭插桩后差异稳定为负——这说明 trace 的 keep 判据在该场景下必须加一条“时延差需超过回调开销量级”的门槛，否则误回滚率上升。</p>
+<p>第三个边界是 trace 文件的线性增长与解析成本。每轮写入 launch 参数、SASS 哈希、时延、流 ID 与计数器快照，文件随轮次线性膨胀；多轮 RL 场景下轮次数以百计，解析全量 trace 做 delta 计算的时间会超过 kernel 本身的编译时间，形成“审计成本高于优化收益”的反转。压缩与采样的代价是丢失细粒度因果：按流 ID 聚合会掩盖同一流上多 kernel 的交错，按轮次抽样会漏掉偶发的退化轮。可行的折中是只对 keep 候选轮保留全量 trace、对 revert 轮只保留哈希与 delta 摘要，代价是反例库的复现能力下降——回滚记录里没有完整计数器快照，后续无法重放该失败。系统代价的量化应落在存储字节数与解析时延两个维度上，而非笼统的“开销大”。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>表现</th><th>代价</th></tr></thead><tbody><tr><td>配置与实现同轮变更</td><td>delta 不可归因</td><td>每轮多一次编译与基线重测</td></tr><tr><td>kernel 时延≈回调开销</td><td>ΔT 符号随机翻转</td><td>误回滚率上升，需干净测量复核</td></tr><tr><td>trace 全量保留</td><td>解析时延超编译时延</td><td>存储线性增长，反例复现能力下降</td></tr></tbody></table>
+<p class="paper-line">对应：algorithms/alg-binary-instr-tracing · 第 2/8 部分</p>

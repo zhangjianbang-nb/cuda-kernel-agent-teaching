@@ -1,0 +1,67 @@
+<h3>一 · 题干里的三层结构：方法、评测、迁移</h3>
+<p>这道题不是让你复述 Geak 的摘要，而是要求你在读完一篇“Triton Kernel AI Agent + 评测基准”的文章后，回答一个工程判断题：<strong>这套方法在跨硬件、跨 shape、跨 dtype 迁移时，最可能在哪里失效</strong>。题干本身包含三个必须拆开的层次，拆错任何一层，答案都会滑向“泛泛而谈”。</p>
+<p>第一层是<strong>方法层</strong>：Geak 把 LLM agent 放进一个“生成 Triton kernel → 编译执行 → 拿反馈 → 迭代”的闭环里。这一层的考点是：闭环里的反馈信号是什么形态（编译错误、运行时报错、正确性比对、性能计时），以及 agent 在每一轮里能看见多少信息。第二层是<strong>评测层</strong>：文章配套的 benchmark 用什么任务、什么正确性 oracle、什么性能口径来判定“这个 kernel 好不好”。第三层是<strong>迁移层</strong>：题干真正要你判断的失效点，必须落在“训练/评测时见过的配置”与“部署时遇到的配置”之间的分布差异上。三层之间的关系是：方法层的反馈信号决定了 agent 能对哪些差异做出自适应，评测层的口径决定了哪些差异根本不会被暴露，迁移层的失效点则往往是这两者共同作用的产物。</p>
+<p>解题路径因此不是“先夸方法再列缺点”，而是：先把方法层的闭环画出来，标出闭环中每一个信息瓶颈；再把评测层的 oracle 与性能口径对齐到这些瓶颈上；最后逐条检查跨硬件、跨 shape、跨 dtype 三类迁移分别会击中哪个瓶颈。下面几节按这个顺序展开，每一节都给一个可操作的拆解动作，而不是结论。</p>
+
+<h3>二 · 方法层拆解：闭环里的四个信息瓶颈</h3>
+<p>把 Geak 的 agent 闭环抽象成伪代码，信息瓶颈就一目了然。下面这段是拆题时应该自己在纸上写出的结构，不是文章原文：</p>
+<div class="formula">$$
+\begin{aligned}
+&\textbf{for } t = 1 \dots T: \\
+&\quad k_t = \text{LLM}(\text{task\_spec},\ \text{history}_{&lt;t},\ \text{feedback}_{&lt;t}) \\
+&\quad r_t = \text{compile}(k_t) \quad \text{// 编译期反馈} \\
+&\quad \text{if } r_t \text{ ok: } y_t = \text{run}(k_t),\ c_t = \text{check}(y_t, y_{\text{ref}}) \\
+&\quad \text{if } c_t \text{ ok: } \tau_t = \text{time}(k_t) \quad \text{// 性能反馈} \\
+&\quad \text{feedback}_t = \langle r_t, c_t, \tau_t, \text{profiler\_hint} \rangle
+\end{aligned}
+$$</div>
+<p>四个瓶颈分别是：<strong>(a) 编译期反馈的粒度</strong>——Triton 编译器报的是哪一类错误（类型不匹配、block size 非法、shared memory 超限），agent 能否从错误文本里定位到具体参数；<strong>(b) 正确性 oracle 的覆盖面</strong>——check 只比对输出张量，还是也检查边界条件、非连续 stride、特殊值（NaN/Inf）；<strong>(c) 性能反馈的保真度</strong>——计时是在什么硬件、什么 shape、什么 warmup 策略下取得的，agent 看到的 τ 是否可跨配置比较；<strong>(d) profiler hint 的有无</strong>——agent 是否拿到 NCU/SASS 级别的信息，还是只有一个端到端时延数字。</p>
+<p>这四个瓶颈直接决定 agent 的“自适应半径”。如果反馈只有编译错误和端到端时延，agent 就只能学会“让代码跑通并变快”，学不到“为什么在某个配置下变慢”。跨迁移失效的第一嫌疑点就在这里：<strong>当目标配置的性能瓶颈与源配置不同（例如源配置是 compute-bound、目标配置是 memory-bound），端到端时延这个标量反馈无法告诉 agent 瓶颈已经换了位置</strong>，agent 会继续沿着源配置的优化方向迭代，甚至把源配置上调好的 tile size、num_warps 原样搬过去。代价是明确的：每一轮迭代都要付一次编译时间（Triton 编译 + autotune 的候选枚举）和一次运行计时，轮数 T 越多，token 消耗与 wall-clock 时延越高；而如果反馈信号本身不含瓶颈位置信息，这些轮次里的很大一部分是在错误的搜索方向上消耗的。</p>
+<p>具体例子：一个在源配置上被 agent 调优到高占用率的 reduction kernel，其 tile 大小是按源 shape 的列数选的。迁到列数更小的 shape 后，同一个 tile 配置会导致大量线程空转，端到端时延上升，但 agent 从计时数字里看不出“空转”这件事，只会尝试继续调 num_warps，收敛到另一个同样不匹配的局部点。拆题时应当把这类例子写成“反馈信号缺什么 → agent 会误判成什么”的对照，而不是直接断言失效。</p>
+
+<h3>三 · 评测层拆解：oracle 与性能口径各自漏掉什么</h3>
+<p>评测层的考点是“benchmark 的判定口径与真实部署口径之间的缝隙”。正确性 oracle 和性能口径要分开拆。</p>
+<p>正确性 oracle 方面，需要问三个问题：比对的是单个输出还是多输出；容差是绝对误差还是相对误差，dtype 变化时容差是否随之调整；是否覆盖了 stride 非连续、广播、空张量、极值等边界。一个只做“同 dtype、连续布局、随机均匀分布输入”的 oracle，在跨 dtype 迁移时会系统性漏检：fp32 上通过的 kernel 迁到 fp16/bf16 后，累加顺序与舍入行为改变，误差可能超出部署可接受范围，但 oracle 若用宽松的相对容差就放过了。这里的代价是<strong>正确性代价</strong>：漏检不会在 benchmark 上体现为失败，却会在部署时以数值偏差或偶发 NaN 的形式出现；验证方案必须是在 oracle 里加入 dtype 感知的容差与特殊值输入，而不是等部署时再补。</p>
+<p>性能口径方面，需要问：计时是否包含 kernel launch 开销与首次编译；是否固定了 GPU 频率与 warmup 次数；报告的是中位数还是均值；是否区分了端到端时延与 kernel 自身时延。跨硬件迁移时，这些口径差异会被放大——同一份 Triton 代码在不同 GPU 上的 autotune 结果不同，若 benchmark 只在一个硬件上报告最优配置下的时延，那么“方法有效”这个结论的可迁移性就没有被检验。表格可以把三类迁移各自对应的评测漏洞列清楚：</p>
+<table class="mini">
+<thead><tr><th>迁移类型</th><th>评测层典型漏洞</th><th>被漏掉的代价</th></tr></thead>
+<tbody>
+<tr><td>跨硬件</td><td>只在单一 GPU 上报告最优 autotune 配置的时延</td><td>目标硬件上 autotune 搜索空间失配，编译时间与首次运行时延上升</td></tr>
+<tr><td>跨 shape</td><td>benchmark 任务固定 shape，未测尾块/小 shape</td><td>尾块线程空转、占用率下降，端到端时延劣化但 oracle 仍通过</td></tr>
+<tr><td>跨 dtype</td><td>容差按 fp32 设定，未覆盖 fp16/bf16 累加</td><td>数值偏差漏检，部署时正确性回退</td></tr>
+</tbody>
+</table>
+<p>拆题动作：把文章里每一个 benchmark 任务的“输入配置集合”抄出来，检查它是否显式包含了迁移目标所在的配置区间。如果 benchmark 的配置集合是源配置的稠密采样、目标配置的稀疏采样甚至缺失，那么“方法在迁移时失效”的答案就有了评测层的证据链，而不只是方法层的猜测。</p>
+
+<h3>四 · 迁移三类各自的失效机制与验证公式</h3>
+<p>跨硬件迁移的失效机制核心是<strong>autotune 搜索空间与目标硬件资源不匹配</strong>。Triton 的 autotune 在编译期为每个候选配置生成一个 kernel 变体，候选数量与编译时间近似成正比：</p>
+<div class="formula">$$
+T_{\text{compile}} \approx N_{\text{cand}} \cdot \big(t_{\text{codegen}} + t_{\text{ptxas}}\big)
+$$</div>
+<p>当目标硬件的 shared memory 容量、SM 数量、寄存器文件大小与源硬件不同时，一部分候选配置会编译失败或运行时报资源不足，agent 若只看到“失败”而看不到“为什么失败”，就会在无效候选上反复消耗轮次。验证方案：在目标硬件上先跑一遍候选配置的可行性筛选（编译 + 单次运行），记录失败原因分类，再让 agent 只在可行子空间里搜索。回退条件是：若可行子空间缩小到不足以覆盖目标 shape 的最优解，则回退到手工模板或 CuTe 级别的显式布局控制。</p>
+<p>跨 shape 迁移的失效机制是<strong>tile 划分与尾块处理</strong>。以二维 tiling 为例，当 M、N 不能被 tile 整除时，尾块的线程利用率下降，有效吞吐近似为：</p>
+<div class="formula">$$
+\eta_{\text{tail}} = \frac{\lceil M/B_M \rceil \cdot \lceil N/B_N \rceil}{M \cdot N / (B_M B_N)} \Big/ \frac{\lceil M/B_M \rceil \lceil N/B_N \rceil}{\lceil M/B_M \rceil \lceil N/B_N \rceil}
+$$</div>
+<p>更实用的写法是直接算利用率比值：有效计算量除以按整块计的工作量。当 shape 变小，固定 tile 的尾块占比上升，agent 若没有被明确告知 shape 分布，就会沿用源 shape 上调好的 tile。验证方案：构造一组从源 shape 到目标 shape 的插值序列，逐点测时延与占用率，找出利用率拐点；回退条件是拐点之后 tile 需要重新搜索，若搜索预算（编译时间 × 候选数）超过端到端收益，则回退到按 shape 分档的静态配置表。</p>
+<p>跨 dtype 迁移的失效机制是<strong>累加精度与向量化宽度</strong>。fp16 输入在 fp32 累加器下与纯 fp16 累加下的误差量级不同，而 Triton 的 tl.dot 在不同 dtype 组合下会选不同的 MMA 指令与累加器宽度。agent 若只从“编译通过 + 时延”学习，学不到“这个 dtype 组合需要更宽的累加器”。验证方案：对每个 dtype 组合跑一组病态输入（大动态范围、接近溢出），比对相对误差分布；回退条件是误差超出部署容差时，强制指定累加器 dtype 或退回 fp32 计算路径。这里的代价是显存带宽：更宽的累加器意味着更多寄存器与 shared memory 占用，占用率下降会反过来影响时延，因此 dtype 迁移的验证必须同时报告正确性与时延两个维度，不能只看其一。</p>
+
+<h3>五 · 解题路径：从题干到可验证判断的四个动作</h3>
+<p>把上面的拆解收束成一条可执行的解题路径，共四个动作，每个动作都要求产出可检验的东西，而不是观点。</p>
+<ul>
+<li><strong>动作一：画闭环并标瓶颈。</strong>把 agent 的输入（task spec、历史、反馈）与输出（kernel 源码、配置）列成表，在每条反馈边上标注“它携带了哪类信息、缺了哪类信息”。产出是一张瓶颈清单，直接对应第二节的四个瓶颈。</li>
+<li><strong>动作二：对齐 oracle 与部署口径。</strong>把 benchmark 的正确性检查项与部署端的检查项并排放，标出 benchmark 没有覆盖的 dtype、stride、特殊值。产出是评测漏洞表（第三节的表格是模板）。</li>
+<li><strong>动作三：为三类迁移各写一个最小复现。</strong>跨硬件用候选配置可行性筛选，跨 shape 用插值序列找利用率拐点，跨 dtype 用病态输入测误差分布。每个复现都要写明观测指标（编译失败率、尾块利用率、相对误差）与判定阈值。</li>
+<li><strong>动作四：写回退条件。</strong>每个迁移方向给出一个明确的“到此为止、改用其他手段”的判据，例如候选可行子空间过小、tile 重搜索的编译预算超过收益、误差超出容差。回退手段指向 Triton 之外的 CuTe/PTX 显式控制或静态配置表。</li>
+</ul>
+<p>四个动作的共同要求是：每个判断都要能落到一个可测量的量上。题干问“最可能在哪里失效”，答案的形式应当是“在某个瓶颈上，某类迁移会触发某种可测量的劣化，判据是某个指标越过某个阈值”，而不是“跨硬件最难”。拆题阶段不需要给出最终答案，但必须把答案的骨架搭到这一步，否则后续的验证与回退就无从谈起。</p>
+<p>需要调用的公式在本部分已经给出三个：编译时间与候选数的线性关系、尾块利用率比值、以及正确性容差随 dtype 调整的隐含要求（后者在验证时体现为相对误差分布而非单一阈值）。这三个公式分别对应编译时间代价、时延代价与正确性代价，正好覆盖题干要求的三类代价。把它们与四个动作对齐，就是这一部分要交付的解题路径。</p>
+
+<h3>迁移边界的判定：失效点、验证与回退</h3>
+<p>Geak 一类 agent 的失效不在“能不能写出 Triton”，而在“写出的 kernel 是否仍落在它推理时所依据的假设域内”。它的核心机制是把题干里的 shape、dtype、归约轴、广播语义解析成一份约束集，再据此选 tile 尺寸、num_warps、是否走 split-K、是否用 tl.dot 的 MMA 路径。跨硬件迁移时最先崩的是这份约束集里隐含的 SM 数、shared memory 上限与 L2 容量：同一 tile 配置在 SM 少的卡上 occupancy 掉到 1 个 block/SM 以下，split-K 的原子累加反而成为瓶颈。跨 shape 迁移时崩的是“整除假设”——题干给的 M/N/K 恰为 128 的倍数时 agent 往往省略边界谓词，换到非整除 shape 就出现越界读或尾块未覆盖。跨 dtype 迁移崩的是累加精度路径：fp16 输入走 fp32 累加在 Triton 里是默认语义，但 agent 若显式指定 acc dtype 为 fp16，长 K 归约的误差会随 K 线性放大。</p>
+<p>验证方案应把“迁移”拆成三个可独立证伪的轴，而不是跑一次端到端就下结论。硬件轴：固定 shape/dtype，只换 device，比较实测带宽与 roofline 上界之比，公式为</p>
+<div class="formula">$$ \eta = \frac{B_{\text{meas}}}{B_{\text{peak}}\cdot \min(1,\ \text{AI}/\text{AI}_{\text{ridge}})} $$</div>
+<p>其中 AI 为算术强度；η 显著低于同 shape 在源硬件上的值时，说明 tile/warp 配置未被重新搜索。shape 轴：构造一组非整除尾块（如 M=1000、N=777、K=333），用逐元素参考实现做 oracle，重点检查越界与尾块覆盖，代价是正确性用例数量上升带来的编译与运行时间。dtype 轴：对同一 K 分别用 fp16 与 fp32 累加跑两遍，比较最大相对误差，误差随 K 增长而非平稳即判定累加路径不可迁移。</p>
+<p>回退条件要写成可执行的判据而非感觉。硬件轴回退：若重搜索 tile 后 η 仍低于源硬件的对应值，则放弃该 kernel 的自动迁移，退回按目标硬件手写或改用库实现。shape 轴回退：若尾块用例出现越界或结果偏差超过 oracle 容差，则强制 agent 重新生成带 mask 的版本，并把“是否含边界谓词”作为该题型的必检项。dtype 轴回退：若 fp16 累加误差超阈值，则锁定 acc dtype 为 fp32，接受寄存器压力上升带来的 occupancy 下降这一系统代价。三轴回退的代价并不对称：硬件轴回退损失的是性能上限，shape 轴回退损失的是编译轮次与 token 预算，dtype 轴回退损失的是显存与占用率——工程判断应优先保住正确性，再在性能轴上做有限重试。</p>
+<table class="mini"><thead><tr><th>迁移轴</th><th>首要失效机制</th><th>验证信号</th><th>回退动作</th></tr></thead><tbody><tr><td>硬件</td><td>tile/warp 配置未随 SM 与 shared memory 重搜</td><td>η 低于源硬件同 shape 值</td><td>放弃自动迁移，改手写或库实现</td></tr><tr><td>shape</td><td>整除假设导致缺边界谓词</td><td>尾块用例越界或超容差</td><td>强制重生成带 mask 版本</td></tr><tr><td>dtype</td><td>累加精度随 K 放大</td><td>fp16/fp32 累加误差随 K 增长</td><td>锁定 acc 为 fp32，接受占用率下降</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-p04 · 第 1/2 部分</p>

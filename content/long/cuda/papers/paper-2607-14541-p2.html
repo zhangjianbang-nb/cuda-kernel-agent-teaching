@@ -1,0 +1,53 @@
+<h3>一 · 基准的构成与采样口径：30 算子 / 440 shape 从何而来</h3>
+<p>Atrex-Bench 的构成不是“挑一批经典算子再配几组常见 shape”，而是从全集群生产推理 trace 中采样。论文给出的口径是 30 个算子、440 个 shape，采样对象是 compute-limited、memory-rich GPU 上的推理流量。这句话里有两个必须拆开的信息：其一，算子集合来自真实部署的调用分布，而非 KernelBench 式的合成题面；其二，shape 集合来自真实请求的批形状，而非“取几个 2 的幂再乘一遍”。440 这个数字本身不构成质量保证，它只说明 shape 覆盖的粒度：平均每个算子约 14–15 个 shape 变体，足以让“只对单一 shape 特化”的策略在聚合分数上暴露，但不足以覆盖所有边界形状。</p>
+<p>采样口径的关键在于“trace-driven”意味着什么。生产 trace 记录的是调用频次与耗时，因此采样必然带偏：高频算子被采中的概率高，低频但单次极慢的算子可能被稀释。论文用重要性权重来纠正这一点（下一节展开），但采样阶段仍有一个不可回避的代价——trace 是观测数据，不是受控实验，采样得到的 shape 分布与真实线上分布之间存在时间窗口偏差。工程上可核查的做法是：要求基准公开每个 shape 的采样窗口、采样比例与去重规则，否则 440 个 shape 只能视为“有出处的样本”，不能视为“代表性样本”。</p>
+<p>一个具体例子：若某算子在生产中 90% 的调用集中在 decode 阶段的小 batch shape，而基准为了“覆盖全面”给 prefill 的大 shape 分配了相同题量，那么聚合分数会被 prefill 主导，与线上 GPU 时间的真实构成背离。这正是重要性权重存在的理由，也是读者在复现时必须先核对的第一件事：题目数量分布 ≠ GPU 时间分布。</p>
+
+<h3>二 · 重要性权重与分阶段计分：聚合分数到底在奖励什么</h3>
+<p>论文的核心计分设计是：每个问题携带一个由其在观测 GPU 时间中所占份额导出的重要性权重，该份额再按 application card-hours 加权，并且按该问题所处的 serving phase 分别计算。这意味着权重不是全局标量，而是 phase 相关的向量——prefill 与 decode 的 GPU 时间构成不同，同一算子在两个阶段的权重不同。聚合分数因此不是“平均加速比”，而是“按生产 GPU 时间加权的加速比”。</p>
+<p>把这件事写成可核查的形式：设问题 i 在阶段 p 的观测时间份额为 <span>w<sub>i,p</sub></span>，候选相对基线的加速比为 <span>s<sub>i</sub>=T<sub>base,i</sub>/T<sub>cand,i</sub></span>，则加权聚合可写为</p>
+<div class="formula">$$\text{score}_p=\sum_{i\in p} w_{i,p}\cdot f(s_i),\qquad \sum_{i\in p} w_{i,p}=1$$</div>
+<p>其中 f 可以是恒等（加权几何平均的指数形式）或阈值指示函数。论文摘要给出的未加权形式是 <span>score = (1/N)Σ 1[s<sub>i</sub>≥τ]</span>，即 fast-p 型指标：统计加速比超过阈值 τ 的题目比例。这两种口径的差别是工程性的：fast-p 对“刚好过线”与“远超线”一视同仁，加权几何平均则对尾部慢题敏感。若论文同时报告两者，读者应优先看加权版本，因为它与“生产端到端收益”的因果链更短。</p>
+<p>代价在这里出现：重要性权重把评测从“每題等权”变成“每题按生产份额计权”，于是少数高权重算子（如 attention、GEMM 类）主导分数，低权重算子即使全错也只损失几个百分点。这对优化 agent 是强激励——它会把搜索预算压在高权重题上。可核查的测量口径要求：公开权重表、公开 phase 划分规则、公开 τ 的取值，并同时给出未加权分数作为对照，否则“加权后提升”无法与“题目选择偏差”区分。</p>
+
+<h3>三 · 每題 roofline 上限：为什么 ~10% 这个数字必须带分母</h3>
+<p>论文为每个问题附带一个 roofline ceiling，即该题在给定硬件与 dtype 下的理论上限。摘要中“最好的 vanilla 模型仅达到生产算子硬件 roofline 的约 10%”这句话，只有在分母被明确时才可解释：10% 是相对该题 roofline 的利用率，不是相对 PyTorch eager 的加速比，也不是相对手写库的比值。把 roofline 作为分母的好处是跨题可比——不同算子的绝对时延不可比，但“达到理论上限的百分比”可比；坏处是 roofline 本身依赖假设。</p>
+<p>roofline 的构造需要三个输入：该 shape 下的最小必要访存量、最小必要浮点运算量、以及硬件的峰值带宽与峰值算力。利用率可写为</p>
+<div class="formula">$$\text{SOL}_i=\max\!\left(\frac{\text{FLOP}_i}{P_{\text{peak}}},\ \frac{\text{Bytes}_i}{B_{\text{peak}}}\right),\qquad \eta_i=\frac{\text{SOL}_i}{T_{\text{cand},i}}$$</div>
+<p>η 越接近 1 越好。工程代价在于：roofline 对 dtype 极度敏感。若基线用 FP32 而 roofline 按 TF32/BF16 峰值算，η 会被系统性压低；反之若 roofline 按 FP32 算而候选偷偷用了低精度，η 会被虚高。因此可核查口径必须固定 dtype 三元组（输入 dtype、累加 dtype、输出 dtype），并在报告中注明 roofline 用的是哪一档峰值。另一个代价是访存量估计：融合算子（如 fused attention）的 roofline 取决于是否把中间结果写回 HBM，不同假设下分母可差一个量级。这就是为什么 ~10% 这个数字在跨论文比较时几乎无意义——除非两篇论文的 roofline 构造假设完全一致。</p>
+<p>具体例子：一个 memory-bound 的 elementwise 算子，若 roofline 按“读一次写一次”计，η 的天花板接近 1；若实现中多了一次中间 buffer 往返，η 直接腰斩。此时“10% roofline”更可能反映的是访存路径设计问题，而非算力利用问题——这正是 roofline 作为诊断工具而非排名工具的价值。</p>
+
+<h3>四 · 基线选择与不可比数字清单</h3>
+<p>论文口径中的基线是 PyTorch eager、torch.compile 与论文指定的库实现。这三者的强弱差异极大，且随 shape 剧烈变化：eager 在小 shape 上因 launch 开销吃亏，torch.compile 在动态 shape 上可能退回 eager 路径，库实现在特定 shape 上可能已是手调 kernel。因此“相对 eager 的加速比”与“相对最强库的加速比”是两个不可互换的量。可核查口径要求：每个 shape 报告全部三个基线的时延，并明确聚合分数用的是哪一个。</p>
+<table class="mini"><thead><tr><th>数字类型</th><th>可比条件</th><th>不可比情形</th></tr></thead><tbody>
+<tr><td>加速比 vs eager</td><td>同 dtype、同 shape、同 warmup 次数</td><td>基线未开 TF32、未做 CUDA graph 捕获</td></tr>
+<tr><td>加速比 vs torch.compile</td><td>同编译模式、同 dynamic shape 设置</td><td>候选绕过了编译期融合，基线却未融合</td></tr>
+<tr><td>roofline 利用率 η</td><td>同 roofline 构造假设、同峰值档位</td><td>访存量假设不同、dtype 档位不同</td></tr>
+<tr><td>fast-p（s≥τ）</td><td>同 τ、同题目集合、同权重</td><td>τ 不同、题目子集不同</td></tr>
+<tr><td>加权聚合分</td><td>同权重表、同 phase 划分</td><td>权重按不同 trace 窗口导出</td></tr>
+</tbody></table>
+<p>失败模式很具体：基线若未开 TF32，FP32 GEMM 的加速比会被系统性高估；基线若未用最强库（如 cuBLAS 的特定 epilogue 路径），候选的“超越手调”结论不成立。论文自身也承认结论只在给定硬件、基线与输入分布上成立，跨硬件、跨 dtype、跨框架迁移未验证。读者在引用任何加速比时，必须同时引用基线的配置字符串，否则该数字不可复现。</p>
+
+<h3>五 · 隐藏 shape 与分布漂移：离线分数如何在生产上崩塌</h3>
+<p>440 个 shape 是公开的，但生产流量不是。隐藏 shape 的处理方式决定了基准是“考试”还是“抽考”。论文的 trace-driven 采样意味着基准 shape 有出处，但不意味着基准覆盖了长尾。工程上存在两类漂移：其一是 shape 漂移，线上出现基准未采到的批大小或序列长度；其二是分布漂移，同一 shape 的输入数值分布变化（如稀疏度、异常值比例）导致分支走向改变。</p>
+<p>对优化 agent 而言，shape 特化是最廉价的提分手段：针对每个 shape 硬编码 tile 尺寸、展开因子、甚至分支剪枝，能在基准上拿到高分，但在未见 shape 上退回通用路径甚至编译失败。可核查口径应包含一项“留出 shape”检查：从 440 中划出一部分不参与搜索，仅用于最终评分；或要求候选在 shape 变化 ± 一定比例时仍能编译并保持正确性。代价是编译时间与搜索预算——每多一个留出 shape，agent 就多一次编译-测量循环，而编译时间在 Triton/CuTe 路径上往往是时延测量的数倍。</p>
+<p>具体例子：一个针对 decode 阶段 batch=1 特化的 attention kernel，在基准的 440 个 shape 中可能命中多个小 batch 题并拿到高 fast-p；但线上突发流量使 batch 升到 8，该 kernel 的 tile 配置不再最优，甚至因 shared memory 超限而回退。此时离线 fast-p 与线上端到端收益脱钩。论文的 phase 分别计权正是为了缓解这一点——它至少让 decode 与 prefill 的分数不被互相稀释——但不能替代留出 shape 验证。</p>
+
+<h3>六 · 可核查的测量口径清单：复现者应当固定什么</h3>
+<p>把上述讨论收敛成一组可执行的测量约定。时延测量必须固定：warmup 次数、重复次数、取中位数还是最小值、是否用 CUDA graph 消除 launch 开销、是否锁频。正确性检查必须固定：容差（绝对/相对）、是否允许低精度累加、随机种子与输入生成分布。编译必须固定：编译器版本、优化等级、是否允许 shape 特化、编译超时阈值。任何一项未固定，跨论文的加速比都不可比。</p>
+<ul>
+<li>基线三元组：eager / torch.compile / 指定库，逐 shape 报告，聚合时注明用的是哪一个。</li>
+<li>dtype 三元组：输入、累加、输出，并与 roofline 峰值档位对齐。</li>
+<li>权重表与 phase 划分：公开导出规则，同时报告未加权 fast-p 作为对照。</li>
+<li>τ 取值与 fast-p 定义：τ 是相对基线还是相对 roofline，必须写明。</li>
+<li>留出 shape 比例：至少保留一部分 shape 不参与搜索，仅用于终评。</li>
+<li>回退与 fallback 计数：正确率虚高的主要来源是 fallback 到参考实现，必须单独统计并扣分。</li>
+</ul>
+<p>最后一项值得单独强调：论文指出“仅正确性会高估能力，因为表面通过率很大一部分来自 fallback”。这意味着正确率指标必须与“是否真正生成了 kernel”联合报告。一个可核查的口径是：把 fallback 视为该题失败，或在报告中给出 fallback 率与真实 kernel 通过率两条曲线。否则一个把所有题都 fallback 到 PyTorch 的 agent 会拿到接近 100% 的正确率，而 GPU 时间份额毫无改善——这正是加权分数与 roofline 分母要联合使用的原因：前者惩罚“只做高权重题”，后者惩罚“只做正确不做快”。</p>
+
+<h3>口径的边界：加权分数、roofline 上限与不可比的加速比</h3>
+<p>Atrex-Bench 的聚合分数不是简单平均，而是带权重的阈值通过率：<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}w_i\cdot\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>其中 $w_i$ 由该问题在整集群推理 trace 中占用的 GPU 时间份额、再按应用 card-hours 加权得到，并按 serving phase 分别计算。这个设计的代价是：分数对权重估计误差高度敏感——trace 采样窗口若偏向某个 phase，$w_i$ 就会系统性偏移，导致“在少数高权重算子上做对”比“在多数低权重算子上做对”更划算，agent 的搜索会自发收敛到少数热点 shape 上。失效条件是权重与 shape 分布绑定：一旦部署侧换了 batch 组成或序列长度分布，$w_i$ 失效，历史分数不再预测线上收益。可核查口径要求同时报告未加权通过率与加权分数，否则无法区分“泛化能力”与“热点拟合”。</p>
+<p>每个问题还携带 per-problem roofline ceiling，这是把“加速比”从相对量转成绝对量的关键。加速比 $s_i$ 的分母是基线 $T_{\text{base},i}$，而基线选择直接决定可比性：PyTorch eager、torch.compile 与论文指定库实现三者之间的差距可以吞掉大部分所谓“优化空间”。若基线未开 TF32、未启用最强库内核、未做 shape 特化，$s_i$ 会被系统性高估；反之若基线已是手调生产内核，$s_i\approx1$ 并不代表候选无用，只代表没有余量。因此跨论文比较加速比几乎无意义——除非基线、dtype、硬件、测量方法（是否含 launch 开销、是否 CUDA Graph、warmup 次数、是否锁频）全部对齐。论文报告“最强 vanilla 模型仅达硬件 roofline 的约 10%”正是用 roofline 归一化来绕开这一不可比性：roofline 上限由算子的算术强度与硬件峰值决定，与基线强弱无关，但它本身也依赖 dtype 与是否计入内存层级流量，跨 dtype（FP32/TF32/BF16/FP8）不可直接换算。</p>
+<p>隐藏 shape 与输入分布是这套口径最脆弱的接缝。440 个 shape 来自生产 trace，但 trace 只记录出现过的 shape，长尾与对抗性分布（极端 batch=1、非对齐维度、稀疏激活）覆盖不足；候选内核若按可见 shape 做特化（常量折叠、整除假设、固定 tile），离线通过率会虚高，上线遇到未见 shape 即触发 fallback 或数值错误。正确性 oracle 同样受此影响：只测给定输入的正确性检查无法捕获越界写与未定义行为，而“正确率虚高”在论文中被明确归因于大量表观通过来自 fallback 路径而非真实内核。工程判断是：把 shape 分成可见/隐藏两套，隐藏集只在最终评测时使用，并要求候选在隐藏 shape 上不得回退到参考实现；同时记录每个问题的编译时间与显存占用，因为特化带来的编译膨胀与寄存器压力会抵消时延收益。</p>
+<table class="mini"><thead><tr><th>口径项</th><th>可比条件</th><th>失效后果</th></tr></thead><tbody><tr><td>基线</td><td>同 dtype、同库版本、同 warmup</td><td>加速比高估</td></tr><tr><td>roofline 上限</td><td>同 dtype、同内存层级计数</td><td>跨 dtype 误读余量</td></tr><tr><td>shape 集</td><td>可见/隐藏分离</td><td>特化内核上线崩塌</td></tr><tr><td>正确性</td><td>排除 fallback 路径</td><td>通过率虚高</td></tr></tbody></table>
+<p class="paper-line">对应：papers/paper-2607-14541 · 第 2/9 部分</p>

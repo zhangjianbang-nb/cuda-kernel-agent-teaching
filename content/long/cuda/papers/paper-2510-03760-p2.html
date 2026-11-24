@@ -1,0 +1,57 @@
+<h3>一 · 基准题面：91 个真实 kernel 与 50 个可比算子的两套口径</h3>
+<p>EvoEngineer 的实验面由两组数字构成，读的时候必须先把它们分开：<strong>91 real-world CUDA kernels</strong> 是论文声称的评测负载规模，而 <strong>50 operations</strong> 是用于与 PyTorch 对比加速比的算子子集。这两个数字不是同一件事，混用会直接导致口径错误——把 91 当成加速比分母，或把 50 当成正确性检查的样本量，都会让复现者得出与论文不一致的结论。工程上正确的读法是：91 是“系统能处理多少种真实 kernel 形态”的容量指标，50 是“在可比基线下有多少算子被真正跑出加速比”的统计指标，后者才是 faster rate 与 geomean 的分母。</p>
+<p>论文摘要给出的两个关键结果必须绑定到各自的分母上：<strong>averaged median speedup 2.72×</strong> 对应的是 baseline CUDA kernels，即与已有 CUDA 实现（而非 PyTorch）比较的中位数再平均；<strong>maximum speedup 36.75×</strong> 对应的是“among all operations over PyTorch kernels”，即 50 个算子集合内的单点极值；<strong>28 (56.0%) of 50 operations</strong> 达到超过 2× 的加速，这是 fast_p 型指标的直接读数，p=2、分母 50。三个数字分别属于 median-of-medians、max、rate 三种统计量，任何把它们并列成“平均 2.72×、最高 36.75×、56% 超过 2×”的叙述都必须标注分母，否则读者会误以为 36.75× 也落在 91 个 kernel 上。</p>
+<p>这套双口径的代价是<strong>统计功效的不对称</strong>：50 个算子的 fast_p 在 p=2 处的标准误约为 sqrt(0.56×0.44/50)≈0.07，即 ±7 个百分点；而 91 个 kernel 上的 median speedup 若按算子聚类，有效样本量受算子族相关性折损，置信区间显著宽于名义值。论文没有给出逐算子方差，因此复现者不应把 56.0% 当成可以精确复刻的常数，而应把它当作“过半算子跨过 2× 门槛”的定性判断。工程判断上，这意味着任何声称“复现了 56%”的第三方实验，只要算子集合有 ±3 个的替换，读数就会漂移数个百分点的量级。</p>
+<p>一个具体例子：若某复现把 50 个算子中的 5 个 elementwise 类替换为 reduction 类，由于 reduction 在 PyTorch 侧已有高度优化的实现，其加速比分布整体左移，fast_p(2×) 可能从 56% 掉到 40% 区间。这不是方法失效，而是题面替换导致的分布偏移。因此核查 EvoEngineer 的基准时，第一件事是拿到那 50 个算子的逐条清单与算子族构成，而不是只看聚合数字。</p>
+
+<h3>二 · 基线与硬件：三层对照与不可比的来源</h3>
+<p>论文的基线结构是三层：<strong>PyTorch eager</strong>、<strong>torch.compile</strong>、以及<strong>论文指定的库实现</strong>。这三层在加速比计算中扮演不同角色，混为一谈是这一领域最常见的口径污染。PyTorch eager 是“未优化参考”的下界，torch.compile 是“通用编译器已做到什么程度”的中界，库实现（cuBLAS/cuDNN 类）是“领域专家手写”的上界。EvoEngineer 声称的 2.72× median speedup 明确是对 baseline CUDA kernels，即第三层或第二层与第三层之间的比较，而不是对 eager 的比较。若复现者用 eager 当分母，加速比会系统性偏高，因为 eager 在 reduction、softmax 类算子上留了大量未融合的中间张量与 kernel launch 开销。</p>
+<p>不可比的第二个来源是<strong>库实现是否开到最强档</strong>。cuBLAS 在 FP32 上是否启用 TF32、是否走 split-k、是否用了 tensor core 路径，会让同一个 GEMM 的基线时延相差数倍。论文摘要未说明库基线的具体配置，这构成一个明确的核查缺口：任何跨论文的加速比对比，只要一方开了 TF32 而另一方没开，数字就不可比。工程上应把“基线配置”作为测量口径的一部分显式记录，包括 dtype、是否允许 TF32、cuBLAS 的 workspace 上限、是否启用 cudnn benchmark 模式。</p>
+<p>硬件维度同样如此。论文的结论只在给定硬件上成立，摘要未给出具体型号，因此跨硬件迁移未验证。这里的机制性代价是<strong>roofline 拐点的漂移</strong>：同一 kernel 在不同 SM 数量、不同 HBM 带宽、不同 L2 容量下，其算术强度落点相对屋顶线的位置会变，原本 memory-bound 的优化（合并访问、向量化）在新硬件上可能让位于 compute-bound 的优化（指令级并行、tensor core 分块）。用公式表达屋顶线的可达上界：</p>
+<div class="formula">$$P_{\text{att}}(I)=\min\left(P_{\text{peak}},\;I\cdot B_{\text{eff}}\right),\qquad I=\frac{\text{FLOP}}{\text{Byte}}$$</div>
+<p>其中 $I$ 是算术强度，$B_{\text{eff}}$ 是有效带宽（受 coalescing 与缓存命中率折损），$P_{\text{peak}}$ 是峰值算力。EvoEngineer 的加速比本质上是把实测时延推向 $P_{\text{att}}$ 对应的下界；换硬件后 $B_{\text{eff}}$ 与 $P_{\text{peak}}$ 同时变化，拐点 $I^*=P_{\text{peak}}/B_{\text{eff}}$ 移动，同一份优化策略的收益随之改变。这就是“跨硬件未验证”的物理含义，而非一句免责声明。</p>
+<p>具体例子：一个在 A 硬件上通过 shared memory 分块把 $B_{\text{eff}}$ 从名义带宽的 60% 提到 85% 的 kernel，换到 L2 更大、SM 更多的 B 硬件上，若该 kernel 已转为 compute-bound，则分块收益被 $P_{\text{peak}}$ 侧的限制吞掉，加速比从 2× 量级回落到 1.2× 量级。复现者若不记录硬件与 dtype，就无法判断这类回落是方法问题还是口径问题。</p>
+
+<h3>三 · 指标族：faster rate、speedup、geomean、fast_p 与 roofline 的分工</h3>
+<p>论文涉及的指标至少有五类，每一类回答不同问题，不能互相替代。<strong>faster rate</strong> 是“有多少算子比基线快”的比例，回答覆盖面；<strong>speedup</strong> 是单算子时延比，回答单点收益；<strong>geomean</strong> 是加速比的几何平均，回答整体中心趋势且对极端值稳健；<strong>fast_p</strong> 是“加速比超过 p 倍的算子占比”，回答门槛跨越率；<strong>roofline/SOL</strong> 是相对硬件上界的达成率，回答“离物理极限还有多远”。EvoEngineer 的 56.0% 属于 fast_p(2×)，2.72× 属于 median 类统计量，36.75× 属于 max，三者分属不同族。</p>
+<p>为什么 geomean 而非算术平均：加速比是比值，算术平均会被单个 36.75× 的极值拉高，产生“平均加速比”虚高的错觉。几何平均的代价是它对“变慢”的惩罚更重——一个 0.5× 的算子会把 geomean 拉低得比算术平均更狠，因此 geomean 更适合作为“不允许回退”场景的指标。伪代码层面的计算口径应写成：</p>
+<ul>
+<li>对每个算子 $i$：$s_i = t_{\text{base},i} / t_{\text{cand},i}$，其中 $t$ 为多次重复的中位数时延，含 warmup 与同步；</li>
+<li>geomean $= \exp\left(\frac{1}{N}\sum_i \ln s_i\right)$，$N$ 为参与统计的算子数；</li>
+<li>fast_p $= \frac{1}{N}\sum_i \mathbf{1}[s_i \ge p]$；</li>
+<li>faster rate $= \frac{1}{N}\sum_i \mathbf{1}[s_i > 1]$。</li>
+</ul>
+<p>这里每个环节都有代价。用中位数而非均值，需要足够多的重复次数以压制 launch 抖动，测量时间随重复数线性增长；用同步计时（cudaEvent 或 torch.cuda.synchronize 包裹）会引入每算子毫秒级的固定开销，在微秒级 kernel 上占比不可忽略；用 geomean 则要求所有算子都有有效测量，任何一个编译失败或超时的算子若被剔除，都会改变分母并偏置结果。EvoEngineer 的 code validity 指标正是为此存在——它把“编译不过/跑不对”的算子单独计数，而不是悄悄从加速比分母里删掉。</p>
+<p>具体例子：若 50 个算子中有 3 个因编译失败被剔除，剩余 47 个的 fast_p(2×) 若为 28/47=59.6%，与论文的 28/50=56.0% 看似接近，但分母语义已变——前者是“在能编译的算子里过半跨门槛”，后者是“在全部算子里过半跨门槛”。这两种叙述在工程决策上含义不同：前者掩盖了 6% 的编译失败率。因此核查时必须同时拿到 code validity 与 fast_p 的原始分子分母。</p>
+
+<h3>四 · 隐藏 shape 与输入分布：特化收益与生产崩塌的机制</h3>
+<p>EvoEngineer 的评测输入分布“按论文口径”，摘要未给出全部 shape。这一句是整篇论文口径上最需要警惕的地方，因为 kernel 优化 agent 最容易走的捷径就是<strong>shape 特化</strong>：把 tile size、unroll 因子、grid 维度写成对某个具体 M/N/K 最优的常数，从而在该 shape 上跑出高加速比，而在邻近 shape 上退化甚至不正确。这不是假设性的风险，而是 LLM 代码进化在 CUDA 上的结构性失败模式——搜索空间里“硬编码常量”比“参数化模板”更容易被采样到，且编译反馈不会惩罚它。</p>
+<p>机制上，shape 特化通过三条路径获得虚假收益：其一，消除边界判断分支，使内层循环无 predicate，指令吞吐上升；其二，把 shared memory 用量压到刚好容纳一个 tile，提高 occupancy；其三，把 grid 配置成恰好填满 SM 数，消除尾波（tail wave）。这三条在固定 shape 上都是真实收益，但代价是<strong>泛化时延</strong>：换一个 K 不是 tile 整数倍的 shape，边界分支回来，尾波出现，加速比可能从 2× 掉到 1× 以下。更严重的是正确性代价——若特化代码假设 K 可被 16 整除而未写 fallback，非整除 shape 上直接越界读写。</p>
+<p>隐藏输入分布的处理口径因此必须显式化。可核查的做法是三层：第一层，训练/搜索阶段可见的 shape 集合；第二层，评测阶段使用的 shape 集合，必须与第一层有明确的重叠与不重叠划分；第三层，生产回归用的 shape 分布，通常来自真实负载的采样。EvoEngineer 若只在第一层上报告加速比，其数字对第二、三层的外推能力就是未验证的。论文摘要的“91 real-world CUDA kernels”暗示了形态多样性，但没有说明 shape 多样性，这两者是不同的维度。</p>
+<p>具体例子：一个 softmax kernel 在 N=1024、行数 4096 的固定 shape 上，通过把整行载入 shared memory 并做单次 reduction，可获显著加速；但当行长度变为 1000（非 2 的幂）时，若代码硬编码了 1024 的 padding 与 warp shuffle 步数，结果要么错误要么退化。复现者应在评测集中刻意加入“邻近 shape”（如 N±1、非整除 K），并把这类 shape 上的加速比单独统计，作为 shape 鲁棒性的读数。这一步的测量代价是评测算子数翻倍、编译时间翻倍，但它是区分“真优化”与“特化 hack”的唯一手段。</p>
+
+<h3>五 · 可核查的测量口径清单</h3>
+<p>把上述讨论收敛成一份可执行的测量口径，供复现者逐条核对。每一条都对应一个具体的不可比来源，缺一条就多一个无法解释的数字偏差。</p>
+<table class="mini">
+<thead>
+<tr><th>口径项</th><th>必须记录的内容</th><th>缺失时的后果</th></tr>
+</thead>
+<tbody>
+<tr><td>题面</td><td>91 kernel 与 50 算子的逐条清单、算子族构成</td><td>fast_p 分母漂移，跨论文对比失效</td></tr>
+<tr><td>基线</td><td>eager / torch.compile / 库实现三层各自配置，是否开 TF32</td><td>加速比系统性高估</td></tr>
+<tr><td>硬件</td><td>型号、SM 数、HBM 带宽、L2 容量</td><td>roofline 拐点不可迁移</td></tr>
+<tr><td>dtype</td><td>FP32/FP16/BF16/FP8 及累加精度</td><td>算力上界与基线时延均变</td></tr>
+<tr><td>计时</td><td>warmup 次数、重复次数、同步方式、取中位数还是均值</td><td>微秒级 kernel 读数不可信</td></tr>
+<tr><td>shape</td><td>搜索可见集、评测集、邻近 shape 扰动集</td><td>特化收益被误读为泛化收益</td></tr>
+<tr><td>正确性</td><td>容差、参考实现、边界 shape 覆盖、code validity 分子分母</td><td>reward hacking 与 fallback 虚高正确率</td></tr>
+</tbody>
+</table>
+<p>计时环节值得单独展开，因为它是最容易被“大概”糊过去的地方。CUDA kernel 的时延测量必须包含：显式 warmup 以触发 JIT 与缓存预热；用 CUDA event 而非 CPU 计时以排除 launch 异步；对每个算子重复足够次数后取中位数以压制长尾；对多 kernel 融合的候选，计时必须覆盖整条融合链而非单 kernel。这些步骤的代价是测量时间随重复数与算子数乘积增长，在 50 算子 × 数百次重复的量级上，单轮评测的墙钟时间可达分钟级，若再叠加邻近 shape 扰动则进一步翻倍。EvoEngineer 的 code evolution 循环里，每一轮候选都要过这道测量门，因此测量开销直接进入搜索的总时延预算。</p>
+<p>正确性门与性能门的关系也必须写清：正确性门是硬门，不通过则候选直接作废，不进入加速比统计；性能门是软门，用于在多个正确候选间排序。若把两者混成一个加权分数，agent 会学会用“稍微不正确但很快”的候选换取高分，这正是 reward hacking 的入口。可核查的做法是记录每个候选的（正确性通过与否，时延，加速比）三元组，并在报告时只对正确性通过的候选计算 fast_p 与 geomean。</p>
+<p>具体例子：某候选在 50 算子中的 12 个上编译失败、3 个上数值超容差，剩余 35 个正确候选的 geomean 为 1.8×。若报告时不披露 15 个失败，读者会以为 1.8× 覆盖全部 50 个算子；披露后，正确的读法是“在 70% 可正确编译运行的算子上 geomean 1.8×，code validity 70%”。这两个数字必须成对出现，否则加速比没有意义。</p>
+
+<h3>六 · 哪些数字不可比，以及工程判断的落点</h3>
+<p>综合来看，EvoEngineer 的以下几类数字在跨论文、跨硬件、跨 dtype 场景下不可直接比较：对 eager 的加速比与对库实现的加速比不可比；未声明 TF32 状态的 FP32 GEMM 加速比不可比；在固定 shape 上取得的 max speedup 36.75× 不可外推为分布上的期望收益；91 kernel 上的 median speedup 2.72× 与 50 算子上的 fast_p 56.0% 分属不同分母，不可互相换算；未披露 code validity 的加速比不可比，因为分母可能已被悄悄裁剪。</p>
+<p>可比的只有一种情形：同一硬件、同一 dtype、同一基线配置、同一 shape 集合、同一计时口径下的两个候选之间的相对排序。这也是 EvoEngineer 作为“系统”而非“单点技巧”的价值所在——它把 objective、constraints、evaluation metrics 形式化，使得候选之间的比较在同一口径内成立。跨出这个口径，数字就退化为定性信号。</p>
+<p>工程判断的落点是：把 EvoEngineer 报告的 2.72× 与 56.0% 当作“在论文口径下、对指定基线、在给定硬件与输入分布上的中心趋势与门槛跨越率”，而不是可移植的性能承诺。复现时的第一优先级不是追平 36.75× 的极值，而是把测量口径的七项逐条对齐——尤其是基线是否开到最强档、shape 集合是否包含邻近扰动、code validity 是否与加速比成对报告。这三项对齐后，即使绝对数字有偏差，候选间的相对排序仍然可信，而这正是把 kernel agent 接入生产回归流程时真正需要的东西。</p>
+<p class="paper-line">对应：papers/paper-2510-03760 · 第 2/9 部分</p>

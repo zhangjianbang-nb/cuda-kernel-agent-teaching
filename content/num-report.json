@@ -1,0 +1,4702 @@
+{
+ "cuda": [
+  {
+   "file": "content/long/cuda/algorithms/alg-trloo-estimator-p3.html",
+   "unknown": [
+    "0000.3",
+    "0.136",
+    "0.257",
+    "0.386",
+    "0.636",
+    "0.643",
+    "1.143",
+    "1.333",
+    "0.01",
+    "0.02",
+    "0.03",
+    "0.05",
+    "0.34",
+    "0.98",
+    "1.05",
+    "0.1",
+    "0.2",
+    "0.3",
+    "0.4",
+    "0.6"
+   ],
+   "n": 28
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-ncu-metric-feedback-p3.html",
+   "unknown": [
+    "0.06",
+    "0.11",
+    "0.19",
+    "0.21",
+    "0.31",
+    "0.38",
+    "0.42",
+    "0.55",
+    "0.62",
+    "0.78",
+    "0.83",
+    "0.84",
+    "0.85",
+    "0.2",
+    "0.3",
+    "0.4",
+    "0.5",
+    "0.6",
+    "0.9",
+    "1.0"
+   ],
+   "n": 28
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-ncu-metric-feedback-p1.html",
+   "unknown": [
+    "0.61",
+    "0.94",
+    "1.83",
+    "128",
+    "22%",
+    "256",
+    "31%",
+    "38%",
+    "41%",
+    "55%",
+    "62%",
+    "74%",
+    "87%",
+    "91%",
+    "22",
+    "3%",
+    "31",
+    "38",
+    "41",
+    "55"
+   ],
+   "n": 26
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p5.html",
+   "unknown": [
+    "14111",
+    "0.25",
+    "0.69",
+    "1.25",
+    "1000",
+    "1024",
+    "2507",
+    "0.8",
+    "0.9",
+    "1.1",
+    "1.2",
+    "1.5",
+    "1.6",
+    "100",
+    "2.3",
+    "3.6",
+    "10",
+    "12",
+    "15",
+    "16"
+   ],
+   "n": 23
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a16-p1.html",
+   "unknown": [
+    "0.025",
+    "0.225",
+    "0.250",
+    "0.275",
+    "0.550",
+    "0.15",
+    "0.45",
+    "0.50",
+    "0.55",
+    "0.75",
+    "0.3",
+    "0.4",
+    "0.5",
+    "0.6",
+    "1.0",
+    "75%",
+    "01",
+    "16",
+    "30",
+    "40"
+   ],
+   "n": 22
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-trloo-estimator-p1.html",
+   "unknown": [
+    "0.033",
+    "0.333",
+    "0.467",
+    "0.517",
+    "0.533",
+    "0.567",
+    "0.767",
+    "0.05",
+    "0.25",
+    "0.35",
+    "0.45",
+    "0.55",
+    "0.65",
+    "0.1",
+    "0.3",
+    "0.5",
+    "0.6",
+    "0.7",
+    "0.8",
+    "0.9"
+   ],
+   "n": 21
+  },
+  {
+   "file": "content/long/cuda/theory/th-energy-pareto-p2.html",
+   "unknown": [
+    "0.93",
+    "0.97",
+    "1.00",
+    "1.06",
+    "1.0",
+    "10%",
+    "100",
+    "102",
+    "105",
+    "180",
+    "30%",
+    "70%",
+    "10",
+    "15",
+    "16",
+    "30",
+    "40",
+    "50",
+    "52",
+    "70"
+   ],
+   "n": 20
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a15-p1.html",
+   "unknown": [
+    "64128256",
+    "163264",
+    "1365",
+    "4096",
+    "100",
+    "128",
+    "156",
+    "234",
+    "255",
+    "256",
+    "80%",
+    "15",
+    "16",
+    "27",
+    "32",
+    "48",
+    "64",
+    "80",
+    "81"
+   ],
+   "n": 19
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-ncu-metric-feedback-p2.html",
+   "unknown": [
+    "0.55",
+    "0.70",
+    "0.72",
+    "0.78",
+    "0.83",
+    "4096",
+    "0.3",
+    "0.6",
+    "0.7",
+    "0.9",
+    "12%",
+    "79%",
+    "81%",
+    "82%",
+    "12",
+    "64",
+    "79",
+    "81",
+    "82"
+   ],
+   "n": 19
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-robust-reward-p3.html",
+   "unknown": [
+    "0.02",
+    "0.04",
+    "0.06",
+    "0.32",
+    "0.70",
+    "0.76",
+    "0.80",
+    "0.90",
+    "0.98",
+    "1.00",
+    "100",
+    "50%",
+    "95%",
+    "99%",
+    "2%",
+    "21",
+    "50",
+    "95",
+    "99"
+   ],
+   "n": 19
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-end2end-regression-p3.html",
+   "unknown": [
+    "0.5%",
+    "3.8%",
+    "0.5",
+    "1.6",
+    "12%",
+    "3.8",
+    "30%",
+    "8.3",
+    "1%",
+    "12",
+    "15",
+    "16",
+    "2%",
+    "25",
+    "30",
+    "32",
+    "40",
+    "64",
+    "8%"
+   ],
+   "n": 19
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-turn-rl-kernel-p3.html",
+   "unknown": [
+    "0.02",
+    "0.24",
+    "0.94",
+    "0.95",
+    "0.98",
+    "1.19",
+    "1.20",
+    "1.21",
+    "0.1",
+    "0.2",
+    "0.3",
+    "0.4",
+    "0.5",
+    "0.6",
+    "1.0",
+    "1.2",
+    "1.8",
+    "20"
+   ],
+   "n": 18
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2510-03760-p2.html",
+   "unknown": [
+    "03760",
+    "56.0%",
+    "0.07",
+    "0.44",
+    "0.56",
+    "1024",
+    "2510",
+    "4096",
+    "0.5",
+    "1.8",
+    "56%",
+    "70%",
+    "12",
+    "16",
+    "35",
+    "56",
+    "6%",
+    "70"
+   ],
+   "n": 18
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-24286-p2.html",
+   "unknown": [
+    "24286",
+    "0.05",
+    "0.69",
+    "1.01",
+    "1.05",
+    "2602",
+    "4096",
+    "0.1",
+    "0.7",
+    "0.9",
+    "2.1",
+    "2.3",
+    "20%",
+    "400",
+    "20",
+    "38",
+    "40"
+   ],
+   "n": 17
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-hidden-shape-dist-p1.html",
+   "unknown": [
+    "1000",
+    "1024",
+    "1533",
+    "4093",
+    "1.8",
+    "256",
+    "300",
+    "512",
+    "731",
+    "13",
+    "16",
+    "27",
+    "32",
+    "55",
+    "63",
+    "99"
+   ],
+   "n": 16
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-roofline-sol-score-p3.html",
+   "unknown": [
+    "0.27",
+    "0.55",
+    "0.60",
+    "0.61",
+    "0.62",
+    "0.65",
+    "0.70",
+    "0.85",
+    "0.88",
+    "0.90",
+    "0.91",
+    "0.7",
+    "1.4",
+    "01",
+    "5%",
+    "8%"
+   ],
+   "n": 16
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-15506-p2.html",
+   "unknown": [
+    "15506",
+    "1.01",
+    "1.05",
+    "2611",
+    "4096",
+    "4097",
+    "0.8",
+    "1.0",
+    "1.1",
+    "2.5",
+    "40%",
+    "85%",
+    "10",
+    "16",
+    "40",
+    "85"
+   ],
+   "n": 16
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-roofline-sol-score-p1.html",
+   "unknown": [
+    "0.35",
+    "0.75",
+    "4096",
+    "0.3",
+    "0.4",
+    "0.5",
+    "0.6",
+    "0.8",
+    "0.9",
+    "1.4",
+    "1.8",
+    "100",
+    "25%",
+    "3.1",
+    "25"
+   ],
+   "n": 15
+  },
+  {
+   "file": "content/long/cuda/stories/story-benchmark-republic-p1.html",
+   "unknown": [
+    "4096",
+    "128",
+    "25%",
+    "256",
+    "50%",
+    "78%",
+    "12",
+    "16",
+    "25",
+    "27",
+    "32",
+    "50",
+    "64",
+    "78",
+    "99"
+   ],
+   "n": 15
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p2.html",
+   "unknown": [
+    "14111",
+    "0.98",
+    "1.01",
+    "1.05",
+    "1024",
+    "2507",
+    "1.2",
+    "12%",
+    "65%",
+    "10",
+    "12",
+    "16",
+    "32",
+    "65"
+   ],
+   "n": 14
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-02551-p2.html",
+   "unknown": [
+    "0.375",
+    "02551",
+    "0.42",
+    "0.50",
+    "0.96",
+    "1.02",
+    "1.19",
+    "2512",
+    "4096",
+    "4097",
+    "0.5",
+    "128",
+    "16",
+    "32"
+   ],
+   "n": 14
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-16465-p2.html",
+   "unknown": [
+    "16465",
+    "1024",
+    "2512",
+    "4096",
+    "0.5",
+    "0.8",
+    "1.1",
+    "50%",
+    "80%",
+    "10",
+    "16",
+    "20",
+    "50",
+    "80"
+   ],
+   "n": 14
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36623-p2.html",
+   "unknown": [
+    "36623",
+    "67.6%",
+    "91.8%",
+    "91.9%",
+    "1.05",
+    "2610",
+    "0.5",
+    "1.0",
+    "1.1",
+    "1.2",
+    "1.5",
+    "10",
+    "16",
+    "8%"
+   ],
+   "n": 14
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p8.html",
+   "unknown": [
+    "14111",
+    "0.05",
+    "1.18",
+    "1.67",
+    "2.5%",
+    "2507",
+    "0.3",
+    "0.8",
+    "2.5",
+    "10",
+    "3%",
+    "32",
+    "5%",
+    "64"
+   ],
+   "n": 14
+  },
+  {
+   "file": "content/long/cuda/book/ch3-p1.html",
+   "unknown": [
+    "0.98",
+    "1.02",
+    "1.05",
+    "1.06",
+    "2.7%",
+    "4.1%",
+    "10%",
+    "2.7",
+    "4.1",
+    "1%",
+    "10",
+    "12",
+    "90"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/book/ch5-p2.html",
+   "unknown": [
+    "1.23",
+    "1.1",
+    "1.3",
+    "1.4",
+    "1.6",
+    "1.7",
+    "1.8",
+    "1.9",
+    "2.1",
+    "2.2",
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2510-03760-p4.html",
+   "unknown": [
+    "03760",
+    "56.0%",
+    "0.42",
+    "0.51",
+    "2510",
+    "1.1",
+    "12%",
+    "128",
+    "31%",
+    "12",
+    "31",
+    "48",
+    "87"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p2.html",
+   "unknown": [
+    "11948",
+    "2507",
+    "4096",
+    "1.8",
+    "100",
+    "128",
+    "3.2",
+    "30%",
+    "50%",
+    "16",
+    "30",
+    "32",
+    "50"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-05014-p2.html",
+   "unknown": [
+    "05014",
+    "1.05",
+    "2610",
+    "0.9",
+    "1.5",
+    "10%",
+    "15%",
+    "20%",
+    "25%",
+    "10",
+    "15",
+    "20",
+    "25"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2511-01884-p2.html",
+   "unknown": [
+    "01884",
+    "2511",
+    "4096",
+    "4097",
+    "1.0",
+    "1.1",
+    "1.2",
+    "20%",
+    "85%",
+    "16",
+    "20",
+    "32",
+    "85"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/theory/th-search-budget-p2.html",
+   "unknown": [
+    "0.01",
+    "0.29",
+    "0.42",
+    "0.55",
+    "0.61",
+    "0.68",
+    "0.71",
+    "1.55",
+    "1248",
+    "128",
+    "20%",
+    "20",
+    "64"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/theory/th-occupancy-latency-p1.html",
+   "unknown": [
+    "12.5%",
+    "65536",
+    "12.5",
+    "128",
+    "25%",
+    "50%",
+    "75%",
+    "24",
+    "25",
+    "5%",
+    "50",
+    "64",
+    "75"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/theory/th-roofline-attainable-p1.html",
+   "unknown": [
+    "0.4",
+    "0.5",
+    "0.6",
+    "0.9",
+    "10%",
+    "80%",
+    "85%",
+    "10",
+    "16",
+    "5%",
+    "6%",
+    "80",
+    "85"
+   ],
+   "n": 13
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a12-p1.html",
+   "unknown": [
+    "0.36",
+    "0.51",
+    "0.72",
+    "1.02",
+    "1.25",
+    "1.41",
+    "1.66",
+    "0.5",
+    "0.9",
+    "1.0",
+    "1.3",
+    "12"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-trajectory-sft-p3.html",
+   "unknown": [
+    "1.15",
+    "1024",
+    "3150",
+    "1.2",
+    "1.3",
+    "150",
+    "256",
+    "400",
+    "32",
+    "64",
+    "80",
+    "90"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-26453-p2.html",
+   "unknown": [
+    "26453",
+    "1.05",
+    "2606",
+    "4095",
+    "4096",
+    "0.5",
+    "0.9",
+    "80%",
+    "10",
+    "16",
+    "20",
+    "80"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-05885-p2.html",
+   "unknown": [
+    "05885",
+    "1000",
+    "2602",
+    "0.9",
+    "1.2",
+    "10%",
+    "100",
+    "75%",
+    "10",
+    "16",
+    "32",
+    "75"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-02611-p2.html",
+   "unknown": [
+    "02611",
+    "2608",
+    "4093",
+    "4096",
+    "4097",
+    "1.0",
+    "1.2",
+    "1.5",
+    "128",
+    "2.7",
+    "3.0",
+    "16"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/theory/th-transfer-gain-p2.html",
+   "unknown": [
+    "0.056",
+    "0.05",
+    "0.81",
+    "1.29",
+    "0.1",
+    "0.5",
+    "0.6",
+    "0.9",
+    "10%",
+    "10",
+    "17",
+    "5%"
+   ],
+   "n": 12
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p18-p1.html",
+   "unknown": [
+    "0.1%",
+    "1024",
+    "4093",
+    "4096",
+    "0.1",
+    "16",
+    "17",
+    "18",
+    "24",
+    "32",
+    "99"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mutation-checker-audit-p1.html",
+   "unknown": [
+    "0.5%",
+    "0.2",
+    "0.3",
+    "0.5",
+    "0.6",
+    "1.0",
+    "16",
+    "2%",
+    "32",
+    "5%",
+    "64"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2510-03760-p5.html",
+   "unknown": [
+    "03760",
+    "56.0%",
+    "1.05",
+    "1000",
+    "12.5",
+    "2510",
+    "1.0",
+    "1.2",
+    "1.5",
+    "2.1",
+    "10"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/directions/dir-oracle-formal-p2.html",
+   "unknown": [
+    "1000",
+    "1024",
+    "120",
+    "128",
+    "754",
+    "768",
+    "769",
+    "16",
+    "24",
+    "32",
+    "64"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-ncu-p1.html",
+   "unknown": [
+    "100%",
+    "100",
+    "30%",
+    "40%",
+    "80%",
+    "90%",
+    "30",
+    "32",
+    "40",
+    "80",
+    "90"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-rollback-p1.html",
+   "unknown": [
+    "5122048",
+    "0.5%",
+    "100%",
+    "0.5",
+    "100",
+    "1%",
+    "16",
+    "2%",
+    "32",
+    "60",
+    "64"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-rollback-p2.html",
+   "unknown": [
+    "0.6%",
+    "100%",
+    "99.9",
+    "0.6",
+    "100",
+    "512",
+    "1%",
+    "15",
+    "2%",
+    "50",
+    "99"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/theory/th-verifier-false-reject-p1.html",
+   "unknown": [
+    "99.99%",
+    "99.99",
+    "10%",
+    "15%",
+    "90%",
+    "0%",
+    "10",
+    "15",
+    "2%",
+    "8%",
+    "90"
+   ],
+   "n": 11
+  },
+  {
+   "file": "content/long/cuda/book/ch10-p2.html",
+   "unknown": [
+    "1.8",
+    "2.3",
+    "200",
+    "10",
+    "12",
+    "16",
+    "32",
+    "50",
+    "90",
+    "99"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/book/ch7-p1.html",
+   "unknown": [
+    "0.99",
+    "1.07",
+    "1024",
+    "4096",
+    "0.6",
+    "0.7",
+    "1.1",
+    "256",
+    "01",
+    "12"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/book/ch4-p2.html",
+   "unknown": [
+    "65536",
+    "1024",
+    "8192",
+    "128",
+    "12",
+    "16",
+    "32",
+    "64",
+    "90",
+    "99"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p44-p1.html",
+   "unknown": [
+    "1024",
+    "1089",
+    "4096",
+    "4100",
+    "128",
+    "16",
+    "32",
+    "33",
+    "44",
+    "65"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-pairwise-ranking-p3.html",
+   "unknown": [
+    "0.69",
+    "0.80",
+    "1.25",
+    "1.39",
+    "0.2",
+    "0.4",
+    "0.5",
+    "256",
+    "01",
+    "64"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-coord-p3.html",
+   "unknown": [
+    "0.67",
+    "0.5",
+    "1.0",
+    "40%",
+    "3%",
+    "32",
+    "40",
+    "5%",
+    "64",
+    "8%"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-goal-only-baseline-p3.html",
+   "unknown": [
+    "0.62",
+    "0.1",
+    "0.3",
+    "0.5",
+    "0.7",
+    "0.9",
+    "1.0",
+    "32",
+    "50",
+    "90"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-10085-p2.html",
+   "unknown": [
+    "10085",
+    "1.2%",
+    "1.67",
+    "2603",
+    "0.6",
+    "1.0",
+    "1.2",
+    "3%",
+    "50",
+    "99"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-16819-p2.html",
+   "unknown": [
+    "16819",
+    "1.05",
+    "2605",
+    "0.5",
+    "0.6",
+    "1.2",
+    "100",
+    "10",
+    "16",
+    "32"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-11000-p2.html",
+   "unknown": [
+    "11000",
+    "1000",
+    "1024",
+    "2602",
+    "4095",
+    "0.5",
+    "1.6",
+    "15%",
+    "15",
+    "16"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-19173-p1.html",
+   "unknown": [
+    "19173",
+    "1.01",
+    "2603",
+    "1.3",
+    "1.8",
+    "128",
+    "80%",
+    "10",
+    "5%",
+    "80"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-20128-p2.html",
+   "unknown": [
+    "20128",
+    "2606",
+    "1.0",
+    "1.2",
+    "1.3",
+    "2.1",
+    "20%",
+    "87%",
+    "20",
+    "87"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p2.html",
+   "unknown": [
+    "23194",
+    "1024",
+    "2507",
+    "4096",
+    "0.5",
+    "128",
+    "18",
+    "20",
+    "32",
+    "64"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-23215-p2.html",
+   "unknown": [
+    "23215",
+    "1.01",
+    "2605",
+    "0.5",
+    "1.0",
+    "1.1",
+    "16",
+    "27",
+    "50",
+    "99"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-04956-p2.html",
+   "unknown": [
+    "04956",
+    "1.01",
+    "2605",
+    "0.5",
+    "0.9",
+    "1.0",
+    "1.8",
+    "120",
+    "10",
+    "16"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p8.html",
+   "unknown": [
+    "11948",
+    "2507",
+    "1.3",
+    "1.5",
+    "1.8",
+    "10%",
+    "10",
+    "3%",
+    "4%",
+    "8%"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-04331-p1.html",
+   "unknown": [
+    "04331",
+    "2611",
+    "40%",
+    "62%",
+    "12",
+    "3%",
+    "37",
+    "40",
+    "62",
+    "8%"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-metrics-p2.html",
+   "unknown": [
+    "0.25",
+    "0.50",
+    "0.75",
+    "10",
+    "25",
+    "40",
+    "50",
+    "60",
+    "70",
+    "90"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/theory/th-occupancy-latency-p3.html",
+   "unknown": [
+    "100%",
+    "100",
+    "128",
+    "256",
+    "50%",
+    "16",
+    "40",
+    "41",
+    "48",
+    "50"
+   ],
+   "n": 10
+  },
+  {
+   "file": "content/long/cuda/book/ch9-p1.html",
+   "unknown": [
+    "0.05",
+    "1.05",
+    "3.8%",
+    "3.8",
+    "1%",
+    "12",
+    "32",
+    "5%",
+    "99"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-22220-p2.html",
+   "unknown": [
+    "10303",
+    "22220",
+    "2609",
+    "7384",
+    "1.0",
+    "5.2",
+    "90%",
+    "16",
+    "90"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p1.html",
+   "unknown": [
+    "10517",
+    "1024",
+    "2502",
+    "1.1",
+    "1.4",
+    "128",
+    "40%",
+    "40",
+    "99"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-21058-p2.html",
+   "unknown": [
+    "0.582",
+    "21058",
+    "1.24",
+    "2609",
+    "4096",
+    "10",
+    "16",
+    "17",
+    "51"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-03226-p2.html",
+   "unknown": [
+    "03226",
+    "0.05",
+    "1.0%",
+    "2610",
+    "1.0",
+    "260",
+    "47%",
+    "1%",
+    "47"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36623-p1.html",
+   "unknown": [
+    "36623",
+    "67.6%",
+    "91.8%",
+    "91.9%",
+    "2610",
+    "754",
+    "16",
+    "80",
+    "90"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36434-p2.html",
+   "unknown": [
+    "36434",
+    "1.01",
+    "2610",
+    "1.0",
+    "1.5",
+    "10%",
+    "128",
+    "90%",
+    "90"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p8.html",
+   "unknown": [
+    "23194",
+    "0.05",
+    "1.04",
+    "1.15",
+    "2507",
+    "0.1",
+    "0.2",
+    "10",
+    "5%"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-29010-p1.html",
+   "unknown": [
+    "29010",
+    "0.38",
+    "0.42",
+    "0.62",
+    "0.88",
+    "2603",
+    "0.9",
+    "256",
+    "512"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-04331-p3.html",
+   "unknown": [
+    "04331",
+    "0.1%",
+    "2611",
+    "0.1",
+    "70%",
+    "95%",
+    "5%",
+    "70",
+    "95"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-glossary-p2.html",
+   "unknown": [
+    "0.011",
+    "0.03",
+    "0.62",
+    "0.5",
+    "0.6",
+    "1.0",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/theory/th-fp-error-bound-p1.html",
+   "unknown": [
+    "1024",
+    "4096",
+    "8192",
+    "128",
+    "4.9",
+    "7.7",
+    "10",
+    "13",
+    "64"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/theory/th-transfer-gain-p1.html",
+   "unknown": [
+    "0.4",
+    "100",
+    "128",
+    "20%",
+    "40%",
+    "10",
+    "20",
+    "32",
+    "40"
+   ],
+   "n": 9
+  },
+  {
+   "file": "content/long/cuda/book/ch4-p1.html",
+   "unknown": [
+    "1024",
+    "0.1",
+    "12",
+    "16",
+    "20",
+    "32",
+    "37",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/book/ch11-p2.html",
+   "unknown": [
+    "100",
+    "11",
+    "12",
+    "16",
+    "32",
+    "4%",
+    "5%",
+    "60"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d01-p1.html",
+   "unknown": [
+    "1.3",
+    "90%",
+    "01",
+    "16",
+    "32",
+    "50",
+    "90",
+    "99"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a02-p1.html",
+   "unknown": [
+    "64128256512",
+    "128",
+    "256",
+    "512",
+    "02",
+    "16",
+    "64",
+    "99"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-fuzz-fp64-oracle-p3.html",
+   "unknown": [
+    "0.1%",
+    "8192",
+    "0.0",
+    "0.1",
+    "10%",
+    "10",
+    "30",
+    "5%"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-binary-instr-tracing-p3.html",
+   "unknown": [
+    "0.106",
+    "0.05",
+    "40.9",
+    "41.2",
+    "0.3",
+    "0.6",
+    "16",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-strategy-ir-p3.html",
+   "unknown": [
+    "0.5",
+    "100",
+    "128",
+    "01",
+    "11",
+    "25",
+    "50",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-fuzz-fp64-oracle-p1.html",
+   "unknown": [
+    "3264",
+    "128",
+    "129",
+    "130",
+    "01",
+    "12",
+    "24",
+    "53"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-16465-p1.html",
+   "unknown": [
+    "16465",
+    "2512",
+    "128",
+    "80%",
+    "64",
+    "80",
+    "90",
+    "99"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-30059-p3.html",
+   "unknown": [
+    "30059",
+    "1.02",
+    "1.04",
+    "2609",
+    "1.0",
+    "1.5",
+    "16",
+    "3%"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p9.html",
+   "unknown": [
+    "23194",
+    "1000",
+    "1023",
+    "1024",
+    "2507",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p5.html",
+   "unknown": [
+    "11948",
+    "1.05",
+    "2507",
+    "20%",
+    "3.2",
+    "01",
+    "20",
+    "50"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2506-09092-p1.html",
+   "unknown": [
+    "09092",
+    "2506",
+    "0.9",
+    "1.1",
+    "10%",
+    "128",
+    "256",
+    "10"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-04331-p2.html",
+   "unknown": [
+    "04331",
+    "0.95",
+    "2611",
+    "100",
+    "30%",
+    "10",
+    "16",
+    "30"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2604-01489-p2.html",
+   "unknown": [
+    "01489",
+    "2604",
+    "1.0",
+    "1.1",
+    "1.5",
+    "10",
+    "16",
+    "32"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-30059-p2.html",
+   "unknown": [
+    "30059",
+    "2609",
+    "0.5",
+    "1.0",
+    "15%",
+    "15",
+    "16",
+    "3%"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-03517-p2.html",
+   "unknown": [
+    "03517",
+    "1.001",
+    "2611",
+    "1.1",
+    "1.2",
+    "1.5",
+    "128",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p1.html",
+   "unknown": [
+    "23194",
+    "2507",
+    "10%",
+    "128",
+    "256",
+    "90%",
+    "10",
+    "90"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p3.html",
+   "unknown": [
+    "23194",
+    "2507",
+    "128",
+    "1%",
+    "10",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-14541-p2.html",
+   "unknown": [
+    "14541",
+    "100%",
+    "2607",
+    "10%",
+    "100",
+    "14",
+    "15",
+    "16"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36434-p1.html",
+   "unknown": [
+    "36434",
+    "2610",
+    "10%",
+    "15%",
+    "90%",
+    "15",
+    "16",
+    "90"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-20908-p2.html",
+   "unknown": [
+    "20908",
+    "1000",
+    "1024",
+    "2607",
+    "256",
+    "16",
+    "64",
+    "99"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/directions/dir-oracle-formal-p1.html",
+   "unknown": [
+    "1000",
+    "1023",
+    "1024",
+    "754",
+    "16",
+    "17",
+    "32",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/theory/th-batch-invariance-p3.html",
+   "unknown": [
+    "0.999",
+    "1024",
+    "0.5",
+    "128",
+    "256",
+    "10",
+    "32",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/theory/th-multiturn-credit-p3.html",
+   "unknown": [
+    "0.9",
+    "128",
+    "256",
+    "10",
+    "16",
+    "20",
+    "32",
+    "64"
+   ],
+   "n": 8
+  },
+  {
+   "file": "content/long/cuda/book/ch9-p2.html",
+   "unknown": [
+    "2.2%",
+    "1.1",
+    "100",
+    "2.2",
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p38-p1.html",
+   "unknown": [
+    "16",
+    "30",
+    "32",
+    "38",
+    "64",
+    "95",
+    "99"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a19-p1.html",
+   "unknown": [
+    "4096",
+    "8192",
+    "128",
+    "256",
+    "16",
+    "19",
+    "32"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p33-p1.html",
+   "unknown": [
+    "4096",
+    "128",
+    "10",
+    "16",
+    "32",
+    "33",
+    "64"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p06-p1.html",
+   "unknown": [
+    "1024",
+    "4096",
+    "128",
+    "256",
+    "06",
+    "16",
+    "32"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-strategy-ir-dsl-p1.html",
+   "unknown": [
+    "1.3",
+    "128",
+    "256",
+    "12",
+    "32",
+    "40",
+    "64"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-formal-contract-verify-p3.html",
+   "unknown": [
+    "13127",
+    "4092",
+    "4096",
+    "127",
+    "754",
+    "16",
+    "64"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-synthetic-data-gen-p1.html",
+   "unknown": [
+    "4096",
+    "1.4",
+    "128",
+    "16",
+    "17",
+    "32",
+    "33"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-robust-reward-p1.html",
+   "unknown": [
+    "0.94",
+    "0.98",
+    "1.03",
+    "1.06",
+    "50%",
+    "12",
+    "50"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-tf32-compile-baseline-p3.html",
+   "unknown": [
+    "0.5",
+    "1.4",
+    "1.5",
+    "2.0",
+    "50%",
+    "16",
+    "50"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-coord-p1.html",
+   "unknown": [
+    "12%",
+    "12",
+    "20",
+    "32",
+    "35",
+    "40",
+    "64"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-budget-aware-search-p3.html",
+   "unknown": [
+    "0.5",
+    "128",
+    "256",
+    "50%",
+    "01",
+    "32",
+    "50"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p7.html",
+   "unknown": [
+    "23194",
+    "2507",
+    "128",
+    "130",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-14560-p2.html",
+   "unknown": [
+    "14560",
+    "2608",
+    "1.2",
+    "16",
+    "50",
+    "95",
+    "99"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-16241-p2.html",
+   "unknown": [
+    "16241",
+    "2607",
+    "1.0",
+    "10",
+    "16",
+    "24",
+    "80"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-12440-p1.html",
+   "unknown": [
+    "12440",
+    "2603",
+    "100",
+    "2.0",
+    "2.2",
+    "45",
+    "49"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p4.html",
+   "unknown": [
+    "14111",
+    "2507",
+    "1.1",
+    "1.2",
+    "1.3",
+    "10%",
+    "10"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-04956-p1.html",
+   "unknown": [
+    "04956",
+    "2605",
+    "4095",
+    "4096",
+    "100",
+    "30%",
+    "16"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-21058-p1.html",
+   "unknown": [
+    "21058",
+    "2609",
+    "1.5",
+    "20%",
+    "14",
+    "16",
+    "20"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p4.html",
+   "unknown": [
+    "10517",
+    "2502",
+    "1.2",
+    "1.8",
+    "34%",
+    "16",
+    "34"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p4.html",
+   "unknown": [
+    "23194",
+    "2507",
+    "1.1",
+    "20%",
+    "85%",
+    "20",
+    "85"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-verifier-p1.html",
+   "unknown": [
+    "65536",
+    "8192",
+    "625",
+    "754",
+    "1%",
+    "32",
+    "50"
+   ],
+   "n": 7
+  },
+  {
+   "file": "content/long/cuda/book/ch2-p2.html",
+   "unknown": [
+    "12",
+    "16",
+    "32",
+    "50",
+    "64",
+    "90"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/book/ch5-p1.html",
+   "unknown": [
+    "4096",
+    "128",
+    "256",
+    "12",
+    "17",
+    "32"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/book/ch3-p2.html",
+   "unknown": [
+    "0.03",
+    "12",
+    "16",
+    "32",
+    "90",
+    "99"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a20-p1.html",
+   "unknown": [
+    "01",
+    "12",
+    "20",
+    "40",
+    "48",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t05-p1.html",
+   "unknown": [
+    "100",
+    "05",
+    "10",
+    "20",
+    "30",
+    "40"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p39-p1.html",
+   "unknown": [
+    "4096",
+    "4097",
+    "128",
+    "16",
+    "32",
+    "39"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p43-p1.html",
+   "unknown": [
+    "1024",
+    "4096",
+    "16",
+    "32",
+    "43",
+    "95"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a18-p1.html",
+   "unknown": [
+    "0.175",
+    "0.35",
+    "0.2",
+    "0.5",
+    "18",
+    "40"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p48-p1.html",
+   "unknown": [
+    "128",
+    "256",
+    "16",
+    "32",
+    "48",
+    "5%"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a01-p1.html",
+   "unknown": [
+    "01",
+    "10",
+    "11",
+    "16",
+    "19",
+    "24"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-fuzz-fp64-oracle-p2.html",
+   "unknown": [
+    "1023",
+    "1025",
+    "4097",
+    "754",
+    "33",
+    "38"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mutation-checker-audit-p3.html",
+   "unknown": [
+    "0.05",
+    "20%",
+    "70%",
+    "20",
+    "64",
+    "70"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-budget-aware-search-p1.html",
+   "unknown": [
+    "2.5",
+    "01",
+    "16",
+    "24",
+    "40",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-strategy-ir-p1.html",
+   "unknown": [
+    "256",
+    "512",
+    "16",
+    "32",
+    "48",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36623-p3.html",
+   "unknown": [
+    "36623",
+    "67.6%",
+    "91.8%",
+    "91.9%",
+    "2610",
+    "16"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-01804-p2.html",
+   "unknown": [
+    "01804",
+    "2608",
+    "40%",
+    "16",
+    "3%",
+    "40"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-21331-p2.html",
+   "unknown": [
+    "21331",
+    "1.01",
+    "2603",
+    "100",
+    "16",
+    "32"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-05885-p1.html",
+   "unknown": [
+    "05885",
+    "2602",
+    "16",
+    "32",
+    "80",
+    "90"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-29067-p1.html",
+   "unknown": [
+    "29067",
+    "0.99",
+    "1.01",
+    "2609",
+    "0.1",
+    "0.9"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-03517-p1.html",
+   "unknown": [
+    "03517",
+    "1.02",
+    "2611",
+    "0.9",
+    "30%",
+    "30"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p8.html",
+   "unknown": [
+    "10517",
+    "2502",
+    "40%",
+    "16",
+    "40",
+    "8%"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-03226-p1.html",
+   "unknown": [
+    "03226",
+    "1.5%",
+    "2610",
+    "1.5",
+    "13",
+    "7%"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p5.html",
+   "unknown": [
+    "10517",
+    "2502",
+    "0.5",
+    "10",
+    "20",
+    "32"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p7.html",
+   "unknown": [
+    "10517",
+    "1000",
+    "2502",
+    "16",
+    "17",
+    "32"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p7.html",
+   "unknown": [
+    "11948",
+    "1000",
+    "2507",
+    "17",
+    "32",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p7.html",
+   "unknown": [
+    "14111",
+    "2507",
+    "0.9",
+    "1.3",
+    "16",
+    "32"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-16465-p3.html",
+   "unknown": [
+    "16465",
+    "2512",
+    "4096",
+    "128",
+    "256",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-12440-p2.html",
+   "unknown": [
+    "12440",
+    "2603",
+    "60%",
+    "75%",
+    "60",
+    "75"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-19173-p2.html",
+   "unknown": [
+    "19173",
+    "1.01",
+    "2603",
+    "128",
+    "200",
+    "35"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-14541-p3.html",
+   "unknown": [
+    "14541",
+    "2607",
+    "10%",
+    "128",
+    "256",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-hardware-p1.html",
+   "unknown": [
+    "55%",
+    "70%",
+    "32",
+    "55",
+    "64",
+    "70"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/theory/th-fp-error-bound-p2.html",
+   "unknown": [
+    "4096",
+    "1.0",
+    "2.4",
+    "10",
+    "11",
+    "12"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/theory/th-search-budget-p1.html",
+   "unknown": [
+    "0.3",
+    "0.5",
+    "16",
+    "32",
+    "48",
+    "64"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/theory/th-timing-ci-p1.html",
+   "unknown": [
+    "0.42",
+    "1000",
+    "10%",
+    "45",
+    "50",
+    "99"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/theory/th-timing-ci-p2.html",
+   "unknown": [
+    "1.57",
+    "50%",
+    "57%",
+    "40",
+    "50",
+    "57"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/theory/th-multiturn-credit-p2.html",
+   "unknown": [
+    "0.99",
+    "0.9",
+    "100",
+    "1%",
+    "10",
+    "50"
+   ],
+   "n": 6
+  },
+  {
+   "file": "content/long/cuda/book/ch7-p2.html",
+   "unknown": [
+    "1.0",
+    "100",
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/book/ch8-p1.html",
+   "unknown": [
+    "4096",
+    "12",
+    "16",
+    "32",
+    "37"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/book/ch2-p1.html",
+   "unknown": [
+    "2.8",
+    "12",
+    "32",
+    "64",
+    "99"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d02-p1.html",
+   "unknown": [
+    "1024",
+    "4097",
+    "02",
+    "16",
+    "32"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p04-p1.html",
+   "unknown": [
+    "1000",
+    "333",
+    "777",
+    "16",
+    "32"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p09-p1.html",
+   "unknown": [
+    "256",
+    "09",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p22-p1.html",
+   "unknown": [
+    "100%",
+    "130",
+    "22",
+    "50",
+    "80"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p23-p1.html",
+   "unknown": [
+    "1024",
+    "256",
+    "23",
+    "32",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a06-p1.html",
+   "unknown": [
+    "400",
+    "06",
+    "16",
+    "32",
+    "53"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p31-p1.html",
+   "unknown": [
+    "16384",
+    "1.6",
+    "256",
+    "31",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a07-p1.html",
+   "unknown": [
+    "70%",
+    "07",
+    "32",
+    "64",
+    "70"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p46-p1.html",
+   "unknown": [
+    "16",
+    "32",
+    "46",
+    "80",
+    "90"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-sass-warp-stall-profile-p3.html",
+   "unknown": [
+    "0.5",
+    "256",
+    "32",
+    "33",
+    "40"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mcts-evolution-search-p2.html",
+   "unknown": [
+    "1.45",
+    "0.8",
+    "128",
+    "256",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p5.html",
+   "unknown": [
+    "23194",
+    "2507",
+    "0.5",
+    "1.3",
+    "1.5"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2604-01489-p1.html",
+   "unknown": [
+    "01489",
+    "2604",
+    "16",
+    "32",
+    "80"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-16241-p1.html",
+   "unknown": [
+    "16241",
+    "2607",
+    "1.1",
+    "1.2",
+    "19"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2510-03760-p1.html",
+   "unknown": [
+    "03760",
+    "56.0%",
+    "2510",
+    "128",
+    "16"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-14604-p2.html",
+   "unknown": [
+    "14604",
+    "2611",
+    "4096",
+    "80",
+    "90"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2509-07506-p2.html",
+   "unknown": [
+    "07506",
+    "2509",
+    "128",
+    "16",
+    "96"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-07169-p2.html",
+   "unknown": [
+    "07169",
+    "2603",
+    "2%",
+    "3%",
+    "8%"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2506-09092-p2.html",
+   "unknown": [
+    "09092",
+    "2506",
+    "4096",
+    "10",
+    "16"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p1.html",
+   "unknown": [
+    "14111",
+    "2507",
+    "1.1",
+    "128",
+    "256"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-24286-p1.html",
+   "unknown": [
+    "24286",
+    "2602",
+    "4096",
+    "64",
+    "80"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-22220-p1.html",
+   "unknown": [
+    "10303",
+    "22220",
+    "2609",
+    "7384",
+    "16"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-metrics-p1.html",
+   "unknown": [
+    "1.2",
+    "100",
+    "20%",
+    "20",
+    "99"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-ncu-p2.html",
+   "unknown": [
+    "100%",
+    "100",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-glossary-p1.html",
+   "unknown": [
+    "0.4",
+    "40%",
+    "75%",
+    "40",
+    "75"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/theory/th-occupancy-latency-p2.html",
+   "unknown": [
+    "20",
+    "40",
+    "48",
+    "60",
+    "64"
+   ],
+   "n": 5
+  },
+  {
+   "file": "content/long/cuda/book/ch10-p1.html",
+   "unknown": [
+    "10",
+    "12",
+    "64",
+    "99"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/book/ch1-p2.html",
+   "unknown": [
+    "12",
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p03-p1.html",
+   "unknown": [
+    "1024",
+    "03",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a10-p1.html",
+   "unknown": [
+    "65536",
+    "200",
+    "10",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a17-p1.html",
+   "unknown": [
+    "1282565121024",
+    "248",
+    "12",
+    "17"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p14-p1.html",
+   "unknown": [
+    "4096",
+    "14",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a04-p1.html",
+   "unknown": [
+    "4096",
+    "04",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d05-p1.html",
+   "unknown": [
+    "05",
+    "16",
+    "32",
+    "99"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p13-p1.html",
+   "unknown": [
+    "1.05",
+    "1.8",
+    "13",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-batch-invariance-gate-p3.html",
+   "unknown": [
+    "2.5",
+    "15",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mcts-evolution-search-p1.html",
+   "unknown": [
+    "128",
+    "23",
+    "32",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mutation-checker-audit-p2.html",
+   "unknown": [
+    "100%",
+    "100",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-synthetic-data-gen-p3.html",
+   "unknown": [
+    "10",
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-mcts-evolution-search-p3.html",
+   "unknown": [
+    "01",
+    "10",
+    "32",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-end2end-regression-p1.html",
+   "unknown": [
+    "0.4%",
+    "0.4",
+    "64",
+    "99"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-binary-instr-tracing-p1.html",
+   "unknown": [
+    "1.1",
+    "128",
+    "256",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-batch-invariance-gate-p2.html",
+   "unknown": [
+    "4096",
+    "512",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-synthetic-data-gen-p2.html",
+   "unknown": [
+    "4096",
+    "8192",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/stories/story-benchmark-republic-p2.html",
+   "unknown": [
+    "4096",
+    "128",
+    "32",
+    "99"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p1.html",
+   "unknown": [
+    "11948",
+    "2507",
+    "16",
+    "42"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-22220-p3.html",
+   "unknown": [
+    "10303",
+    "22220",
+    "2609",
+    "7384"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-24762-p3.html",
+   "unknown": [
+    "24762",
+    "2607",
+    "1.3",
+    "16"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-24762-p2.html",
+   "unknown": [
+    "24762",
+    "2607",
+    "1.5",
+    "16"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p9.html",
+   "unknown": [
+    "14111",
+    "2507",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-16819-p1.html",
+   "unknown": [
+    "16819",
+    "2605",
+    "4096",
+    "137"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-15506-p1.html",
+   "unknown": [
+    "15506",
+    "2611",
+    "128",
+    "64"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-02551-p1.html",
+   "unknown": [
+    "02551",
+    "2512",
+    "128",
+    "16"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-17071-p2.html",
+   "unknown": [
+    "17071",
+    "2608",
+    "4096",
+    "4097"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-29010-p2.html",
+   "unknown": [
+    "29010",
+    "2603",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-14560-p1.html",
+   "unknown": [
+    "14560",
+    "1000",
+    "2608",
+    "19"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-01804-p1.html",
+   "unknown": [
+    "01804",
+    "0.1%",
+    "2608",
+    "0.1"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-04956-p3.html",
+   "unknown": [
+    "04956",
+    "2605",
+    "4096",
+    "128"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/directions/dir-bench-trust-p1.html",
+   "unknown": [
+    "1024",
+    "4096",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-anticheat-p2.html",
+   "unknown": [
+    "0.1",
+    "10",
+    "16",
+    "32"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-rl-recipe-p2.html",
+   "unknown": [
+    "0.98",
+    "1.05",
+    "0.6",
+    "1.0"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-launch-gate-p2.html",
+   "unknown": [
+    "16",
+    "32",
+    "90",
+    "99"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/theory/th-launch-overhead-p1.html",
+   "unknown": [
+    "100",
+    "300",
+    "64",
+    "9%"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/theory/th-fp-error-bound-p3.html",
+   "unknown": [
+    "149",
+    "12",
+    "18",
+    "20"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/theory/th-warp-stall-taxonomy-p1.html",
+   "unknown": [
+    "160",
+    "30%",
+    "20",
+    "30"
+   ],
+   "n": 4
+  },
+  {
+   "file": "content/long/cuda/book/ch8-p2.html",
+   "unknown": [
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/book/ch1-p1.html",
+   "unknown": [
+    "12",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/book/ch11-p1.html",
+   "unknown": [
+    "11",
+    "12",
+    "30"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a08-p1.html",
+   "unknown": [
+    "256",
+    "08",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a09-p1.html",
+   "unknown": [
+    "128",
+    "09",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p49-p1.html",
+   "unknown": [
+    "16",
+    "32",
+    "49"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p24-p1.html",
+   "unknown": [
+    "16",
+    "24",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d04-p1.html",
+   "unknown": [
+    "04",
+    "32",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p19-p1.html",
+   "unknown": [
+    "19",
+    "32",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p37-p1.html",
+   "unknown": [
+    "16",
+    "32",
+    "37"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t02-p1.html",
+   "unknown": [
+    "02",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p17-p1.html",
+   "unknown": [
+    "16",
+    "17",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p29-p1.html",
+   "unknown": [
+    "16",
+    "29",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p41-p1.html",
+   "unknown": [
+    "16",
+    "32",
+    "41"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p28-p1.html",
+   "unknown": [
+    "16",
+    "28",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p16-p1.html",
+   "unknown": [
+    "128",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a03-p1.html",
+   "unknown": [
+    "0.8",
+    "03",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d06-p1.html",
+   "unknown": [
+    "06",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p21-p1.html",
+   "unknown": [
+    "16",
+    "21",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-cute-agent-gen-p2.html",
+   "unknown": [
+    "05",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-question-driven-agent-p1.html",
+   "unknown": [
+    "128",
+    "256",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-formal-contract-verify-p2.html",
+   "unknown": [
+    "754",
+    "16",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-hidden-shape-dist-p2.html",
+   "unknown": [
+    "409640964096",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-strategy-ir-dsl-p2.html",
+   "unknown": [
+    "128",
+    "16",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-tf32-compile-baseline-p2.html",
+   "unknown": [
+    "120",
+    "10",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-sass-warp-stall-profile-p1.html",
+   "unknown": [
+    "1.8",
+    "40%",
+    "40"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-strategy-ir-p2.html",
+   "unknown": [
+    "128",
+    "32",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-question-driven-agent-p2.html",
+   "unknown": [
+    "32",
+    "33",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-binary-instr-tracing-p2.html",
+   "unknown": [
+    "32",
+    "37",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-cute-agent-gen-p3.html",
+   "unknown": [
+    "128",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-strategy-ir-dsl-p3.html",
+   "unknown": [
+    "3%",
+    "5%",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-batch-invariance-gate-p1.html",
+   "unknown": [
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-turn-rl-kernel-p1.html",
+   "unknown": [
+    "0.72",
+    "1.8",
+    "12"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-roofline-sol-score-p2.html",
+   "unknown": [
+    "0.85",
+    "0.7",
+    "0.9"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-33074-p1.html",
+   "unknown": [
+    "33074",
+    "2609",
+    "01"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-17379-p2.html",
+   "unknown": [
+    "17379",
+    "2608",
+    "01"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-16241-p3.html",
+   "unknown": [
+    "16241",
+    "1024",
+    "2607"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-24762-p1.html",
+   "unknown": [
+    "24762",
+    "2607",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-02611-p1.html",
+   "unknown": [
+    "02611",
+    "2608",
+    "05"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-12004-p2.html",
+   "unknown": [
+    "12004",
+    "2608",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-14541-p1.html",
+   "unknown": [
+    "14541",
+    "2607",
+    "10%"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p9.html",
+   "unknown": [
+    "11948",
+    "2507",
+    "50"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-10085-p1.html",
+   "unknown": [
+    "10085",
+    "2603",
+    "1.0"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-21836-p1.html",
+   "unknown": [
+    "21836",
+    "1.02",
+    "2608"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-21836-p2.html",
+   "unknown": [
+    "21836",
+    "2608",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-07169-p1.html",
+   "unknown": [
+    "07169",
+    "2603",
+    "0.6"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p2.html",
+   "unknown": [
+    "10517",
+    "2502",
+    "1.1"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-26453-p1.html",
+   "unknown": [
+    "26453",
+    "2606",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-21331-p1.html",
+   "unknown": [
+    "21331",
+    "2603",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2510-03760-p3.html",
+   "unknown": [
+    "03760",
+    "56.0%",
+    "2510"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-19173-p3.html",
+   "unknown": [
+    "19173",
+    "2603",
+    "100"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-11000-p3.html",
+   "unknown": [
+    "11000",
+    "2602",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-36434-p3.html",
+   "unknown": [
+    "36434",
+    "2610",
+    "16"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2604-01489-p3.html",
+   "unknown": [
+    "01489",
+    "2604",
+    "128"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p6.html",
+   "unknown": [
+    "11948",
+    "2507",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/directions/dir-rl-data-p1.html",
+   "unknown": [
+    "0.6",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-eval-protocol-p2.html",
+   "unknown": [
+    "16",
+    "32",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-data-synth-p2.html",
+   "unknown": [
+    "1008",
+    "1024",
+    "23"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-verifier-p2.html",
+   "unknown": [
+    "16",
+    "32",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-bi-p2.html",
+   "unknown": [
+    "12",
+    "50",
+    "99"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/theory/th-memory-peak-p2.html",
+   "unknown": [
+    "128",
+    "16",
+    "32"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/theory/th-warp-stall-taxonomy-p2.html",
+   "unknown": [
+    "0.35",
+    "0.55",
+    "0.6"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/theory/th-batch-invariance-p1.html",
+   "unknown": [
+    "32",
+    "33",
+    "64"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/theory/th-verifier-false-reject-p2.html",
+   "unknown": [
+    "0.01",
+    "0.1",
+    "10"
+   ],
+   "n": 3
+  },
+  {
+   "file": "content/long/cuda/book/ch12-p1.html",
+   "unknown": [
+    "12",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a23-p1.html",
+   "unknown": [
+    "11",
+    "23"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p10-p1.html",
+   "unknown": [
+    "01",
+    "10"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-d03-p1.html",
+   "unknown": [
+    "01",
+    "03"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p35-p1.html",
+   "unknown": [
+    "35",
+    "99"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p32-p1.html",
+   "unknown": [
+    "100",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p20-p1.html",
+   "unknown": [
+    "01",
+    "20"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p27-p1.html",
+   "unknown": [
+    "1.0",
+    "27"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p08-p1.html",
+   "unknown": [
+    "08",
+    "64"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p42-p1.html",
+   "unknown": [
+    "32",
+    "42"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t04-p1.html",
+   "unknown": [
+    "04",
+    "99"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p05-p1.html",
+   "unknown": [
+    "05",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p26-p1.html",
+   "unknown": [
+    "1000",
+    "26"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-cute-agent-gen-p1.html",
+   "unknown": [
+    "16",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-trloo-estimator-p2.html",
+   "unknown": [
+    "16",
+    "64"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-formal-contract-verify-p1.html",
+   "unknown": [
+    "754",
+    "64"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-tf32-compile-baseline-p1.html",
+   "unknown": [
+    "3.1",
+    "480"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/stories/story-reward-frontier-p1.html",
+   "unknown": [
+    "1024",
+    "42"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p9.html",
+   "unknown": [
+    "10517",
+    "2502"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-16819-p3.html",
+   "unknown": [
+    "16819",
+    "2605"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-23194-p6.html",
+   "unknown": [
+    "23194",
+    "2507"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-05885-p3.html",
+   "unknown": [
+    "05885",
+    "2602"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2607-20908-p1.html",
+   "unknown": [
+    "20908",
+    "2607"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-30059-p1.html",
+   "unknown": [
+    "30059",
+    "2609"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-17379-p1.html",
+   "unknown": [
+    "17379",
+    "2608"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-26720-p2.html",
+   "unknown": [
+    "26720",
+    "2605"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p3.html",
+   "unknown": [
+    "10517",
+    "2502"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-20128-p3.html",
+   "unknown": [
+    "20128",
+    "2606"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-17071-p1.html",
+   "unknown": [
+    "17071",
+    "2608"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p6.html",
+   "unknown": [
+    "14111",
+    "2507"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-29067-p2.html",
+   "unknown": [
+    "29067",
+    "2609"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-24286-p3.html",
+   "unknown": [
+    "24286",
+    "2602"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-33074-p2.html",
+   "unknown": [
+    "33074",
+    "2609"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-26453-p3.html",
+   "unknown": [
+    "26453",
+    "2606"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2512-02551-p3.html",
+   "unknown": [
+    "02551",
+    "2512"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2511-01884-p3.html",
+   "unknown": [
+    "01884",
+    "2511"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2610-05014-p1.html",
+   "unknown": [
+    "05014",
+    "2610"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2511-01884-p1.html",
+   "unknown": [
+    "01884",
+    "2511"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2609-21058-p3.html",
+   "unknown": [
+    "21058",
+    "2609"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-14111-p3.html",
+   "unknown": [
+    "14111",
+    "2507"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-14604-p1.html",
+   "unknown": [
+    "14604",
+    "2611"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2602-11000-p1.html",
+   "unknown": [
+    "11000",
+    "2602"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p3.html",
+   "unknown": [
+    "11948",
+    "2507"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2502-10517-p6.html",
+   "unknown": [
+    "10517",
+    "2502"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-21331-p3.html",
+   "unknown": [
+    "21331",
+    "2603"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-12004-p1.html",
+   "unknown": [
+    "12004",
+    "2608"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-03517-p3.html",
+   "unknown": [
+    "03517",
+    "2611"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2611-15506-p3.html",
+   "unknown": [
+    "15506",
+    "2611"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2606-20128-p1.html",
+   "unknown": [
+    "20128",
+    "2606"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-26720-p1.html",
+   "unknown": [
+    "26720",
+    "2605"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-23215-p3.html",
+   "unknown": [
+    "23215",
+    "2605"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2605-23215-p1.html",
+   "unknown": [
+    "23215",
+    "2605"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2507-11948-p4.html",
+   "unknown": [
+    "11948",
+    "2507"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2603-29010-p3.html",
+   "unknown": [
+    "29010",
+    "2603"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2509-07506-p1.html",
+   "unknown": [
+    "07506",
+    "2509"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/directions/dir-hw-dsl-profile-p1.html",
+   "unknown": [
+    "30%",
+    "30"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/directions/dir-rl-data-p2.html",
+   "unknown": [
+    "32",
+    "64"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-data-synth-p1.html",
+   "unknown": [
+    "1000",
+    "1024"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-benchmarks-p1.html",
+   "unknown": [
+    "16",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-launch-overhead-p2.html",
+   "unknown": [
+    "50%",
+    "50"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-batch-invariance-p2.html",
+   "unknown": [
+    "16",
+    "32"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-memory-peak-p3.html",
+   "unknown": [
+    "32",
+    "99"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-launch-overhead-p3.html",
+   "unknown": [
+    "0.1",
+    "10"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-multiturn-credit-p1.html",
+   "unknown": [
+    "01",
+    "16"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/theory/th-sol-normalized-p1.html",
+   "unknown": [
+    "01",
+    "10"
+   ],
+   "n": 2
+  },
+  {
+   "file": "content/long/cuda/book/ch12-p2.html",
+   "unknown": [
+    "12"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/book/ch6-p1.html",
+   "unknown": [
+    "12"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p45-p1.html",
+   "unknown": [
+    "45"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p40-p1.html",
+   "unknown": [
+    "40"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a25-p1.html",
+   "unknown": [
+    "25"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p34-p1.html",
+   "unknown": [
+    "34"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p25-p1.html",
+   "unknown": [
+    "25"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p01-p1.html",
+   "unknown": [
+    "01"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a11-p1.html",
+   "unknown": [
+    "11"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p07-p1.html",
+   "unknown": [
+    "07"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p30-p1.html",
+   "unknown": [
+    "30"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a22-p1.html",
+   "unknown": [
+    "22"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t01-p1.html",
+   "unknown": [
+    "01"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t03-p1.html",
+   "unknown": [
+    "03"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a21-p1.html",
+   "unknown": [
+    "21"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p50-p1.html",
+   "unknown": [
+    "50"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p11-p1.html",
+   "unknown": [
+    "11"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a05-p1.html",
+   "unknown": [
+    "05"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-t06-p1.html",
+   "unknown": [
+    "06"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p15-p1.html",
+   "unknown": [
+    "15"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a24-p1.html",
+   "unknown": [
+    "24"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p12-p1.html",
+   "unknown": [
+    "12"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a13-p1.html",
+   "unknown": [
+    "13"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a14-p1.html",
+   "unknown": [
+    "14"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-a26-p1.html",
+   "unknown": [
+    "26"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p02-p1.html",
+   "unknown": [
+    "02"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p36-p1.html",
+   "unknown": [
+    "36"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/exams/q-cuda-p47-p1.html",
+   "unknown": [
+    "47"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-robust-reward-p2.html",
+   "unknown": [
+    "32"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-pairwise-ranking-p1.html",
+   "unknown": [
+    "3%"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-anti-cheat-contract-p1.html",
+   "unknown": [
+    "64"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-question-driven-agent-p3.html",
+   "unknown": [
+    "32"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-budget-aware-search-p2.html",
+   "unknown": [
+    "12"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-anti-cheat-contract-p2.html",
+   "unknown": [
+    "16"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-goal-only-baseline-p1.html",
+   "unknown": [
+    "64"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-multi-agent-coord-p2.html",
+   "unknown": [
+    "128"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-hidden-shape-dist-p3.html",
+   "unknown": [
+    "0.5"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-trajectory-sft-p1.html",
+   "unknown": [
+    "64"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/algorithms/alg-anti-cheat-contract-p3.html",
+   "unknown": [
+    "64"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/papers/paper-2608-02611-p3.html",
+   "unknown": [
+    "5%"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/directions/dir-hw-dsl-profile-p2.html",
+   "unknown": [
+    "128"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-cost-p2.html",
+   "unknown": [
+    "3600"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-cost-p1.html",
+   "unknown": [
+    "3600"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-eval-protocol-p1.html",
+   "unknown": [
+    "90"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-hardware-p2.html",
+   "unknown": [
+    "100%"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-papers-p2.html",
+   "unknown": [
+    "32"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/appendix/ap-failures-p2.html",
+   "unknown": [
+    "99"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/theory/th-memory-peak-p1.html",
+   "unknown": [
+    "99"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/theory/th-sol-normalized-p2.html",
+   "unknown": [
+    "16"
+   ],
+   "n": 1
+  },
+  {
+   "file": "content/long/cuda/theory/th-roofline-attainable-p2.html",
+   "unknown": [
+    "16"
+   ],
+   "n": 1
+  }
+ ]
+}

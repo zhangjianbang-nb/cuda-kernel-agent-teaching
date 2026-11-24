@@ -1,0 +1,75 @@
+{
+ "title_zh": "Dr. Kernel：Triton 内核生成的强化学习",
+ "background": "该论文面向 Triton kernel 自动生成这一工程任务，关注用强化学习把大模型训练成能写出可编译、可运行、性能可接受的 GPU kernel 的智能体。现有 kernel 生成工作多依赖单轮提示与执行反馈，奖励信号稀疏且容易被奖励黑客攻击，训练稳定性与最终性能都受限。论文提出 Dr. Kernel，试图把强化学习配方做对，让 Triton kernel 生成在正确性与加速比上同时受益。",
+ "problem": "Triton kernel 生成的强化学习面临奖励稀疏、正确性判定昂贵、性能奖励易被投机利用的问题；单轮提示与简单执行反馈难以支撑多轮迭代，训练容易崩溃或收敛到低质量策略。",
+ "core_idea": "以可验证的正确性 oracle 为硬门槛，把编译通过、运行正确与相对基线的加速比组合成多级奖励，配合多轮执行反馈的 agent 式 rollout，让模型在生成—编译—运行—评测闭环中学习；同时对奖励做防作弊约束，避免只追求速度而牺牲正确性。",
+ "architecture": "系统由生成端、执行端与评测端三部分组成：生成端让模型按 Triton 语法产出 kernel 与调用脚手架；执行端负责编译、在 GPU 上运行并与参考实现比对；评测端用正确性 oracle 判定通过与否，再以相对基线的加速比给出性能奖励。多轮 rollout 把每轮编译错误、运行失败与性能数据回灌给模型，形成执行反馈闭环；训练侧用多轮 RL 与可验证奖励更新策略。",
+ "pipeline": [
+  "模型接收算子语义与输入分布，生成 Triton kernel 源码及启动配置。",
+  "执行端编译 kernel，捕获编译错误与 PTX/SASS 层面的失败信息。",
+  "在 GPU 上运行 kernel，与参考实现逐元素比对，判定正确性。",
+  "对通过正确性检查的 kernel 测速，计算相对基线的加速比作为性能奖励。",
+  "把编译错误、运行失败与性能数据作为执行反馈回灌，进入下一轮生成。",
+  "多轮 rollout 结束后汇总可验证奖励，更新策略并进入下一批任务。"
+ ],
+ "formula": "$$r = \\begin{cases} 0, & \\text{编译失败或正确性未通过} \\\\ 1 + \\alpha \\cdot \\min\\left(\\frac{t_{\\text{base}}}{t_{\\text{kernel}}}, S_{\\max}\\right), & \\text{正确性通过} \\end{cases}$$",
+ "training": "训练采用多轮强化学习：每个任务进行若干轮生成—执行—反馈迭代，奖励由可验证的正确性 oracle 与相对基线的加速比共同构成，正确性未通过则奖励为零，避免性能奖励被错误 kernel 投机获取。执行反馈包含编译错误、运行失败与测速结果，作为下一轮生成的上下文。论文强调奖励设计与多轮 rollout 的稳定性，但具体 RL 算法、轮数与 token 预算在摘要级材料中未给出。",
+ "walkthrough": "给定一个算子任务，模型首轮生成 Triton kernel 与启动代码；执行端编译，若编译失败则把错误信息回灌，模型在下一轮修正语法或类型问题。编译通过后运行并与参考实现比对，若数值不一致则回灌失败模式，模型调整索引、边界与归约逻辑。正确性通过后测速，得到相对基线的加速比并折算为性能奖励；若加速比过低，模型在后续轮次尝试分块、向量化或共享内存优化。多轮结束后汇总奖励更新策略，形成一次完整的生成—反馈—验证闭环。",
+ "pseudocode": "for task in batch:\n  context <- task_spec + input_distribution\n  for round in range(max_rounds):\n    kernel <- policy.generate(context)\n    ok, err <- compile(kernel)\n    if not ok:\n      context <- context + err\n      continue\n    correct <- run_and_compare(kernel, reference)\n    if not correct:\n      context <- context + failure_mode\n      continue\n    speedup <- time(reference) / time(kernel)\n    reward <- 1 + alpha * min(speedup, S_max)\n    context <- context + profile_feedback\n  update_policy(reward)",
+ "experiments": {
+  "datasets": [
+   "Triton kernel 生成任务集（规模未给出）"
+  ],
+  "baselines": [
+   "单轮提示基线（具体配置未给出）"
+  ],
+  "results": "论文摘要级材料称 Dr. Kernel 在 Triton kernel 生成上取得优于基线的正确率与加速比，但具体基准规模、基线配置与指标数值均未给出，无法核对口径。",
+  "limits": "材料未给出评测任务数量、输入分布、硬件型号与测速口径，正确性 oracle 的容差与防作弊细节也未说明，端到端收益与维护成本无法量化。",
+  "ablations": "材料未给出消融实验，无法判断多轮 rollout、正确性门槛与性能奖励各自贡献。"
+ },
+ "innovation": [
+  "把可验证正确性作为硬门槛，正确性未通过奖励为零，抑制性能奖励黑客。",
+  "用多轮执行反馈闭环替代单轮提示，让编译错误与运行失败成为下一轮上下文。",
+  "以相对基线的加速比作为性能奖励，并对加速比设上限，控制奖励尺度。"
+ ],
+ "limitations": [
+  "摘要级材料未给出基准规模、基线配置与具体指标，结果无法复核。",
+  "正确性 oracle 的容差、输入分布与防作弊机制未说明，评测可信度存疑。",
+  "多轮 RL 的轮数、token 成本与训练稳定性代价未量化，工程成本不明。"
+ ],
+ "impact": "若多轮 RL 与可验证奖励的配方成立，可把 Triton kernel 生成从单轮提示推进到可训练的执行反馈闭环，为 kernel agent 的训练与评测提供参考；但其评测口径与工程代价仍需完整论文与开源材料支撑。",
+ "summary": "Dr. Kernel 关注 Triton kernel 生成的强化学习配方，核心是以可验证正确性为硬门槛、以相对基线加速比为性能奖励，并用多轮执行反馈把编译错误、运行失败与测速结果回灌给模型。论文主张这样能把 RL 做对，避免奖励黑客与训练崩溃。但摘要级材料未给出基准规模、基线、指标数值与消融，评测可信度与工程成本无法量化，后续需核对完整论文。",
+ "data_recipe": [
+  "评测负载为 Triton kernel 生成任务，算子类型与 shape 分布未给出。",
+  "输入分布与参考实现来源未说明，正确性比对容差未给出。",
+  "硬件型号与测速口径未给出，加速比基线配置不明。",
+  "任务规模未给出，无法判断评测统计功效。"
+ ],
+ "train_recipe": [
+  "工具链为 Triton 编译器与 GPU 运行时，具体版本未给出。",
+  "profile 工具未说明，是否使用 NCU/SASS 级反馈不明。",
+  "编译环境与 CI 门禁未给出，正确性 oracle 部署方式不明。",
+  "上线门与端到端收益口径未给出，维护成本无法量化。"
+ ],
+ "facts": [
+  "奖励设计以正确性为硬门槛：编译失败或数值不一致时奖励为零，只有通过正确性检查的 kernel 才能获得性能奖励，避免错误 kernel 靠速度投机。",
+  "性能奖励采用相对基线的加速比并设上限，控制奖励尺度，防止个别极端加速比主导策略更新；基线配置与上限取值在材料中未给出。",
+  "多轮 rollout 把编译错误、运行失败与测速结果作为下一轮生成的上下文，形成执行反馈闭环，替代单轮提示的一次性反馈。",
+  "论文强调强化学习配方要做对，指向奖励稀疏与奖励黑客两类失败模式；但具体 RL 算法、轮数与 token 预算未给出。",
+  "评测端依赖可验证正确性 oracle 做逐元素比对，容差与输入分布未说明，评测可信度取决于 oracle 设计。",
+  "材料未给出基准任务数量、基线配置与指标数值，无法核对正确率与加速比口径，也无法估算端到端收益。",
+  "多轮 RL 的训练稳定性代价未量化，轮数增加带来的 token 成本与编译运行开销在材料中缺失。",
+  "论文未给出消融实验，多轮 rollout、正确性门槛与性能奖励各自贡献无法分离。"
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "把正确性门槛写成奖励为零时，需明确编译失败与数值不一致是否同权，否则口径不清。",
+  "性能奖励用加速比需固定基线实现与测速口径，否则不同任务间奖励不可比。",
+  "多轮反馈若只回灌错误文本而无 profile 数据，优化轮次可能退化为语法修补。"
+ ],
+ "direction": "dir-rl-data",
+ "_paper_id": "paper-2602-05885",
+ "_domain": "cuda",
+ "_title": "Dr. Kernel: Reinforcement Learning Done Right for Triton Kernel Generations",
+ "_abstract_only": true
+}

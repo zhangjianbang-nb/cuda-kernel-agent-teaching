@@ -1,0 +1,37 @@
+<h3>一 · 开场：一个正在跑的推理服务，和它脚下那块没人敢碰的地板</h3>
+<p>设想一个已经上线的多模态推理服务：前端接的是 Stable Diffusion 3.5 Medium 的采样循环，中间夹着 ResNet-50 做图像编码，后端挂着若干 LLM 解码层。整套系统在 PyTorch eager 模式下跑通，SLO 定在端到端 P99。profiler 一开，结论几乎总是同一句话：绝大多数时间不在 Python 里，也不在调度器里，而是集中在少数几个 compute kernel 上——矩阵乘、卷积、归一化。论文开篇给出的判断正是这一点：机器学习模型已经嵌进日常软件，而它们的运行时几乎全部消耗在这样一小撮 kernel 上。于是“优化这些 kernel”成了降低时延与成本最直接的杠杆，但论文紧接着点出代价：这件事传统上要求专家工程师手写底层 GPU 代码。</p>
+<p>问题不在于“没人知道该优化什么”，而在于“知道之后，改动它的成本高到不划算”。一个 `group_norm` 在 Stable Diffusion 的 UNet 里被调用几十次，每次 shape 不同；工程师看得见它在 NCU 里的 stall 原因，也看得见它离 roofline 的带宽上限还有距离，但从“看见”到“合并进主干”之间隔着一整条工程流水线。这条流水线就是本部分要拆解的旧方案现场：手写 CUDA、Triton 重写、库调用三条路，各自的开发周期、性能上限、正确性与可维护性代价，以及为什么这三条路合起来仍然不足以支撑“每个模型、每个 shape 都值得特化”的现代负载。</p>
+
+<h3>二 · 旧方案之一：手写 CUDA，性能上限最高但周期与正确性代价最重</h3>
+<p>手写 CUDA 是唯一能把硬件吃干净的路。工程师可以直接控制 shared memory 的分块、寄存器压力、warp 级 shuffle、`cp.async` 的流水深度，乃至用 PTX 内联汇编钉死某条指令的调度。对一个固定的、shape 已知的热点 kernel，这条路能逼近 roofline 上限：以访存为主的归一化类 kernel，理论上限就是 HBM 带宽，写成单遍读、单遍写、把 mean/variance 用 Welford 在线算法融合进同一个循环，就能把“读两遍写一遍”压成“读一遍写一遍”。</p>
+<p>代价立刻出现。第一是开发周期：一个能在生产输入分布上稳定正确的 fused kernel，从原型到合入通常要经历数值对齐、边界 shape、dtype 组合、非连续 stride 的反复修补，周期以人周计。第二是正确性风险：手写代码绕过了 PyTorch 的算子语义，任何一处对 `eps`、对 reduction 顺序、对 NaN 传播的处理偏差，都会在离线测试里被随机张量掩盖，却在真实分布上炸开。第三是可维护性：一旦上游框架换了 layout 或 dtype 策略，这段 kernel 就成了无人敢动的遗产代码。论文所说的“traditionally required expert engineers”不是修辞，而是这条路的准入门槛——它把优化能力锁死在少数人手里，而模型数量与 shape 组合的增长速度远快于专家数量的增长速度。</p>
+<p>用公式刻画这条路的收益边界很直接。设某 kernel 的基线时延为 <span class="formula">$$T_{\text{base}}$$</span>，手写特化版本为 <span class="formula">$$T_{\text{hand}}$$</span>，则加速比为 <span class="formula">$$s=T_{\text{base}}/T_{\text{hand}}$$</span>；但工程上真正该看的是含开发成本的摊销收益，若该 kernel 在服务生命周期内被调用 <span class="formula">$$C$$</span> 次、开发耗时为 <span class="formula">$$D$$</span>（工程师工时），则有效收益近似为 <span class="formula">$$(C\cdot(T_{\text{base}}-T_{\text{hand}}))/D$$</span>。对调用频次低、shape 多变的 kernel，这个比值会迅速塌掉——这正是手写路线在“长尾算子”上失效的算术原因。</p>
+
+<h3>三 · 旧方案之二：Triton 重写，把门槛降下来但把上限也压下去</h3>
+<p>Triton 的出现改变了成本结构：用 block 级编程模型替代线程级手工编排，工程师写的是 tile 的形状与循环，编译器负责映射到 warp 与 shared memory。对一个归一化或逐元素融合 kernel，Triton 版本往往几十行就能写完，开发周期从人周降到人天，可维护性也显著好转——它是 Python 侧的一等公民，能直接嵌进 PyTorch 的调用路径。</p>
+<p>但 Triton 的上限是结构性的。block 抽象让编译器替你做了大量调度决策，工程师失去了对寄存器分配、指令级并行、异步拷贝流水的手动控制；对计算密度极高、需要精细 software pipeline 的 kernel（例如大 tile 的 GEMM 变体），Triton 生成的代码常常离手写 CuTe/PTX 还有距离。更关键的是 autotune 的代价：一组 `BLOCK_M/BLOCK_N/BLOCK_K/num_warps/num_stages` 的搜索空间在编译期展开，每个配置都要编译、要跑 benchmark，编译时间与显存占用（每个配置一份 cubin 与 workspace）都会随搜索空间线性增长。在 CI 里这表现为构建时间膨胀，在部署时表现为首次调用的冷启动抖动。</p>
+<p>伪代码层面，Triton 路线的工程循环大致是：写 kernel → 声明 autotune 配置集 → 在离线 shape 集合上跑 benchmark 选配置 → 固化配置进代码。问题在于最后一步：一旦固化，kernel 就对新的输入分布失去适应性；若不固化，运行时的 autotune 又会在生产流量上引入不可控的首次时延。这个“编译期搜索 vs 运行时自适应”的两难，是 Triton 路线在动态负载下的固有摩擦。</p>
+
+<h3>四 · 旧方案之三：库调用，最稳但最不贴 shape</h3>
+<p>第三条路是直接用 cuBLAS、cuDNN、CUTLASS 这类库。它的正确性与可维护性最好：库实现经过大量数值验证，接口稳定，升级路径清晰。对标准 GEMM、标准卷积，库实现往往已经接近硬件上限，自研很难打赢。</p>
+<p>痛点在于“贴不贴”。库的启发式选择面向通用 shape 分布，对长尾 shape、非标准 layout、融合机会（比如 norm + activation + residual 的三合一）并不特化。一个 `adaptive_avgpool2d` 在 ResNet-50 里输入尺寸固定、语义简单，库调用会走通用路径，产生额外的中间张量与多次访存；而一个针对该 shape 的单遍融合实现能把访存次数压到理论下限。论文报告的 <span class="formula">$$1.52\times$$</span>（ResNet-50 的 `adaptive_avgpool2d`）与 <span class="formula">$$1.70\times$$</span>（Stable Diffusion 3.5 Medium 的 `group_norm`）正是这类“库不特化、但特化收益明确”的位置——注意这两个数字是论文在 DGX Spark / GB10 上、以 PyTorch eager 为基线、每 kernel 仅 50 次优化迭代的条件下声称的，跨硬件与跨 dtype 的可迁移性未经独立验证。</p>
+<p>库路线的隐性代价还包括版本耦合：库的启发式随版本变化，同一个 kernel 在不同 CUDA/cuDNN 版本上的时延可能漂移，这让“性能回归”变成一件需要持续监控而非一次性解决的事。对追求端到端 SLO 的服务，这种漂移本身就是运维负担。</p>
+
+<h3>五 · 三条路的共同缺口：离线正确不等于生产正确</h3>
+<p>把三条路放在一起看，会发现一个共同的、比“写得慢”更致命的问题：它们的验证口径与生产口径不一致。论文对既有 agentic 工具的批评点得很准——现有工具大多在随机生成的张量与孤立 kernel 上评测，产出的是开发者必须手工重新集成的独立 CUDA 代码，且大多只针对单一目标。这三句话分别对应三类代价。</p>
+<p>第一类是正确性 oracle 的错位。随机张量（尤其是均匀分布、无 NaN/Inf、无极端量级）无法触发 reduction 顺序差异、无法暴露 `eps` 处理偏差、无法检验非连续 stride 下的越界。一个在随机输入上通过全部断言的 kernel，在真实激活分布上可能给出与 PyTorch 参考实现不一致的结果，而这类不一致在离线 benchmark 里根本不会计分。第二类是集成代价：孤立 kernel 的加速比是在“没有周边开销”的理想条件下测的，一旦嵌回模型，launch 开销、layout 转换、额外的同步点会吃掉一部分收益，甚至让端到端变慢。第三类是目标单一：只优化单个 kernel 而不看它在整条计算图中的位置，容易做出“局部最优、全局负收益”的决策，比如为了融合而引入一次全局同步。</p>
+<p>这三类缺口叠加，使得旧方案的实际产出率很低：agent 能生成代码，但生成的代码难以被信任地部署。论文的评测口径因此把重心放在“未修改的 PyTorch 模型原地替换”上，并用一个统一的、按样本计分的指标来约束：</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>这里 <span class="formula">$$N$$</span> 是评测样本数，<span class="formula">$$s_i$$</span> 是第 <span class="formula">$$i$$</span> 个样本上基线时延与候选时延之比，<span class="formula">$$\tau$$</span> 是加速门槛。这个式子的工程含义比它看起来重：它按样本计数而非按平均加速比计分，意味着一个在多数 shape 上快、在少数 shape 上慢的候选不会因为平均值好看而蒙混过关；同时它把“正确性门”前置——只有通过正确性检查的候选才进入计时。这正是旧方案最缺的那一层：不是生成能力，而是可验证、可回退、可复现的评测骨架。</p>
+<table class="mini"><thead><tr><th>路线</th><th>性能上限</th><th>开发周期</th><th>正确性风险</th><th>可维护性</th><th>典型失效场景</th></tr></thead><tbody><tr><td>手写 CUDA / PTX</td><td>最高，可逼近 roofline</td><td>人周级</td><td>高，语义偏差难在随机测试中暴露</td><td>低，易成遗产代码</td><td>上游 layout/dtype 变更后失配</td></tr><tr><td>Triton 重写</td><td>中高，受 block 抽象限制</td><td>人天级</td><td>中，语义较易对齐</td><td>较高</td><td>autotune 配置固化后不适应新 shape</td></tr><tr><td>库调用</td><td>标准 shape 接近上限，长尾偏低</td><td>近零</td><td>低</td><td>高</td><td>非标准 layout、融合机会丢失</td></tr></tbody></table>
+
+<h3>六 · 为什么非改不可：负载形态变了，优化单元也得变</h3>
+<p>把痛点归拢，会发现它们不是三个独立问题，而是同一个结构性矛盾的三种表现：优化对象的粒度变了。过去的 kernel 工程以“一个算子、一个固定 shape、一次交付”为单位；现在的负载是视觉、扩散、LLM 三类模型混跑，shape 随 batch、序列长度、分辨率动态变化，热点 kernel 的集合本身也在随模型迭代漂移。论文明确把支持范围写成 vision、diffusion、LLM 三类负载，并强调接受“任意未修改的 PyTorch 模型原地替换”——这句话针对的正是旧方案最贵的那个环节：手工重新集成。</p>
+<p>在这个粒度下，手写 CUDA 的摊销收益算不过来（长尾 shape 太多），Triton 的编译期搜索成本随 shape 组合爆炸，库调用的通用启发式又贴不住长尾。三者共同的失败模式是：优化能力被锁在“单点、离线、孤立”的假设里，而生产环境要求的是“多点、在线、端到端”。要跨过这道坎，需要的不是更强的单次代码生成，而是一套能把生成、编译、正确性检查、时延测量、回退串成闭环的 harness——它必须能读入未修改的模型、在真实输入分布上验证、按统一基线计时、并把失败候选干净地回退。论文用 MCTS 在多个优化路径上做树搜索而非单链精修，用 GUI 暴露候选 kernel 与失败现场，本质上都是在补旧方案缺的那一层“可观测的搜索与可回退的验证”。</p>
+<p>一个具体的工程判断可以收束本部分：当你面对一个 `group_norm`，旧方案要你在“手写两周、Triton 一天但上限打折、库调用零成本但不特化”之间三选一；而真正决定这个选择是否值得的，不是 kernel 本身写得多漂亮，而是它能否在一个统一的、按样本计分且带正确性门的评测口径下被反复验证与回退。加速比 <span class="formula">$$1.70\times$$</span> 只有在正确性门通过、且端到端回归不退化时才成立；否则它只是一个在随机张量上成立的离线数字。这正是 Kernel Forge 这类 harness 存在的理由，也是后续拆解其 MCTS 搜索、反馈回灌与部署回归的起点。</p>
+
+<h3>手写、库调用与 Triton 的三重边界：为什么“能跑”不等于“可交付”</h3>
+<p>在一个在线推理服务里，ResNet-50 的 adaptive_avgpool2d 与 Stable Diffusion 3.5 的 group_norm 都不是孤立算子：它们嵌在 PyTorch 模块图里，前后有 layout 变换、dtype 转换与 stream 同步。旧方案的第一层边界就在这里——库调用（cuDNN/cuBLAS）在标准 shape 上近乎最优，但一旦 shape 偏离库的启发式选择区间，就会退回通用 kernel 或插入额外 transpose，带宽被 layout 拷贝吃掉；手写 CUDA 能贴合 shape，却把“每个新模型一次重写”的成本压在少数专家身上，开发周期以人周计，且一旦上游框架改 dispatch 规则，维护成本立刻反弹。Triton 把门槛降到 Python 层，但其自动调优在非常规 reduction 维度上常生成冗余的 shared memory staging，编译期 autotune 的候选爆炸会让首次调用时延不可接受。</p>
+<p>第二层边界是正确性与性能的耦合。旧流程里正确性靠单元测试的固定张量，性能靠离线 microbenchmark，两者口径不一致：测试用随机张量，生产用真实激活分布，数值范围与 NaN/Inf 模式不同，kernel 在测试里通过却在长尾输入上溢出。可形式化地写成：候选被接受的条件应是 <span>正确性门 ∧ 性能门</span>，而旧方案常只验前者。以 group_norm 为例，若候选把归约拆成两趟并假设通道数能被 warp 整除，随机张量恰好满足，真实模型某个中间层不满足时结果偏差被静默吞掉——这类失效在离线基准上不可见，代价是线上回滚与重训。</p>
+<p>第三层是系统代价的不可见性。手写 kernel 的编译时间、Triton 的 JIT 缓存命中率、库调用的版本锁定，都会在端到端时延里留下尾巴：一个 1.52× 的 adaptive_avgpool2d 加速若伴随每进程数十秒的编译，服务冷启动就被拖垮；group_norm 的 1.70× 若依赖 shape 特化，换 batch 即失效。旧方案缺少统一的“候选—编译—正确性—时延”闭环，工程师只能凭经验在开发速度与性能上限之间二选一，这正是必须换掉它的工程理由。</p>
+<p class="paper-line">对应：papers/paper-2607-24762 · 第 1/9 部分</p>

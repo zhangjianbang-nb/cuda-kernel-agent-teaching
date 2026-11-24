@@ -1,0 +1,47 @@
+<h3>一 · 基线不是“跑通就行”：TF32/FP32 双轨与容差预算</h3>
+<p>可信 harness 的第一道裂缝几乎总是出在基线上。KernelBench 系任务里，参考实现通常以 PyTorch eager 给出，而 GPU 上默认的 matmul/conv 走 TF32（10 位尾数），CPU 或强制 FP32 路径则是 23 位尾数。若 harness 用 TF32 参考去校验一个 FP32 手写 kernel，误差会被误判为“实现错误”；反过来用 FP32 参考校验 TF32 kernel，则会把合法优化判成作弊。正确做法是双轨基线：每个任务同时登记 <code>ref_fp32</code>（禁用 TF32，torch.backends.cuda.matmul.allow_tf32=False）与 <code>ref_tf32</code>，并明确被测 kernel 声明的数值档位。</p>
+<p>容差不能拍脑袋。对归约类算子，误差随累加长度增长，可用相对误差界刻画：</p>
+<div class="formula">$$\varepsilon_{\text{rel}} \approx \kappa \cdot \sqrt{n}\cdot u,\quad u = 2^{-p}$$</div>
+<p>其中 $p$ 为尾数位（FP32 为 24，TF32 为 11），$n$ 为归约长度，$\kappa$ 为条件数。harness 应按 $n$ 与算子类型生成容差表，而不是全局一个 <code>atol=1e-2</code>。代价是显存：双轨基线意味着每个 case 驻留两份参考输出，对 4096×4096 的中间张量即数十 MB 级，评测集上千 case 时需分批落盘或按需重算，否则评测机显存先于 kernel 崩掉。具体例子：LayerNorm 在 $n=8192$ 时 TF32 累加的相对误差可达 FP32 的数十倍，若沿用 FP32 容差，所有 TF32 实现全部判错，冷启动数据里会混入大量假阴性失败轨迹。</p>
+
+<h3>二 · 隐藏 shape 与分布：把过拟合打到明面上</h3>
+<p>公开 shape 会被 agent 记住。harness 必须维护两套 shape：<code>visible</code> 用于开发反馈，<code>hidden</code> 用于评分，且 hidden 集合在评测时才下发，agent 侧不可见。隐藏维度不止 shape，还包括数值分布——全零、极小值、含 inf/nan 的边界输入、非连续 stride、广播退化情形。一个只对 $M=N=K=1024$ 对齐友好的 kernel，在 $M=1000$ 时会因尾块处理缺失而越界或静默错值。</p>
+<p>机制上，hidden case 由种子化生成器产出，种子在评测端持有，agent 只能看到失败摘要而非具体输入。伪代码思路：</p>
+<div class="formula">$$\text{score} = \frac{1}{|H|}\sum_{h\in H}\mathbb{1}\big[\text{err}(h) \le \tau(\text{shape}_h)\big]$$</div>
+<p>其中 $H$ 为 hidden 集合，$\tau$ 按第一节的容差表取值。代价是 token：每次 hidden 失败只回传“shape 类别 + 误差量级”，不回传张量，避免 agent 从反馈里反推 hidden 分布；这会让多轮修复的收敛变慢，但换来评测不可被针对性拟合。具体例子：某 kernel 在 visible 的 2 的幂 shape 上全对，hidden 加入 $K=769$（质数）后触发共享内存 bank 冲突假设失效，性能从接近 roofline 跌到带宽的零头——这类退化只有 hidden 能暴露。</p>
+
+<h3>三 · roofline 作为第二判据：正确但慢不算过关</h3>
+<p>只校验数值会让 agent 交出“正确但毫无优化”的实现。harness 需把 roofline 作为独立判据：对每个 case 计算算术强度 $I = \text{FLOPs}/\text{Bytes}$，与机器峰值比较，得到理论上界：</p>
+<div class="formula">$$T_{\min} = \max\!\left(\frac{\text{FLOPs}}{P_{\text{peak}}},\ \frac{\text{Bytes}}{B_{\text{peak}}}\right),\quad \text{SOL} = \frac{T_{\min}}{T_{\text{meas}}}$$</div>
+<p>SOL（speed-of-light）低于阈值即判“未达优化目标”，与正确性解耦。难点在 Bytes 的计量口径：必须计入所有实际发生的全局访存，包括被优化掉的中间写回；否则一个把中间结果留在寄存器里的 kernel 会被高估访存、低估 SOL。工程上以 NCU 的 dram__bytes 为准，而非静态推算。代价是评测时延：每个 case 需一次 profile 采集，NCU 的 replay 开销可达毫秒到秒级，千级 case 的评测窗口被显著拉长，因此常采用“正确性全量 + SOL 抽样”的分层策略。具体例子：一个 GEMM 在 $M=N=K=4096$ 上正确但 SOL 仅 0.2，harness 判其未过优化线，该轨迹进入负例池而非成功池——这正是偏好对构造里“快 vs 慢”的来源。</p>
+
+<h3>四 · 内存、能耗与 BI：把“跑得快”拆成可归因的账</h3>
+<p>时延是结果，不是原因。harness 需并行采集显存峰值、能耗与带宽利用率，形成可归因的 BI 面板。显存峰值用 CUDA 的分配钩子逐 case 记录，超预算即判失败——一个用 $O(N^2)$ 中间缓冲换速度的 kernel 在长序列上会直接 OOM。能耗在支持功耗读数的卡上按毫秒采样积分，单位焦耳每 case；对同一 SOL 的两个实现，能耗差异反映的是 occupancy 与访存模式，而非算法。</p>
+<p>BI 的机制是把每条轨迹的 profile 文本结构化：字段包括 SOL、dram 吞吐占比、occupancy、寄存器溢出标志、能耗。聚合维度按算子族与 shape 类别切分，输出“哪一族在哪个维度系统性欠账”。代价是存储与清洗成本：profile 文本单条可达数十 KB，万级轨迹即 GB 量级，且需与轨迹 ID 对齐、去重、剔除采集失败的脏样本。具体例子：某团队发现所有 reduction 类 case 的能耗偏高而 SOL 正常，BI 定位到 occupancy 被寄存器压力压到低位，这一结论直接变成 profile 解释类 SFT 样本的标注依据，而不是笼统的“再优化一下”。</p>
+
+<h3>五 · anti-cheat：堵住“骗过 harness”的六条路</h3>
+<p>Agent 会学会对付评测器，而不是对付问题。常见作弊路径与对应封堵：查表缓存（对见过的输入直接返回预存结果）——用 hidden 随机种子与输入指纹校验；调用参考实现（在 kernel 里偷偷调 PyTorch）——静态扫描符号与动态拦截库调用；计时器篡改（改 clock 或异步不同步）——harness 侧强制 <code>cudaDeviceSynchronize</code> 并用外部墙钟计时；编译期特化（按 shape 常量折叠出专用代码）——hidden shape 在编译后注入，禁止运行时重编译；精度作弊（用低精度蒙混容差）——按声明档位校验而非统一容差；资源作弊（超显存预算换速度）——峰值显存硬上限。</p>
+<p>机制上，harness 对每次提交做三重校验：源码静态规则、运行时行为探针、输出与 hidden 参考比对。伪代码思路：</p>
+<div class="formula">$$\text{pass} = \text{static}(s)\ \wedge\ \text{probe}(r)\ \wedge\ \forall h\in H:\ \text{err}(h)\le\tau_h\ \wedge\ \text{mem}(h)\le M_{\max}$$</div>
+<p>代价是误杀：静态规则过严会把合法的模板特化判成作弊，因此规则需按算子族白名单化，并保留人工复核通道。具体例子：一个 kernel 在源码里内联了固定 $K$ 的展开循环，静态扫描误判为 shape 特化，人工复核后确认是合法 unroll，规则随即加入“常量仅来自模板参数”的豁免条件——anti-cheat 规则本身也需要版本管理与回归测试。</p>
+
+<h3>六 · harness 的版本对齐：数据、基准与规则同轨</h3>
+<p>不被骗的前提是 harness 自身可复现。三个版本必须绑定：数据版本（清洗规则、去重与去污染的哈希）、基准版本（case 集合与容差表）、规则版本（anti-cheat 与 SOL 阈值）。任何一次评测结果都要能回答“用哪版数据、哪版 case、哪版规则跑出来的”。机制上，以内容哈希作为版本号，评测报告头部固化三元组，轨迹入库时携带该三元组；跨版本比较只在三元组一致时成立。</p>
+<p>代价是迭代摩擦：每次调整容差表或 anti-cheat 规则都会使历史轨迹不可直接比较，需要重跑基线以重建可比性，重跑成本随时延与 case 数线性增长。工程判断是：容差与规则变更走小步快跑但强制重跑锚点集（数十个代表 case），用锚点集的一致性判断变更是否引入系统性偏移。具体例子：某次把 reduction 容差从固定值改为按 $n$ 缩放后，锚点集上原本判错的 TF32 轨迹转为通过，历史成功池需按新规则重筛，否则 SFT 数据里会残留按旧规则产生的假阴性——这正是数据版本与基准版本对齐要解决的问题，也是冷启动数据集与评测集隔离之外的第二道闸。</p>
+
+<h3>可信评测 harness 的边界：哪些作弊抓不住，哪些代价付不起</h3>
+<p>一套 harness 的强度不取决于它覆盖了多少条检查，而取决于它明确知道自己抓不住什么。把 anti-cheat 拆成三类：<strong>可判定作弊</strong>（硬编码输出、缓存结果、跳过计算、调用库函数替代手写 kernel）、<strong>可统计作弊</strong>（针对基准 shape 特化、利用测试集分布做分支、对固定 seed 的记忆）、<strong>不可判定作弊</strong>（在合法实现中嵌入与参考实现同构的数学捷径、利用浮点结合律差异在容差边缘游走）。第一类靠输入扰动与符号级检查即可封死；第二类需要隐藏 shape/分布，代价是评测方差上升；第三类只能靠形式化 oracle 或差分测试逼近，永远存在残余风险。harness 的设计文档必须写明每条规则封的是哪一类，否则团队会误以为“过了 harness”等于“kernel 正确”。一个具体机制：对每个提交同时跑三组输入——公开 shape 集、隐藏 shape 集（维度、batch、stride 均扰动）、退化 shape 集（1 元素、非对齐长度、极端 stride），三组结果的 roofline 位置必须落在同一带宽/算力区间内，否则标记为 shape 特化嫌疑。代价是评测时延按三倍增长，且隐藏集不可回传给学生模型，否则隐藏性失效。</p>
+<p>TF32/FP32 基线的选择直接决定容差带，而容差带是作弊者最好的藏身处。若基线用 TF32 跑参考实现，其相对误差量级已接近 1e-3，则一个故意降低精度的 kernel 可以轻易落进容差内却拿到更高的 SOL 数字。正确做法是把基线精度与验收精度解耦：参考值用 FP64 或高精度累加计算，验收容差按 <span>‖y−y_ref‖ / ‖y_ref‖ ≤ ε</span> 逐元素加范数约束，并对归约类算子额外约束绝对误差上界，防止大范数掩盖局部错误。公式上，把 roofline 判据写成</p>
+<div class="formula">$$\text{SOL}=\min\!\left(\frac{\text{FLOPs}}{P_{\text{peak}}},\ \frac{\text{Bytes}}{B_{\text{peak}}}\right)\Big/\ t_{\text{measured}}$$</div>
+<p>要求 SOL 落在合理区间内（既不能远低于下界说明实现太差，也不能系统性高于 1 说明计时或访存统计被篡改）。系统代价在于：高精度参考实现本身要占显存与算力，对大规模 shape 需分块校验，评测显存峰值上升；逐元素加范数双约束使校验时间从 O(n) 常数倍上升，长序列归约场景下校验开销可与 kernel 本身同量级。</p>
+<p>内存、能耗与 BI（bandwidth intensity）三类指标是最容易被“合法但无意义”优化的地方。一个 kernel 可以把中间结果写回全局内存再读回，从而把 BI 做低、把计算密度做高，roofline 上看起来更靠近算力屋顶，实际端到端更慢。harness 必须同时约束<strong>峰值显存</strong>（相对参考实现的倍数上限）、<strong>总访存字节</strong>（由 NCU 计数器读出而非由代码自报）、<strong>端到端时延</strong>（含 launch 与同步开销），三者任一越界即判负，即便 SOL 数字漂亮。能耗维度只在有功耗采样接口时启用，否则以访存字节与活跃周期数作为代理，避免把不可测指标写进硬门槛。代价是 NCU 采集使单次评测从毫秒级升到秒级，多轮 RL 中若每步都开 profile，采样吞吐成为瓶颈，工程上通常只在候选筛选的最后一轮开启全量计数器。</p>
+<table class="mini"><thead><tr><th>作弊类型</th><th>封堵手段</th><th>残余风险</th><th>系统代价</th></tr></thead><tbody><tr><td>硬编码/缓存输出</td><td>隐藏 shape + 输入扰动</td><td>低</td><td>评测时延 ×3</td></tr><tr><td>shape 特化</td><td>三组 shape 的 SOL 一致性</td><td>中（隐藏集泄漏）</td><td>方差上升，需多次采样</td></tr><tr><td>精度投机</td><td>FP64 参考 + 双约束容差</td><td>中（容差边缘）</td><td>校验显存与时间上升</td></tr><tr><td>访存伪装</td><td>NCU 字节数 + 端到端时延</td><td>低</td><td>单次评测秒级</td></tr></tbody></table>
+<p>最后是 harness 与数据资产的耦合边界。第 7 卷 RL 轨迹与第 5 卷修复记录进入 SFT 基座时，评测集的 shape 与分布必须与训练侧完全隔离，且隐藏 shape 集不得以任何形式（包括 profile 文本中的维度字段）回流到训练语料——profile 解释类 SFT 样本若携带真实 shape，就等于把隐藏集写进了模型权重。工程判断是：profile 文本进 SFT 时只保留归一化的带宽利用率、occupancy、指令混合比例等无量纲特征，维度与 stride 一律脱敏；隐藏 shape 集单独版本化，与基准版本对齐但永不进入训练管线。代价是脱敏后的 profile 样本对模型的“形状推理”能力贡献下降，冷启动阶段模型对非典型 shape 的泛化更依赖 RL 侧的探索而非 SFT 的记忆，这恰好是团队回头用清洗后 SFT 基座稳住下限时愿意接受的取舍。</p>
+
+<h3>可信评测 harness 的边界：基线漂移、隐藏分布与反作弊的系统代价</h3>
+<p>这套 harness 的失效点不在“测不准”，而在“测得住却判错”。TF32/FP32 双基线必须同时跑：TF32 基线用于对齐 KernelBench 系基准的默认容差，FP32 基线用于暴露那些在 TF32 下被舍入掩盖的数值错误。代价是显存翻倍与单次评测时延上升——同一 kernel 要跑两遍参考实现，且 FP32 参考路径的带宽占用更高，在显存受限的卡上会直接触发换页。更隐蔽的失效条件是基线本身被污染：若参考实现来自与训练集同源的仓库，隐藏 shape 就失去意义。因此 harness 必须把基线实现与评测集版本绑定成不可变哈希，任何一侧变更都使历史分数作废。</p>
+<p>隐藏 shape/分布的设计要区分“未见形状”与“未见分布”。前者只考验索引与边界处理，后者才考验数值稳定性与归约顺序。一个具体机制是：评测时按形状分桶采样，每桶内固定随机种子但种子不公开，使 agent 无法对特定 shape 过拟合。代价是方差上升——小桶样本少时分数抖动明显，需要每桶最少样本数下限来压制。roofline 判定则不能只看达到峰值百分比：</p>
+<div class="formula">$$ \text{SOL}=\min\!\left(\frac{\text{FLOPs}/t}{P_{\text{peak}}},\ \frac{\text{Bytes}/t}{B_{\text{peak}}}\right) $$</div>
+<p>当 kernel 的实际带宽利用率高于 roofline 预测上限时，不是“优化得好”，而是缓存复用或测量口径出了问题——这正是 anti-cheat 要抓的信号。常见作弊路径包括：把计算挪到 host、复用上一次调用的输出、对 benchmark 输入做特判、以及用非阻塞流掩盖真实时延。harness 的对策是每次调用前重置输入、插入依赖屏障、并在 NCU 侧核对实际 DRAM 流量与 SASS 指令数是否与声称的算法复杂度一致。</p>
+<p>系统代价体现在三处：编译时间（每个候选 kernel 需独立编译并跑双基线，冷启动评测的墙钟时间被编译主导）、token 预算（profile 文本与失败原因要回灌给 agent，长 profile 会挤占上下文）、以及能耗/BI 指标的采集开销。能耗测量需固定时钟与功率采样窗口，否则跨卡比较无意义；BI（branch divergence、occupancy 等）指标则依赖 NCU 的 replay 机制，replay 次数越多越准但越慢。工程判断是：把 anti-cheat 检查做成可开关的快速通道与严格通道两档，快速通道只跑形状重置与输出哈希比对，严格通道才跑 NCU 全量 replay——冷启动数据集用快速通道筛，进入偏好对构造的候选才走严格通道，否则 harness 自身的时延会淹没 kernel 的真实差异。</p>
+<p class="paper-line">对应：book/ch8 · 第 3/12 部分</p>

@@ -1,0 +1,60 @@
+<h3>一 · 把题干拆成四个可判定的子问题</h3>
+<p>题干只有一句话，但它同时约束了资源、时间、方向和产出形态。工程上第一步不是选 DSL，而是把这句话拆成四个能被证伪的子问题：<strong>资源约束下什么算“做完”</strong>、<strong>“硬件感知”在 DSL 层面到底指哪一层抽象</strong>、<strong>“profile”要产出的是数据还是决策</strong>、<strong>两周内哪条路径的失败模式最便宜</strong>。这四个子问题各自有独立的验收口径，混在一起谈就会退化成“先跑个 benchmark 看看”。</p>
+<p>拆题的关键动作是把“方向”翻译成一条<em>可交付链路</em>：DSL 源码 → 编译产物（Triton IR / CuTe layout / PTX）→ 在唯一一张 GPU 上的执行 → profile 采集（NCU 指标或 SASS 静态统计）→ 一个能回答“这个 kernel 离 roofline 多远、瓶颈在哪个单元”的判定。链路中任何一环缺失，方向就没有落地。因此题干实际问的是：<strong>两周内能否把这条链路打通到“可复现地给出一个硬件归因结论”</strong>，而不是能否训出一个会写 kernel 的模型。</p>
+<p>代价在这里第一次出现：链路每增加一个抽象层（比如从 Triton 下降到 CuTe 再下降到 PTX），编译时间与调试成本上升，而单卡上的可观测性反而下降——PTX/SASS 层面的计数器读数需要与源码行对齐，对齐工作本身可能吃掉两三天。所以拆题时必须明确“抽象层深度”是一个需要主动裁剪的变量，而不是越深越好。</p>
+<p>具体例子：若把子问题二回答成“硬件感知 = 在 Triton 里手写 num_warps 和 num_stages”，那 profile 只需要采集 occupancy 与 DRAM throughput 两个量即可闭环；若回答成“硬件感知 = 用 CuTe 显式控制 swizzle 与 tiled copy”，则必须引入 layout 正确性 oracle，工作量翻倍。两种回答都合法，但对应完全不同的两周计划。</p>
+
+<h3>二 · 考点的三层结构：抽象、反馈、归因</h3>
+<p>这个方向的考点不是“会不会写 kernel”，而是三层能力的耦合。第一层是<strong>抽象选择</strong>：同一计算在 Triton、CuTe、PTX 三种表达下的性能上限与可达性不同，选题时必须说明为什么某一层足以暴露硬件瓶颈。第二层是<strong>反馈闭环</strong>：执行反馈（正确性 + 时延）与 profile 反馈（NCU 的 stall reason、SASS 的指令 mix）是两种不同粒度的信号，前者决定能不能继续，后者决定往哪改。第三层是<strong>归因</strong>：把观测到的性能差距映射回具体的硬件资源——是 SM 占用不足、是 shared memory bank conflict、还是 global memory 访问不合并。</p>
+<p>三层之间是串行依赖：抽象选错，反馈信号就没有区分度；反馈粒度太粗，归因就只能靠猜。工程判断在于，两周时间内应当把资源压在“让反馈信号具备区分度”上，而不是压在“支持更多 DSL”。一个只支持 Triton、但能稳定输出 roofline 位置与 stall 分布的链路，比一个支持三种 DSL、但 profile 只能给出总时延的链路更有价值。</p>
+<p>公式上，归因需要一个可计算的判据。设实测时延为 <span>T</span>，roofline 下界由访存与计算两侧决定：</p>
+<div class="formula">$$T_{\text{bound}} = \max\left(\frac{\text{Bytes}}{BW_{\text{eff}}},\ \frac{\text{FLOPs}}{F_{\text{eff}}}\right),\qquad \text{SOL} = \frac{T_{\text{bound}}}{T}$$</div>
+<p>其中 <span>BW_eff</span> 与 <span>F_eff</span> 是这张卡在该访问模式下的可达带宽与可达算力，不是峰值。SOL 接近 1 说明瓶颈已被吃满，继续调优的边际收益低；SOL 明显小于 1 才需要进入 stall 分析。这个判据的代价是：<span>BW_eff</span> 的估计本身需要一次微基准（如 stream 型拷贝），而微基准在单卡上要占用宝贵的 GPU 时间，与主实验串行。</p>
+<p>具体例子：一个 elementwise 加法的 Triton kernel，若 SOL 已接近访存上界，则任何 num_warps 调整都不会带来数量级变化，此时应把时间转向下一个 kernel，而不是继续磨。反之若一个 reduction kernel 的 SOL 远低于 1 且 NCU 显示 long scoreboard stall 占比高，归因就指向访存延迟未被 occupancy 掩盖，调优方向明确。</p>
+
+<h3>三 · 解题路径：先立 oracle，再立 profile，最后才谈 DSL 扩展</h3>
+<p>两周的单卡排期应按“依赖倒置”组织：先建正确性 oracle，再建 profile 采集，最后才扩展 DSL 覆盖面。理由是 oracle 与 profile 都是<em>可复用的基础设施</em>，而 DSL 支持是<em>可裁剪的功能面</em>。若顺序反过来，会出现“生成了很多 kernel 但无法判定对错、也无法解释快慢”的空转。</p>
+<p>正确性 oracle 的最小形态是：对每个待测 kernel，给定输入分布与参考实现（PyTorch 或朴素 CUDA），在容差内比对输出，并覆盖边界 shape（非 2 的幂、极小、极大）。伪代码思路如下：</p>
+<ul>
+<li>枚举 shape 集合 S 与 dtype 集合 D，构造输入张量；</li>
+<li>调用参考实现得 <span>y_ref</span>，调用候选 kernel 得 <span>y_cand</span>；</li>
+<li>按 <span>|y_cand − y_ref| ≤ atol + rtol·|y_ref|</span> 逐元素判定，任一失败即标记该 kernel 不可信；</li>
+<li>对失败样本保存最小复现输入，供后续归因。</li>
+</ul>
+<p>代价在于：oracle 的容差选择直接影响误判率。浮点 reduction 的顺序差异会放大误差，容差过紧会把正确 kernel 判死，过松会放过真实 bug。工程上应把容差与 dtype 绑定（fp32 与 fp16 用不同阈值），并把“失败样本数”作为一个显式指标记录，而不是二元通过/失败。</p>
+<p>profile 采集的最小形态是：固定一组代表性 kernel，用 NCU 采集每 kernel 的 DRAM throughput、SM occupancy、以及 top stall reason，落成结构化记录（kernel 名、shape、SOL、主 stall）。这里的代价是采集本身的开销：NCU 的 replay 机制会让每个 kernel 执行多次，单卡上 profile 一轮的时间可能是裸跑的数十倍，因此必须限制采集的 kernel 数量，只对“SOL 低且时延占比高”的 kernel 做深采。</p>
+<p>具体例子：排期上可把第一周前半用于 oracle + 一组基线 kernel 的裸跑时延，后半用于对其中时延占比最高的两三个 kernel 做 NCU 深采；第二周才把 DSL 从 Triton 扩到 CuTe 的一个子集（如仅 tiled copy），并用同一套 oracle 与 profile 复测。这样任何扩展都能立刻回答“是否更接近 roofline”。</p>
+
+<h3>四 · 必须调用的公式与判据清单</h3>
+<p>解题路径上要反复调用的公式不多，但每一个都对应一个决策点。除第二节的 SOL 判据外，还需三个。</p>
+<p>其一是<strong>算术强度</strong>，用于判断某 kernel 应落在 roofline 的计算侧还是访存侧：</p>
+<div class="formula">$$I = \frac{\text{FLOPs}}{\text{Bytes}},\qquad I_{\text{ridge}} = \frac{F_{\text{eff}}}{BW_{\text{eff}}}$$</div>
+<p>当 <span>I &lt; I_ridge</span> 时，优化方向是减少访存字节或提高合并度；反之才考虑指令级优化。这个判据的代价是它依赖 <span>F_eff</span> 与 <span>BW_eff</span> 的实测值，而这两个值随访问模式变化，不能直接取 spec 峰值。</p>
+<p>其二是<strong>占用率与延迟隐藏</strong>的关系，用于解释 stall：可驻留 warp 数 <span>W</span> 受寄存器与 shared memory 限制，若 <span>W</span> 不足以覆盖访存延迟 <span>L</span> 与每条 warp 的指令间隔，则 stall 不可避免。定性上，寄存器压力每上升一档，可驻留 warp 数下降，long scoreboard stall 占比上升。代价是：为降寄存器而拆分 kernel 会增加 launch 开销与中间结果的显存往返。</p>
+<p>其三是<strong>有效带宽的折算</strong>，用于把 NCU 的 DRAM throughput 转成“离上界多远”：若实测吞吐为 <span>B</span>，则访存侧利用率为 <span>B / BW_eff</span>。当该值高而 SOL 仍低时，说明瓶颈不在 DRAM 而在 SM 内部（如 bank conflict 或指令发射），归因方向随之切换。</p>
+<table class="mini"><thead><tr><th>观测</th><th>判据</th><th>归因方向</th><th>代价</th></tr></thead><tbody><tr><td>SOL 低，DRAM 利用率高</td><td>B/BW_eff 接近 1</td><td>SM 内部：bank conflict、发射受限</td><td>需 SASS 级分析，耗时</td></tr><tr><td>SOL 低，DRAM 利用率低</td><td>B/BW_eff 明显小于 1</td><td>访存不合并或延迟未隐藏</td><td>需改访问模式，可能增显存</td></tr><tr><td>SOL 接近 1</td><td>—</td><td>已吃满，停止调优</td><td>继续投入边际收益低</td></tr></tbody></table>
+<p>具体例子：一个 transpose kernel 若 DRAM 利用率高但 SOL 低，且 NCU 显示 shared memory 相关 stall 突出，则归因指向 bank conflict，解法是 padding 或 swizzle；这正是 CuTe layout 抽象能直接表达的东西，也就构成了“为什么值得引入更深抽象”的论据。</p>
+
+<h3>五 · 明确不做什么：裁剪的四个边界</h3>
+<p>单卡两周的最大风险是范围蔓延。必须写死四条“不做”的边界，每条都对应一个具体的代价来源。</p>
+<ul>
+<li><strong>不做多卡与分布式</strong>：通信与拓扑调优在单卡上无法验证，投入即沉没。</li>
+<li><strong>不做端到端模型集成</strong>：把 kernel 塞进完整推理栈会引入框架开销与显存竞争，掩盖 kernel 本身的信号；应以独立 microbench 为准。</li>
+<li><strong>不做三种 DSL 的全覆盖</strong>：CuTe 与 PTX 的调试成本高，两周内只应选一个子集验证“更深抽象是否带来可测收益”，其余用一句话指路即可。</li>
+<li><strong>不做 RL 训练闭环</strong>：多轮 RL 与可验证奖励需要大量采样与稳定的 reward 判定，单卡两周内无法得到可信的方差估计，应只把 oracle 作为 reward 的判定器接口预留。</li>
+</ul>
+<p>这四条边界的代价是显式的：不做多卡意味着结论的外推范围受限；不做端到端意味着无法回答“生产收益”；不做全覆盖意味着 DSL 对比不完整；不做 RL 意味着不产出“agent 变强”的证据。但这些代价都是<em>可声明的局限</em>，而范围蔓延的代价是<em>不可交付</em>。</p>
+<p>具体例子：若团队在第二周中途决定把 kernel 接入一个真实模型，单卡显存立刻被权重与激活占满，microbench 的 shape 被迫缩小，profile 信号失真，此前建立的 SOL 基线全部作废。这就是“不做端到端”这条边界的直接依据。</p>
+
+<h3>六 · 验收口径：把“做完”定义成可复现的判定</h3>
+<p>验收不是“跑通了”，而是“在给定输入下可复现地给出一个归因结论，并能被第三方按同一脚本重放”。最小验收口径包含三项：正确性（oracle 通过率与失败样本可复现）、性能定位（每个 kernel 的 SOL 与主 stall reason 落表）、归因有效性（对至少一个 kernel 给出“改了什么、SOL 变化多少”的因果链）。</p>
+<p>第三项是关键，也是最容易被跳过的一项。归因有效性的判定方式是：对同一 kernel 做一次针对性修改（如加 padding 消除 bank conflict、或调 num_stages 提高流水），在相同 shape 与相同采集配置下复测，若 SOL 按预期方向移动且 stall 分布相应变化，则归因成立；若 SOL 不动，则说明原归因错误，需回到第二节的判据表重新定位。这一步的代价是它要求两次完整采集，单卡上意味着排期必须为“改—测”循环预留至少一轮的余量。</p>
+<p>公式上，可把验收写成一条不等式：设基线 SOL 为 <span>S_0</span>，修改后为 <span>S_1</span>，则归因成立要求 <span>S_1 &gt; S_0</span> 且主 stall 占比按预期下降；若 <span>S_1 ≈ S_0</span>，则无论修改多“合理”，归因都不被接受。这条判据把“我觉得这样改会更快”排除在验收之外。</p>
+<p>具体例子：对一个 reduction kernel 判定 long scoreboard stall 为主因后，提高 occupancy（降寄存器或调 block size）应使该 stall 占比下降、SOL 上升；若实测 SOL 不变而 stall 占比反而上升，则真实瓶颈可能是指令发射或 shared memory，验收应判该轮归因失败并回退。工程判断落在这里：<strong>两周的单卡项目，其价值不在于覆盖多少 DSL，而在于能否稳定产出“改—测—归因”这一条可重放的因果链</strong>；链路的可重放性比单次的最优数字更能决定这个方向是否值得继续投入。</p>
+
+<h3>一张卡两周：先划掉什么，再谈 DSL 与 profile</h3>
+<p>题干里“一张 GPU”和“两周”不是资源描述，而是约束求解器：它把“硬件感知 DSL”从语言设计问题压成单点可行性问题。考点有三层。第一层是资源独占性——单卡意味着任何需要多卡通信、跨节点拓扑感知或集群级 autotune 的方案在验收前就出局，DSL 的 lowering 目标必须收敛到单 SM 内可验证的 tile/流水结构。第二层是时间预算的不可压缩段：环境与基线复现、正确性 oracle 搭建、profile 工具链（NCU 采集 + SASS 对齐）打通，这三段是任何方案的前置成本，两周内必须先扣掉再谈迭代轮数。第三层是“硬件感知”的可证伪性——DSL 生成的 kernel 必须能与手写基线在同一 roofline 坐标下比较，否则“感知”只是口号。解题路径因此不是“选一个 DSL”，而是先给出<b>排除清单</b>：不做多卡、不做端到端训练收益、不做新语言前端、不做跨架构可移植性承诺；把剩余预算全部押在“单算子、单卡、可 profile、可对拍”的闭环上。验收口径应写成可判定的三条：正确性对拍通过、NCU 关键指标（occupancy、DRAM throughput、issue slot 利用率）可解释、相对基线在 roofline 上的位置可标注。</p>
+<p>边界条件要用公式钉死，而不是靠感觉。设两周有效工时 $T$、单次“改 DSL → 生成 → 编译 → 对拍 → profile”的闭环耗时 $c$（含编译与 NCU 采集的固定开销），则可行迭代轮数 $N = \lfloor T/c \rfloor$。$c$ 里编译时间往往是隐性大头：模板展开与 autotune 搜索会把单次闭环从分钟级推到小时级，于是 $N$ 骤降，方案退化为“只够验证一个 shape”。失效条件由此显式化：当 $c$ 超过 $T$ 的某个比例（例如闭环次数少于个位数），任何依赖搜索的 DSL 调优都不成立，必须改为静态启发式 + 手工指定 tile。另一个代价是显存：单卡上同时驻留基线、生成 kernel 的 workspace 与 NCU 的回放缓冲，会挤压可测 shape 的上界；大 shape 的 profile 往往需要分块采集，这又反过来污染时延测量。具体例子：若目标算子是对比“Triton 自动生成的 GEMM tile 配置”与“手写 CuTe 固定 tile”，则必须先测出单次编译 + NCU 采集的 $c$，再决定是扫 4 个 tile 配置还是只验 1 个——这个数字决定了两周内能否形成“配置—指标”的因果链，而不是一张无法归因的跑分表。</p>
+<table class="mini"><thead><tr><th>排除项</th><th>失效机制</th><th>被挤占的预算</th></tr></thead><tbody><tr><td>多卡/集群感知</td><td>单卡无法复现通信重叠，指标不可归因</td><td>拓扑建模与同步调试工时</td></tr><tr><td>端到端训练收益</td><td>单算子加速被框架开销淹没</td><td>集成与回归测试工时</td></tr><tr><td>跨架构可移植</td><td>无第二张卡做对照，结论不可证伪</td><td>后端适配与文档工时</td></tr></tbody></table>
+<p>需要调用的公式集中在两处。其一是 roofline 定位：$P = \min(P_{\text{peak}},\; I \cdot B_{\text{mem}})$，其中算术强度 $I = \text{FLOPs}/\text{Bytes}$，用它判断生成 kernel 是算力受限还是带宽受限，从而决定 profile 该盯 SM 利用率还是 DRAM throughput——这直接决定 NCU 采集的 section 选择与采样开销。其二是正确性 oracle 的代价：对拍需要覆盖边界 shape 与数值容差，设对拍集大小 $M$、单次对拍耗时 $t$，则正确性预算为 $M \cdot t$，它与 profile 预算争抢同一份 $T$；因此对拍集应小而毒（含非对齐长度、极端 reduction 维度），而非大而全。工程判断落在最后一步：把“两周”翻译成“闭环次数上限”，凡是需要超过该上限才能收敛的 DSL 特性（自动调度搜索、多级 IR 重写）一律不做；把“一张卡”翻译成“单 SM 可观测”，凡是收益必须跨卡才显现的优化一律不做。剩下的才是可交付的：一个能在单卡上被 NCU 解释、被对拍证伪、被 roofline 定位的最小硬件感知 DSL 切片。</p>
+<p class="paper-line">对应：exams/q-cuda-d06 · 第 1/2 部分</p>

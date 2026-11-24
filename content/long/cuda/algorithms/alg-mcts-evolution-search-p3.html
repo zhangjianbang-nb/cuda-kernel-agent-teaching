@@ -1,0 +1,54 @@
+<h3>一 · UCT 的逐项拆解：探索项为何必须除以访问数</h3>
+<p>树搜索的骨架是 UCT，但工程实现里真正决定行为的是三项的耦合：价值项 <span>Q(s,a)</span>、探索系数 <span>c</span>、以及分母 <span>N(s,a)</span>。把公式写成可推导的形式：设节点 <span>s</span> 有 <span>N(s)</span> 次被访问，其子动作 <span>a</span> 被采样 <span>N(s,a)</span> 次，则</p>
+<div class="formula">$$\text{UCT}(s,a)=Q(s,a)+c\sqrt{\frac{\ln N(s)}{N(s,a)}}$$</div>
+<p>关键推导一步在于探索项的期望增益：若把每个子动作的 reward 视为独立同分布随机变量、方差有界，则 <span>Q(s,a)</span> 的标准误约为 <span>\sigma/\sqrt{N(s,a)}</span>。要让置信上界以高概率覆盖真实均值，就需要一个随 <span>N(s,a)</span> 递减、随父访问数 <span>N(s)</span> 递增的补偿项——<span>\sqrt{\ln N(s)/N(s,a)}</span> 正是这一补偿的紧致形式（对数项来自对多个子动作取并集界）。这解释了为什么分母不能是常数：访问次数少的动作必须获得更大的不确定性补偿，否则搜索退化为贪心。</p>
+<p>工程含义有三点。其一，<span>c</span> 不是超参装饰，而是把 reward 尺度与探索尺度对齐的换算因子；若 reward 落在 <span>[0,1]</span> 附近，<span>c</span> 取 <span>0.5</span>–<span>1.5</span> 量级即可，若 reward 是原始 speedup（可到数十），<span>c</span> 必须同比放大，否则探索项被价值项淹没。其二，<span>\ln N(s)</span> 增长极慢，意味着父节点被反复访问时探索项几乎不涨，搜索自然收敛到 exploitation，这正是预算有限时想要的行为。其三，分母为 0 的动作必须先被强制访问一次（未访问子节点优先展开），否则 UCT 无定义。</p>
+<p>代价体现在预算分配上：每个被展开的子节点都要跑完整正确性门与计时，单节点成本约 1–5 GPU 分钟；若 <span>c</span> 设得过大，搜索会在低价值分支上摊薄预算，100 节点预算即 2–8 GPU 小时被大量无效节点吃掉。具体例子：tile 从 128 改到 256 的子节点若首次计时退化，其 <span>Q</span> 被压低但 <span>N(s,a)=1</span>，探索项仍会把它拉回候选队列——这是有意的“二次确认”，但也意味着每个被 revert 的动作至少烧掉一次完整计时。</p>
+
+<h3>二 · 奖励函数：归一化、正确性指示与方差压缩</h3>
+<p>奖励定义为</p>
+<div class="formula">$$R_i=\frac{T_{\text{base}}}{T_{\text{gen}}}\cdot\mathbb{1}[\text{Correct}]$$</div>
+<p>逐项解释：<span>T_{\text{base}}</span> 是锚定基线（参考实现或朴素 kernel）的时延，<span>T_{\text{gen}}</span> 是候选 kernel 的时延，比值即相对加速比；指示函数把不正确的结果直接归零。推导的关键一步是“比值而非差值”：绝对时延差随问题规模漂移，比值在同一 shape 下无量纲、可跨节点比较，且天然落在 <span>(0, \infty)</span>，与 UCT 的价值项尺度兼容。指示函数则把正确性作为硬门——任何数值误差超容差的候选不进价值估计，避免“快但错”污染 <span>Q</span>。</p>
+<p>但原始比值有两个工程缺陷。第一，方差大：一次计时抖动（clock throttle、邻居占用）就能让 <span>R_i</span> 偏移数十个百分点，单次采样回传会让 <span>Q</span> 剧烈震荡。第二，上界无约束：极端快的小 kernel 可能因测量噪声产生离群高 reward，把搜索锁死在单一分支。常见做法是对同一节点重复计时取中位数或最小值（最小值更接近真实下限），并对 reward 做截断，例如 <span>\min(R_i, R_{\max})</span>，<span>R_{\max}</span> 取基线锚定后预期的上限倍数。这相当于用有界 reward 换取 <span>Q</span> 估计的稳定性，代价是牺牲对“超预期改进”的敏感度。</p>
+<p>另一个必须处理的细节是 shape 依赖：同一修改在不同 shape 上加速比不同，若 reward 只在单一 shape 上测，搜索会过拟合该 shape。工程上把 reward 写成多 shape 的聚合（如几何平均或最差 shape 的比值），但这会抬高单节点成本——每个 shape 都要跑一次正确性门与计时，单节点从 1 GPU 分钟涨到数分钟。具体例子：split-K 在 <span>M</span> 很大时收益显著，在小 <span>M</span> 上因额外归约反而退化；若 reward 只测大 shape，搜索会保留一个在小 shape 上倒退的修改，部署时才暴露。</p>
+
+<h3>三 · 时延与显存：从 roofline 到节点成本的推导</h3>
+<p>时延项不是黑箱测量，而应能与 roofline 对上，否则 reward 无法解释。设 kernel 的计算量为 <span>F</span>（FLOP）、访存量为 <span>B</span>（Byte），峰值算力 <span>P</span>、峰值带宽 <span>W</span>，则下界时延</p>
+<div class="formula">$$T_{\min}=\max\left(\frac{F}{P},\ \frac{B}{W}\right)$$</div>
+<p>推导的关键一步是“取 max 而非求和”：计算与访存在理想流水下可重叠，瓶颈由较慢的一侧决定。把 <span>T_{\text{gen}}</span> 与 <span>T_{\min}</span> 对比即得 SOL 利用率，这也是判断一个 reward 是否“可信”的依据——若某候选的 <span>T_{\text{gen}}</span> 显著低于 <span>T_{\min}</span>，要么测量有误，要么计算量/访存量统计漏项（例如把部分工作藏进了未被计数的循环）。这条校验应作为 reward 回传前的断言，而非事后分析。</p>
+<p>显存项进入搜索的方式有两层。第一层是可行性硬约束：候选 kernel 的 workspace（split-K 的部分和、双缓冲、swizzle 重排缓冲）不得超过预算，否则直接判负、不进入计时，省下一次 GPU 分钟。第二层是隐式代价：更大的 tile 提高算术强度但抬高 shared memory 与寄存器压力，可能触发 occupancy 下降甚至 spill，反而拉长时延。因此 tile 类动作的评估必须同时看时延与占用，不能只看 reward 标量。</p>
+<p>具体例子：把 <span>B</span> 的估算写成 <span>B = \text{读入} + \text{写出} + \text{workspace 往返}</span>，split-K 把一次写出拆成 <span>K</span> 份部分和再加归约，workspace 往返使 <span>B</span> 增加约 <span>2\times</span> 部分和大小；当 <span>K</span> 增大到归约开销超过并行收益时，<span>T_{\min}</span> 由带宽项主导，时延不降反升。搜索若只看 reward 数值而不看这一项，会把预算浪费在 <span>K</span> 过大的分支上。代价是每次评估多一次带宽核算，但相比一次 1–5 GPU 分钟的完整计时，这是廉价的预筛。</p>
+
+<h3>四 · 误差与正确性 oracle：容差如何进入评分</h3>
+<p>正确性指示函数看似二值，实则背后是一套容差判定。设参考输出 <span>y</span>、候选输出 <span>\hat{y}</span>，常用判据是相对误差与绝对误差的混合：</p>
+<div class="formula">$$\text{err}=\max_i\frac{|\hat{y}_i-y_i|}{\max(|y_i|,\ \epsilon)},\quad \mathbb{1}[\text{Correct}]=\mathbb{1}[\text{err}\le \tau]$$</div>
+<p>推导的关键一步是分母加 <span>\epsilon</span>：纯相对误差在 <span>y_i\to 0</span> 时爆炸，会把数值上完全可接受的候选误判为错；<span>\epsilon</span> 提供一个绝对误差下限，使判据在近零元素处退化为绝对容差。容差 <span>\tau</span> 的选择直接改变搜索行为：过松则放行累积误差大的候选（尤其 split-K 归约顺序改变导致的舍入差异），过紧则把合法的重排/融合优化全部拒掉。</p>
+<p>误差项与 reward 的耦合在于：<span>\mathbb{1}[\text{Correct}]</span> 是乘性因子，一旦为 0，该节点 <span>Q</span> 归零、探索项把它拉回一次后仍归零，等价于对该动作施加了强负先验。这比“给一个小 reward”更激进，也更符合工程直觉——错的结果没有部署价值。但代价是：若 oracle 本身有缺陷（参考实现用了不同精度路径），会系统性误杀正确候选，搜索空间被人为削掉一块。因此 oracle 的精度路径必须与候选的精度路径可比，fp64 参考或高精度累加是常见做法。</p>
+<p>具体例子：一个把累加从 fp32 改为 TF32 的候选，误差可能刚好在容差边缘；若 <span>\tau</span> 按元素级设定而未考虑累加长度，长 <span>K</span> 下误差随 <span>\sqrt{K}</span> 增长，同一 <span>\tau</span> 在短 <span>K</span> 放行、长 <span>K</span> 拒绝，搜索会误以为“长 K 不可行”。正确做法是让容差随归约长度缩放，或对长 K 分支单独设阈值。每次正确性门都要跑参考与候选两遍，单节点成本中这一项不可忽略。</p>
+
+<h3>五 · keep/revert 的剪枝判据与先验更新</h3>
+<p>keep/revert 是边上的决策，需要一个可实现的判据，而不是“感觉变差了就回退”。设父节点价值 <span>Q_p</span>、子节点首次评估 <span>R_c</span>，退化判据可写成</p>
+<div class="formula">$$\text{revert}\iff R_c &lt; Q_p - \delta\quad\text{或}\quad \mathbb{1}[\text{Correct}]=0$$</div>
+<p>推导的关键一步是 <span>\delta</span> 的引入：单次计时噪声意味着 <span>R_c</span> 略低于 <span>Q_p</span> 并不代表真退化，<span>\delta</span> 应覆盖测量抖动幅度（由重复计时的方差估计给出），否则会把噪声当信号、反复 revert 又重开同一动作，浪费预算。第二个条件是无条件的：不正确即回退，不参与 <span>\delta</span> 比较。</p>
+<p>revert 之后要“降低该动作的先验”，实现方式是在动作的先验分布上加惩罚项，使 UCT 在选择时对该动作的探索项打折，或直接维护一个动作级失败计数并在采样时降权。伪代码思路：</p>
+<ul>
+<li>选择：从根沿 UCT 下降，遇未访问子节点则展开；</li>
+<li>评估：生成候选 kernel → 合约/正确性门 → 计时（多 shape）→ 计算 <span>R</span>；</li>
+<li>回传：沿路径更新 <span>N</span> 与 <span>Q</span>（增量均值）；</li>
+<li>剪枝：若 <span>\text{revert}</span>，标记该边为剪枝边、动作失败计数 +1，父节点保留；</li>
+<li>保留：若改善，子节点成为新的扩展基点，动作成功计数 +1。</li>
+</ul>
+<p>代价在于：剪枝边不是永久删除，失败计数只降权不封死，因为同一动作在不同父状态下可能有效（例如 tile 增大在低 occupancy 下退化、在高 occupancy 下有益）。这保留了探索性，但也意味着被 revert 的分支可能被再次采样，每次都要重付一次完整计时。具体例子：unroll 因子从 4 提到 8 在寄存器压力高的父节点上退化被 revert，但在另一个寄存器宽裕的父节点上被重新采样并保留——失败计数只影响优先级，不影响可达性。</p>
+
+<h3>六 · 预算、收敛与可实现的状态表示</h3>
+<p>搜索的终止条件是预算而非收敛证明：轮次上限或 GPU 小时上限，取先到者。把单节点成本记为 <span>C_n</span>（1–5 GPU 分钟），预算 <span>B</span>，则最大节点数 <span>N_{\max}=\lfloor B/C_n\rfloor</span>；100 节点对应 2–8 GPU 小时。这个换算决定了 <span>c</span> 与 <span>\delta</span> 的取值必须与 <span>N_{\max}</span> 匹配——节点少时探索项要保守，否则每个分支只够采样一两次，<span>Q</span> 全是噪声。</p>
+<p>可实现的状态表示需要三张表：节点表（kernel 源码或 IR 句柄、父指针、<span>N</span>、<span>Q</span>、修改动作标签）、动作表（动作类型、参数、成功/失败计数、先验）、以及路径栈（用于输出最优路径上的修改序列）。回传用增量均值避免存全部 <span>R_i</span>：<span>Q\leftarrow Q+(R-Q)/N</span>，数值上比求和再除更稳。计时结果要连同 shape、GPU 状态、重复次数一起存，否则后续无法复现或审计 reward 的可信度。</p>
+<p>结构性盲区的代价必须写进工程判断：动作空间是人工枚举的（tile、unroll、split-K、swizzle、向量宽度），未纳入的动作（如 CuTe layout 重排）无法被搜索到，无论预算多大。这意味着搜索的上限由动作空间定义，而非由算法定义；扩大动作空间会同时扩大分支因子，在固定 <span>N_{\max}</span> 下摊薄每个分支的采样次数，反而可能降低最终质量。具体例子：在 100 节点预算下，把动作空间从 5 类扩到 10 类，平均每类只剩约 10 次采样，<span>Q</span> 估计的置信区间变宽，keep/revert 判据更容易被噪声触发。因此动作空间的扩张应与预算同比扩张，或引入动作级先验把低价值动作提前压掉。</p>
+
+<h3>失效边界：奖励尺度、方差与动作空间的三角约束</h3>
+<p>UCT 的探索项 c√(ln N(s)/N(s,a)) 只在奖励处于同一可比尺度时才有意义，而 R_i=(T_base/T_gen)·𝟙[Correct] 是一个比值型奖励，其分母 T_gen 随节点变化。当某条分支把 kernel 推到接近 roofline 时，T_gen 变小，R_i 的上界被拉高，但同一节点重复计时的抖动（clock、DVFS、cache 状态）也被同比例放大；反过来，一个正确但慢的节点 R_i 接近 1，其 Q 值稳定，UCT 会持续偏向它，形成“安全但无收益”的吸引子。关键一步在于：Q(s,a) 是算术平均而非几何平均，若某次测量因瞬时降频得到异常大的 T_gen，单个 R_i 会把 Q 抬高到不可恢复的水平，后续 revert 只能降低先验、无法修正已污染的 Q。工程上的处置是把 Q 改为截尾均值或对 R_i 取 log 后再平均，并在回传时用 N(s,a) 做置信加权，代价是每个节点需多存一份样本队列，显存开销随节点数线性增长。</p>
+<p>第二个失效条件是正确性门的粒度。𝟙[Correct] 是二值的，但 kernel 的正确性往往是连续谱：小 tile 下通过、大 tile 下越界；单测通过、边界 shape 失败。若门只跑一组固定 shape，搜索会系统性地偏向“在测试集上对、在真实负载上错”的节点，而这类节点恰恰因为计时快而获得高 R_i。补救是把门做成多 shape 采样并返回通过率 p∈[0,1]，奖励改为 (T_base/T_gen)·p，但这使单节点成本从一次计时变成 k 次计时加 k 次比对，单节点 1–5 GPU 分钟的预算被 k 倍放大，100 节点预算直接冲向 8 GPU 小时以上。更隐蔽的代价是 p 的估计方差：k 小的时候 p 的置信区间宽，UCT 会把“运气好通过”的节点误判为高价值，这正是线性重试陷入局部最优的同一病根，只是换了个位置。</p>
+<p>第三个边界是动作空间的结构性盲区。动作空间（tile、unroll、split-K、swizzle、向量宽度）是人工枚举的离散集合，UCT 只能在这个集合内做组合。CuTe layout、异步流水阶段数、shared memory swizzle 的细粒度变体若未纳入，搜索永远到不了那些区域——这不是预算问题，是可达性问题。表格对比三类节点的系统代价：</p>
+<table class="mini"><thead><tr><th>节点类型</th><th>单节点成本</th><th>主要风险</th></tr></thead><tbody><tr><td>正确且提速</td><td>1 次计时 + 1 次门</td><td>Q 被单次抖动污染</td></tr><tr><td>正确但退化</td><td>同上 + revert 开销</td><td>先验下调不足，反复访问</td></tr><tr><td>多 shape 门</td><td>k 倍计时</td><td>p 方差大，误判高价值</td></tr></tbody></table>
+<p>由此得到一个可实现的判据：在回传前对每个节点计算 R_i 的样本标准差 σ，若 σ/T_base 超过阈值则强制增加重复计时次数而非直接更新 Q；同时把动作空间的覆盖度作为预算分配的一等约束——当某类动作的访问计数长期为零，说明盲区存在，应显式注入而非等待 UCT 偶然探到。keep/revert 剪枝的真正价值不在于省 GPU 小时，而在于它把“退化”定义为可回退的边，使得污染 Q 的节点不会继续扩展；但若 revert 只降先验不改 Q，剪枝就是半截的。</p>
+<p class="paper-line">对应：algorithms/alg-mcts-evolution-search · 第 3/8 部分</p>

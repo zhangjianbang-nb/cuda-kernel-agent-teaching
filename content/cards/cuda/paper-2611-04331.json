@@ -1,0 +1,81 @@
+{
+ "_paper_id": "paper-2611-04331",
+ "_domain": "cuda",
+ "_title": "Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization",
+ "_abstract_only": true,
+ "title_zh": "Warpline: Binary-Level Tracing and Unified Evidence for Agen",
+ "background": "这篇论文发表于 2026 年（arXiv:2611.04331），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes.",
+ "problem": "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes. Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes ",
+ "core_idea": "Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes and a recompilation that alters the very kernel being measured. We present Warpline, which gives agents this v",
+ "architecture": "We present Warpline, which gives agents this view automatically while leaving the kernel essentially unchanged. Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself without recompilation or any manual step.",
+ "pipeline": [
+  "读取《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Hardware profilers report how busy each unit was, not where ）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself without recompilation or any manual step. It then aligns the trace with hardware profiling data on one unified timeline.",
+ "walkthrough": "一次完整流程：先读取《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：We present Warpline, which gives agents this view automatically while leaving the kernel essentially unchanged. Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself with",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "It then aligns the trace with hardware profiling data on one unified timeline. Because it needs only the binary, it can regenerate this evidence for every new version of the kernel at whatever level the agent edits it (source, IR, or PTX), closing the optimization loop without human intervention.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes.",
+  "Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes and a reco",
+  "We present Warpline, which gives agents this view automatically while leaving the kernel essentially unchanged."
+ ],
+ "limitations": [
+  "《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself without recompilation or any manual step. It then aligns the trace with hardware profiling data on one unified timel",
+ "summary": "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes. Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes and a recompilation that alters the very kernel being measured. We present Warpline, which gives agents this view automatically while leavin",
+ "data_recipe": [
+  "评测负载：《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes.",
+  "Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes and a recompilation that alters the very kernel being measured.",
+  "We present Warpline, which gives agents this view automatically while leaving the kernel essentially unchanged.",
+  "Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself without recompilation or any manual step.",
+  "It then aligns the trace with hardware profiling data on one unified timeline.",
+  "Because it needs only the binary, it can regenerate this evidence for every new version of the kernel at whatever level the agent edits it (source, IR, or PTX), closing the optimization loop without human intervention.",
+  "On NVIDIA B200, across 35 kernels in Triton, CuTe DSL, and CUDA C++, Warpline adds a median overhead of 1.2% and leaves a median 99.9% of executed instructions unchanged, whereas existing tracers have median overheads of",
+  "Warpline also traces closed-source kernels, which these tracers cannot."
+ ],
+ "anchors": [
+  "1.2",
+  "99.9",
+  "1.6",
+  "13.2",
+  "4.6",
+  "32.7"
+ ],
+ "pitfalls": [
+  "《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

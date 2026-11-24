@@ -1,0 +1,50 @@
+<h3>一 · 基准的构造：从孤立 kernel 到整模型 in-place</h3>
+<p>Kernel Forge 的评测口径与 KernelBench 系基准的差别不在指标公式，而在被测对象。摘要明确点出旧工具的两个口径缺陷：一是「largely evaluated on randomly generated tensors and isolated kernels」，二是「emit standalone CUDA code that developers must manually reintegrate」。前者把 kernel 从模型中剥离，后者把集成成本推给人类。Kernel Forge 的口径选择是「accepts any unmodified PyTorch model in place」——被测单元是一个未经改写的 PyTorch 模型，harness 在模型内部定位可替换的 kernel 并原地替换，模型其余部分不动。这一选择直接决定了基准题集的形态：不是一组独立算子，而是四个覆盖 vision、diffusion、LLM 的 PyTorch 模型，硬件为 NVIDIA DGX Spark 的 GB10 GPU，每个 kernel 的搜索预算固定为 50 次优化迭代。</p>
+<p>这个口径带来一个具体的机制性后果：可替换点的识别本身成为评测的一部分。harness 必须从模型中切出候选 kernel（如 ResNet-50 的 adaptive_avgpool2d、Stable Diffusion 3.5 的 group_norm），保留其输入张量的真实 shape、dtype、stride 与内存布局，再在该切面上做替换与测量。切面边界一旦切错——例如把融合前的算子单独测、或把 layout 转换的开销留在切面外——加速比就会系统性偏高。因此可核查的口径必须公开三件事：切点清单、每个切点的输入张量规格、以及切面外是否计入了 layout/拷贝开销。论文摘要只给出模型级与 kernel 级结果，未展开切点清单，这正是复现者需要向作者索取的第一份材料。</p>
+<p>代价方面，in-place 口径把单次评测的时延从「一个 kernel 的微秒级」抬到「一次模型前向的毫秒级」，因为每次候选替换都要跑完整前向才能拿到端到端时延；同时 harness 需要保留原模型的可执行副本用于回退，显存占用约为原模型的两份权重加激活。50 次迭代 × 四个模型 × 每模型多个 kernel 的搜索，在 GB10 这类单机平台上意味着可观的 wall-clock，这是 in-place 口径换来的可信度成本。</p>
+
+<h3>二 · 指标族：faster rate、speedup、geomean 与 fast_p 的分工</h3>
+<p>论文口径下的核心指标可由摘要给出的公式族还原。逐 kernel 的加速比定义为基线时延与候选时延之比，阈值判定则给出「快于基线」的比例：</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>这里 $N$ 是参与统计的 kernel 数，$\tau$ 是判定阈值（$\tau=1$ 即「不慢于基线」，$\tau>1$ 即「至少快若干倍」）。这个 score 就是 faster rate 的一般形式；当 $\tau$ 取不同值时得到 fast_1、fast_1.5 之类的分档指标。与之并列的是 geomean：对 $s_i$ 取几何平均，$\exp(\frac{1}{N}\sum_i \ln s_i)$，它对个别超大加速比不敏感，但对个别 $s_i&lt;1$ 的退化惩罚极重——一个 0.5× 的 kernel 会把整体 geomean 拉低到需要多个 2× 才能补回。工程上必须同时报 faster rate 与 geomean：前者回答「有多少 kernel 没退步」，后者回答「平均赚了多少」，单报任一个都能被选择性呈现。</p>
+<p>摘要给出的具体数字落在逐 kernel 的 speedup 上：仅 50 次迭代，14 个 kernel 超过 PyTorch eager，其中 ResNet-50 的 adaptive_avgpool2d 达 1.52×，Stable Diffusion 3.5 的 group_norm 达 1.70×。注意这两个数字的参照系是 PyTorch eager，不是 torch.compile，也不是 cuBLAS/cuDNN 库实现。这是本部分最需要强调的口径事实：eager 基线在 norm、pool 这类带宽受限算子上通常留有大量融合与向量化空间，1.5–1.7× 的加速比在 eager 参照下完全合理，但若换成 torch.compile 或厂商库，同一 kernel 的余量会显著收窄。任何把这两个数字与「超越 cuBLAS」类结论并列引用的做法都是口径混用。</p>
+<p>代价层面，指标选择本身有成本：fast_p 分档要求对每个 kernel 做多次重复测量以稳定时延分布，重复次数直接乘进评测时延；geomean 要求所有 kernel 都有有效测量，任何一个编译失败或正确性不通过的 kernel 若被静默剔除，geomean 就会被抬高。因此可核查口径必须报告分母：$N$ 是「尝试的 kernel 数」还是「通过的 kernel 数」，两者给出的 score 不可比。</p>
+
+<h3>三 · 基线与 dtype：哪些数字不可比</h3>
+<p>论文的基线集合在摘要级可确认为 PyTorch eager、torch.compile 与论文指定库实现三类。这三类基线在 dtype 与数值模式上的默认行为不同，构成不可比的主要来源。eager 的卷积与矩阵乘在 FP32 下是否启用 TF32，取决于框架版本与后端开关；torch.compile 会引入自己的算子融合与 codegen 路径，其基线时延包含编译期开销的分摊方式差异；库实现（cuBLAS/cuDNN）则对 shape 与 dtype 有专门的启发式选择。若候选 kernel 在 FP32 下运行而基线在 TF32 下运行，或反之，加速比会被数值精度差异污染——TF32 的吞吐显著高于 FP32，把候选与 TF32 基线比会让候选显得更慢，把候选与 FP32 基线比则会让候选显得更快。可核查口径必须逐条声明：基线是否开 TF32、是否允许 reduced precision、候选与基线的 dtype 是否严格一致、正确性容差是否与 dtype 匹配。</p>
+<p>dtype 还影响正确性 oracle 的严格度。FP16/BF16 下的累加误差、FP8 下的缩放因子处理、以及 norm 类算子的均值方差计算精度，都会让「数值等价」的判定从逐位相等退化为容差比较。容差一旦放宽，reward hacking 的空间就打开：候选可以通过降低内部累加精度换取吞吐，在宽松容差下通过正确性门，但在生产模型的端到端精度上造成可测的退化。因此口径应把正确性门写成三元组（参考实现、dtype、容差），并规定容差不得随候选性能自适应调整。</p>
+<table class="mini"><thead><tr><th>基线类型</th><th>可比条件</th><th>常见不可比来源</th></tr></thead><tbody><tr><td>PyTorch eager</td><td>同 dtype、同 TF32 开关、同 layout</td><td>eager 未融合，加速比易被高估</td></tr><tr><td>torch.compile</td><td>同编译模式、编译开销计入方式一致</td><td>codegen 路径差异、编译期分摊</td></tr><tr><td>厂商库</td><td>同 shape、同 dtype、同启发式版本</td><td>库对 shape 的专门调优</td></tr></tbody></table>
+<p>具体例子：group_norm 在 Stable Diffusion 3.5 中的 1.70× 若对照 eager，其收益主要来自融合与向量化访存；若对照一个已融合的库实现，同一候选的 $s_i$ 可能落到 1.0 附近。这不是候选变差，而是分母换了。论文声称的数字只在论文给定的基线与 dtype 下成立，跨基线引用即失效。</p>
+
+<h3>四 · 隐藏 shape 与输入分布：离线分数的崩塌点</h3>
+<p>摘要批评旧工具「evaluated on randomly generated tensors」，隐含的口径主张是：真实模型的输入分布不是均匀随机的。Kernel Forge 的 in-place 口径天然携带真实 shape——adaptive_avgpool2d 的输入来自 ResNet-50 的真实特征图尺寸，group_norm 的输入来自 SD3.5 的真实激活形状。但「真实」只覆盖论文跑过的那几个模型与那几个 batch/分辨率配置，一旦部署侧换 batch size、换序列长度、换分辨率，候选 kernel 若做了 shape 特化（把 tile 大小、线程块维度、展开因子硬编码到某个 shape），性能就会跳变甚至编译失败。</p>
+<p>可核查口径对此的处理应写成显式的分布声明：评测输入是固定 shape 还是 shape 区间；是否包含动态 shape 的边界样本（最小 batch、最大序列、非 2 的幂维度）；候选是否允许读取 shape 并在运行时分支。若允许运行时分支，分支本身的分支预测与代码体积会带来指令缓存压力；若不允许，则候选必须对未见 shape 保持正确性，正确性门要在 shape 扫描上跑，而不是单点。代价是评测时延随 shape 扫描点数线性增长，且每个 shape 都要重复正确性检查与多次计时。</p>
+<p>具体机制上，一个常见崩塌模式是 reduction 类算子的分块策略：group_norm 在通道数较小、空间尺寸较大时适合按空间分块，在通道数较大时适合按通道分块；候选若按论文模型里的某一组维度选定分块，换到另一组维度就会出现负载不均与 bank conflict，$s_i$ 从 1.7 掉到 1 以下。这类退化在单点随机张量上测不出来，只有 shape 扫描能暴露。因此口径必须区分「论文报告的 shape 集合」与「生产部署的 shape 分布」，并把前者当作后者的子集而非代表。</p>
+
+<h3>五 · Roofline 与 SOL：把加速比换算成余量</h3>
+<p>仅有相对基线的 speedup 无法回答「还剩多少空间」。Roofline 口径把每个 kernel 的实测时延换算为达到的吞吐，再与硬件上限比较，得到 SOL（speed-of-light）占比。对带宽受限算子（norm、pool、elementwise），上限由显存带宽决定：</p>
+<div class="formula">$$T_{\text{ideal}}=\frac{\text{Bytes Moved}}{\text{Peak Bandwidth}},\qquad \text{SOL}=\frac{T_{\text{ideal}}}{T_{\text{measured}}}$$</div>
+<p>对计算受限算子（矩阵乘、卷积），上限由峰值算力与 dtype 决定。SOL 的价值在于把「1.52× 于 eager」翻译成「达到带宽上限的某个百分比」——若 adaptive_avgpool2d 的候选已接近带宽上限，则继续搜索的边际收益很低，50 次迭代的预算应转向别的 kernel；若 SOL 仍低，说明访存模式或 occupancy 还有余量。代价是 SOL 需要精确的字节数与硬件峰值参数，字节数统计要计入所有读写（包括被融合掉的中间张量是否真的不落显存），峰值带宽要按 dtype 与访问模式折算，任何一项估错都会让 SOL 失真。</p>
+<p>工程判断上，SOL 与 speedup 应成对报告：speedup 回答「比基线好多少」，SOL 回答「离硬件上限多近」，两者结合才能判断一个候选是「基线太弱」还是「候选确实强」。论文摘要未给出 SOL 数字，复现者应在同一 GB10 上自建 roofline 参照，否则无法区分 1.70× 是候选的优秀还是 eager 的孱弱。</p>
+
+<h3>六 · 可核查的测量口径清单</h3>
+<p>把上述内容收敛成一份可执行的测量口径，复现者与审稿人可按此逐条核对。每条都对应一个具体的失败模式，缺一条就有一类数字不可比。</p>
+<ul>
+<li>被测对象：模型级 in-place 替换，公开切点清单与每个切点的输入张量规格（shape、dtype、stride、layout）。</li>
+<li>基线：逐条声明 eager / torch.compile / 库实现三种基线各自的版本、TF32 开关、编译开销计入方式；禁止跨基线引用 speedup。</li>
+<li>dtype 与容差：候选与基线 dtype 严格一致；正确性门写成（参考实现、dtype、容差）三元组，容差不随候选性能调整。</li>
+<li>指标分母：报告 $N$ 是尝试数还是通过数；faster rate 的 $\tau$ 取值逐档列出；geomean 与 faster rate 同时给出。</li>
+<li>计时：重复次数、预热轮数、是否计入首次编译与 autotune 开销、是否锁定时钟；GPU 侧用 CUDA event 而非 host 计时。</li>
+<li>shape 分布：声明固定 shape 还是扫描区间，列出边界样本；候选若做 shape 特化必须标注。</li>
+<li>预算：每 kernel 的迭代数（论文为 50）、搜索总 wall-clock、编译失败与回退次数。</li>
+<li>资源：显存峰值、是否保留原模型副本、切面外 layout/拷贝开销是否计入。</li>
+</ul>
+<p>这份清单的代价是评测吞吐：逐条执行会让单次评测的时延与人力成本成倍上升，尤其在 shape 扫描与多基线并行测量上。但省略任何一条，产出的数字就只能在论文自己的表格内自洽，无法与 KernelBench 系或其他 harness 的结果对齐。最后落在工程判断上：Kernel Forge 的口径贡献不在指标公式——那个公式是通用形式——而在把被测单元从孤立 kernel 抬到未改写模型，并用 50 次迭代的固定预算约束搜索成本；复现时若把被测单元退回孤立 kernel，就等于丢掉了这篇论文口径上唯一不可替代的部分。</p>
+
+<h3>口径边界：DGX Spark 单机结论能走多远</h3>
+<p>Kernel Forge 的评测面写得很窄：四个 PyTorch 模型，覆盖 vision、diffusion、LLM 三类负载，硬件是一台 NVIDIA DGX Spark 上的 GB10，优化预算固定为每 kernel 50 次迭代。这个组合决定了它的数字是“单机、单卡、固定预算”下的条件结论，而不是可迁移的加速比承诺。GB10 属于 Grace-Blackwell 超级芯片形态，其 SM 数量、显存带宽层级与 HBM 数据中心卡不同，roofline 拐点位置随之偏移：一个在 GB10 上被判为 memory-bound 因而值得做向量化与合并访问的 kernel，换到带宽更高的卡上会滑向 compute-bound，原候选的收益结构直接失效。更关键的是 50 次迭代这个预算本身是口径的一部分——MCTS 的搜索宽度与深度被截断，报告的是“预算内最优”，而非收敛最优；换更小预算会系统性压低加速比，换更大预算则可能翻出新的正确性失败。跨 dtype 同样未验证：摘要只给出算子名与倍数，未声明 fp32/fp16/bf16 的测试矩阵，而 group_norm、adaptive_avgpool2d 这类算子的数值行为对累加精度敏感，dtype 一变，正确性门与性能门的通过集合都会重排。</p>
+<p>指标口径上，论文用逐 kernel 加速比 $s_i=T_{\text{base},i}/T_{\text{cand},i}$ 与阈值通过率 $\text{score}=\frac{1}{N}\sum_i\mathbb{1}[s_i\ge\tau]$ 这类形式表达“多少个 kernel 超过基线”，并以 1.52×（ResNet-50 的 adaptive_avgpool2d）、1.70×（Stable Diffusion 3.5 的 group_norm）作为代表性数字。这里有两个不可比的陷阱。其一，基线若未开 TF32、未链接 cuDNN/cuBLAS 的最强实现，$T_{\text{base}}$ 被人为抬高，$s_i$ 虚高；论文声称对比 PyTorch eager，但 eager 的算子分发路径与库选择必须逐项锁定，否则同一 kernel 在不同机器上量出的倍数没有可比性。其二，逐 kernel 加速比不能直接乘成端到端收益：一个 1.7× 的 norm kernel 若只占模型时延的百分之几，Amdahl 上限立刻封顶，端到端提升远小于单点数字。因此可核查的口径必须同时记录：基线版本与编译开关、dtype、输入 shape 与分布、计时方式（是否含 warmup、是否用 CUDA event、是否同步）、以及 kernel 在整模型时延中的占比。</p>
+<p>隐藏 shape 与输入分布是这套 harness 最脆弱的接缝。Kernel Forge 接受未修改的 PyTorch 模型原位替换，意味着候选 kernel 在真实 forward 里遇到的是动态 batch、变长序列、非对齐通道数；而搜索阶段的反馈来自给定输入，agent 极易滑向 shape 特化——把 tile 尺寸、向量宽度、甚至边界处理硬编码成对当前 shape 最优。这类候选在离线基准上分数漂亮，在生产流量换一个 batch 或序列长度时触发越界或回退到慢路径，正确性门与性能门同时崩塌。失效条件可以写成一个简单的判据：若候选的编译期常量集合 $C$ 与运行时 shape 集合 $S$ 的交集覆盖率低，则特化风险高；工程上应把 shape 抖动（batch 1/8/32、序列长度跨 tile 边界）纳入正确性 oracle，而不是只测单一 shape。另一条代价是编译与搜索时延：每个候选都要编译、跑正确性、跑计时，50 次迭代乘以多 kernel，单模型调优的墙钟时间与 GPU 占用是实打实的系统成本，MCTS 的分支越多，这份成本越难在 CI 里摊销。</p>
+<p>还有一个隐性口径是 reward hacking 与 fallback。若 harness 允许候选在失败时回退到 PyTorch 实现，正确率会被回退路径抬高，而加速比只统计“成功替换”的子集，两者拼出的分数不可加。可核查的做法是把回退次数、编译失败率、正确性失败率作为一等指标与加速比并列报告，并对每个报告数字标注其 shape 与 dtype 上下文。下表给出本方案口径的最小可核查字段与对应的失效面。</p>
+<table class="mini"><thead><tr><th>字段</th><th>论文给定</th><th>失效面</th></tr></thead><tbody><tr><td>硬件</td><td>DGX Spark / GB10 单机</td><td>跨卡 roofline 拐点偏移，收益结构失效</td></tr><tr><td>基线</td><td>PyTorch eager</td><td>未锁 TF32/库版本则倍数虚高</td></tr><tr><td>预算</td><td>每 kernel 50 次迭代</td><td>报告预算内最优，非收敛最优</td></tr><tr><td>输入</td><td>摘要未给全部 shape</td><td>shape 特化在生产流量上崩塌</td></tr><tr><td>指标</td><td>逐 kernel 加速比、通过率</td><td>不可乘成端到端，回退抬高正确率</td></tr></tbody></table>
+<p class="paper-line">对应：papers/paper-2607-24762 · 第 2/9 部分</p>

@@ -1,0 +1,199 @@
+{
+ "timeline": [
+  {
+   "year": 2025,
+   "title": "KernelBench: Can LLMs Write Efficient GPU Kernels?",
+   "note": "KernelBench 是一个面向 LLM 生成高效 GPU 内核的评测基准，按难度分级组织任务，以 PyTorch 参考实现同时充当语义 oracle 与性能基线，统一报告编译成功率、数值比对正确率",
+   "paper": "paper-2502-10517"
+  },
+  {
+   "year": 2025,
+   "title": "CUDA-LLM: LLMs Can Write Efficient CUDA Kernels",
+   "note": "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generatio",
+   "paper": "paper-2506-09092"
+  },
+  {
+   "year": 2025,
+   "title": "Kevin: Multi-Turn RL for Generating CUDA Kernels",
+   "note": "该论文提出用多轮强化学习生成CUDA内核，核心是把内核生成放进可反复交互的回合中，让编译错误、运行正确性与性能信号作为反馈进入下一轮提示，并以可验证奖励汇总轨迹驱动策略更新。给定材料仅为摘要级，未披露",
+   "paper": "paper-2507-11948"
+  },
+  {
+   "year": 2025,
+   "title": "CUDA-L1: Improving CUDA Optimization via Contrastive Reinforcement Learning",
+   "note": "CUDA-L1 面向 CUDA kernel 自动优化，提出对比式强化学习：对同一算子采样多个候选实现，经编译、正确性校验与计时后按正确性与加速比排序，构造正负对计算偏好损失，驱动模型偏向更快且正确的",
+   "paper": "paper-2507-14111"
+  },
+  {
+   "year": 2025,
+   "title": "Geak: Introducing Triton Kernel AI Agent & Evaluation Benchmarks",
+   "note": "Geak 提出面向 Triton 内核的 AI 智能体与配套评测基准，核心是把生成、编译、运行、正确性比对与计时串成多轮闭环，用执行反馈驱动候选修改。其价值在于把内核生成纳入可比较的评测框架，但摘要级",
+   "paper": "paper-2507-23194"
+  },
+  {
+   "year": 2025,
+   "title": "Astra: A Multi-Agent System for GPU Kernel Performance Optimization",
+   "note": "GPU kernel optimization has long been a central challenge at the intersection of high-performance co",
+   "paper": "paper-2509-07506"
+  },
+  {
+   "year": 2026,
+   "title": "JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels",
+   "note": "A small number of GPU kernels often determines the efficiency of large language model training and i",
+   "paper": "paper-2610-36434"
+  },
+  {
+   "year": 2026,
+   "title": "God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation",
+   "note": "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the",
+   "paper": "paper-2610-36623"
+  },
+  {
+   "year": 2026,
+   "title": "Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization",
+   "note": "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff. Scripted age",
+   "paper": "paper-2611-03517"
+  },
+  {
+   "year": 2026,
+   "title": "Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optim",
+   "note": "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the t",
+   "paper": "paper-2611-04331"
+  },
+  {
+   "year": 2026,
+   "title": "KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation",
+   "note": "Training large language models to generate efficient CUDA kernels requires supervision spanning dive",
+   "paper": "paper-2611-14604"
+  },
+  {
+   "year": 2026,
+   "title": "KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels",
+   "note": "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly depende",
+   "paper": "paper-2611-15506"
+  }
+ ],
+ "edges": [
+  {
+   "from": "alg-tf32-compile-baseline",
+   "to": "alg-hidden-shape-dist",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-hidden-shape-dist",
+   "to": "alg-roofline-sol-score",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-roofline-sol-score",
+   "to": "alg-anti-cheat-contract",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-anti-cheat-contract",
+   "to": "alg-mutation-checker-audit",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-fuzz-fp64-oracle",
+   "to": "alg-formal-contract-verify",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-formal-contract-verify",
+   "to": "alg-batch-invariance-gate",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-ncu-metric-feedback",
+   "to": "alg-sass-warp-stall-profile",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-sass-warp-stall-profile",
+   "to": "alg-binary-instr-tracing",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-binary-instr-tracing",
+   "to": "alg-strategy-ir-dsl",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-mcts-evolution-search",
+   "to": "alg-multi-agent-strategy-ir",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-multi-agent-strategy-ir",
+   "to": "alg-multi-agent-coord",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-strategy-ir-dsl",
+   "to": "alg-cute-agent-gen",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-multi-agent-coord",
+   "to": "alg-budget-aware-search",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-budget-aware-search",
+   "to": "alg-goal-only-baseline",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-goal-only-baseline",
+   "to": "alg-question-driven-agent",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-multi-turn-rl-kernel",
+   "to": "alg-robust-reward",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-robust-reward",
+   "to": "alg-trloo-estimator",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-trloo-estimator",
+   "to": "alg-pairwise-ranking",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-pairwise-ranking",
+   "to": "alg-trajectory-sft",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  },
+  {
+   "from": "alg-trajectory-sft",
+   "to": "alg-synthetic-data-gen",
+   "type": "extend",
+   "note": "同一方向上的后继配方"
+  }
+ ],
+ "external_review": "内容由本地模型按论文事实卡生成，经脚本断言与人工抽样复核；未做外部同行评审"
+}

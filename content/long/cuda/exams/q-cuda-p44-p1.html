@@ -1,0 +1,44 @@
+<h3>一 · 题干的三层结构：基准、诊断、迁移</h3>
+<p>这道题的问法不是“TileBench 是什么”，而是“它在迁移时最可能在哪里失效”。题干里嵌了三个动作：<em>controlled benchmark</em>（受控基准）、<em>performance evaluation</em>（性能评测）、<em>bottleneck diagnosis</em>（瓶颈诊断），最后落到一个跨维度的迁移判断。读题时要把这三层拆开，因为它们失效的方式完全不同：评测层的失效是“测出来的数不代表真实收益”，诊断层的失效是“归因指错了瓶颈”，而受控层的失效是“控制变量本身在迁移后不再成立”。真正要回答的是第三层——控制变量的有效性边界，因为前两层是它的下游。</p>
+<p>题干中“Tile-Based Programming Models”是复数概念，涵盖 Triton 的 tile 抽象、CuTe 的 layout/tile 组合、以及手写 CUDA 中的 shared-memory tiling。TileBench 的方法论核心是用一组受控的 tile 配置去隔离“tile 形状/大小/数据布局”对性能的贡献，从而把性能差异归因到具体的瓶颈类别（带宽、占用率、指令吞吐、同步开销）。这意味着它的结论天然绑定在一组被固定住的东西上：硬件微架构、shape 的整除关系、dtype 的位宽与向量化粒度。迁移一旦动了这三者中的任何一个，受控性就要重新论证。</p>
+<p>解题路径因此不是复述论文，而是构造一条“控制变量清单 → 逐项检验迁移不变性 → 给出失效点排序 → 设计验证实验 → 写回退条件”的链条。下面几节分别拆这条链条上的考点。</p>
+
+<h3>二 · 考点一：受控变量的可迁移性判据</h3>
+<p>TileBench 式的受控实验，本质是在配置空间上做因子分解：把性能 <span>P</span> 写成 tile 参数 <span>θ</span>、shape <span>S</span>、dtype <span>D</span>、硬件 <span>H</span> 的函数，然后固定其中三项、扫描一项。迁移失效的第一判据是：被固定的项在新环境下是否仍是同一个“物理量”。形式化地，若原实验在 <span>H₀</span> 上测得 <span>P(θ; S₀, D₀, H₀)</span>，迁移到 <span>H₁</span> 后想沿用 <span>θ*</span>，需要的是</p>
+<div class="formula">$$\arg\max_{\theta} P(\theta; S_1, D_1, H_1) \approx \arg\max_{\theta} P(\theta; S_0, D_0, H_0)$$</div>
+<p>这个近似成立的条件不是“硬件差不多”，而是 tile 参数到硬件资源的映射保持单调且同序。具体机制上，tile 大小 <span>B</span> 同时决定了三件事：每 CTA 的 shared memory 占用 <span>B²·w</span>（<span>w</span> 为元素位宽）、寄存器压力、以及每次 global load 的合并度。在 <span>H₀</span> 上，<span>B</span> 增大带来的收益可能主要来自 L2 命中率提升；在 <span>H₁</span> 上，若 L2 容量或 bank 结构不同，同一 <span>B</span> 的收益来源就换了，最优点随之漂移。这就是“控制变量失效”的物理根源：<strong>同一个 tile 参数在不同硬件上对应不同的瓶颈组合</strong>。</p>
+<p>代价体现在验证成本上：要确认迁移不变性，不能只跑一个 shape，而要在新硬件上重扫一遍 tile 网格，编译时间与测量时延都按配置数线性增长。以 Triton 为例，每个 tile 配置对应一次 JIT 编译，网格若为 <span>B∈{32,64,128,256}×num_warps∈{4,8}×num_stages∈{2,3,4}</span>，就是 24 次编译加 24 组计时；跨 dtype 再乘一遍。这是解题时必须写进验证方案的成本项，而不是一句“重新调参”。</p>
+<p>具体例子：一个在 fp16 上以 <span>B=128</span> 达到最优的 GEMM tile，迁到 int8 后，同样的 <span>B</span> 使 shared memory 减半、向量化宽度翻倍，原最优点的收益来源（shared memory 带宽压力）消失，最优 <span>B</span> 上移。此时若直接复用 <span>θ*</span>，测得的性能差会被错误归因为“int8 硬件效率低”，而真实原因是 tile 未重调。这就是诊断层被受控层拖累的典型路径。</p>
+
+<h3>三 · 考点二：shape 整除性与尾块效应</h3>
+<p>TileBench 的受控性很大程度依赖 shape 落在 tile 的整数倍上，从而消除尾块（tail）处理的分支与掩码开销。迁移到新 shape 时，第一个失效点就是整除关系被破坏。设 tile 边长为 <span>B</span>，维度为 <span>M</span>，尾块比例为</p>
+<div class="formula">$$r = \frac{M \bmod B}{M}$$</div>
+<p>当 <span>r=0</span> 时，kernel 走无掩码的快路径；当 <span>r>0</span> 时，掩码谓词、边界判断、以及可能的非合并访存一起进来。机制上，掩码使编译器无法把 load 向量化到最大宽度，且 predicate 寄存器占用上升，占用率下降。代价是双重的：时延上，尾块 CTA 的利用率下降；正确性上，掩码逻辑是 bug 高发区（越界读、未初始化尾元素参与归约）。</p>
+<p>更隐蔽的是“shape 变了但整除性没变”的情况：<span>M</span> 仍是 <span>B</span> 的倍数，但 <span>M/B</span> 的网格尺寸变化导致 wave quantization 改变。若 SM 数量为 <span>N<sub>SM</sub></span>、每 SM 可驻留 <span>k</span> 个 CTA，则一个 wave 容纳 <span>N<sub>SM</sub>·k</span> 个 CTA，总 CTA 数为 <span>⌈M/B⌉·⌈N/B⌉</span>。当总 CTA 数不是 wave 容量的整数倍时，最后一个 wave 部分空转，这部分损失与 tile 参数强耦合，迁移到不同 <span>N<sub>SM</sub></span> 的硬件上会放大或缩小。TileBench 若在原硬件上把这一项当作噪声吸收掉，迁移后它就成了主项，归因随之错位。</p>
+<p>具体例子：<span>M=N=4096</span>、<span>B=128</span> 时网格为 32×32=1024 个 CTA；迁到 <span>M=N=4100</span> 后网格变为 33×33=1089，多出的 65 个 CTA 里绝大多数是尾块，且 1089 与 wave 容量的整除关系大概率被破坏。此时性能下降不能直接读作“新 shape 更难”，必须先分离尾块开销与 wave 量化开销——这正是验证方案里要设计的对照实验：固定 <span>B</span>，分别测 <span>M=4096</span> 与 <span>M=4100</span>，再固定 <span>M=4100</span> 扫 <span>B</span> 看能否找回。</p>
+
+<h3>四 · 考点三：dtype 位宽对向量化与带宽归因的改写</h3>
+<p>dtype 迁移不是“换个类型”那么简单，它同时改变三个量：元素位宽 <span>w</span>、向量化粒度（每线程可加载的元素数 <span>v</span>）、以及算术强度。TileBench 的瓶颈诊断依赖 roofline 式的归因，即比较实际吞吐与带宽上限、计算上限。迁移 dtype 后，roofline 的两个屋顶都移动了：</p>
+<div class="formula">$$\text{AI} = \frac{\text{FLOPs}}{\text{Bytes}} = \frac{2M N K}{w\,(M K + K N + M N)}$$</div>
+<p>位宽 <span>w</span> 减半使 AI 翻倍，kernel 从 memory-bound 侧滑向 compute-bound 侧。此时原诊断结论“瓶颈在 HBM 带宽”在新 dtype 下不再成立，而 TileBench 若把瓶颈类别当作与 dtype 无关的标签，就会给出错误归因。机制上还有一层：向量化要求地址对齐到 <span>v·w</span> 字节，int8 下 <span>v=16</span> 时对齐要求是 16 字节，与 fp16 下 <span>v=8</span> 的对齐要求相同，但 tile 内元素的排布若按 fp16 的 stride 设计，int8 下会出现跨 128 字节边界的访问，合并度下降。</p>
+<p>代价是测量与编译两头：dtype 变化通常触发新的 kernel 特化编译（模板实例化或 Triton 的 dtype 专用编译），编译时间按 dtype 数线性增加；同时低精度下的累加器位宽选择（fp32 累加 vs fp16 累加）引入正确性代价——fp16 累加在长 <span>K</span> 下溢出或精度损失，这是正确性 oracle 必须覆盖的点，而不是性能问题。验证方案里应包含一个“同 tile、换 dtype、分别测带宽利用率与计算利用率”的对照，用 NCU 的 memory throughput 与 SM throughput 两个计数器把归因钉死。</p>
+<p>具体例子：一个在 fp16 上被诊断为“受 shared memory bank conflict 限制”的 tile 配置，迁到 bf16 后位宽相同但尾数位不同，bank 结构与冲突模式不变，归因可迁移；而迁到 int8 后位宽减半，bank 宽度与 tile 内 stride 的整除关系改变，冲突模式可能反转，原诊断失效。这说明 dtype 迁移的失效点不在“精度”，而在“位宽改变了资源映射的整除结构”。</p>
+
+<h3>五 · 考点四：诊断信号的硬件绑定与计数器语义</h3>
+<p>TileBench 的瓶颈诊断若建立在 NCU 计数器或 SASS 静态分析上，迁移到新硬件时第一个要问的是计数器语义是否可比。具体机制：占用率（occupancy）由每 SM 的寄存器文件大小、shared memory 容量、最大驻留 CTA 数共同决定，这三个量在跨代硬件上不同。设每线程寄存器数为 <span>R</span>、每 CTA 线程数为 <span>T</span>、寄存器文件为 <span>F</span>，则寄存器限制的驻留 CTA 数为</p>
+<div class="formula">$$k_{\text{reg}} = \left\lfloor \frac{F}{R \cdot T} \right\rfloor$$</div>
+<p>在 <span>F</span> 更大的新硬件上，同一 <span>R·T</span> 允许更多 CTA 驻留，原实验中“占用率不足导致时延隐藏不够”的诊断就不再成立，因为新硬件上占用率已经够高，瓶颈转移到了别处。同理，shared memory 的 bank 数与 bank 宽度变化会改写 conflict 的计数含义；L2 的分区方式变化会改写 hit rate 的可比性。代价是诊断的可信度：跨硬件直接对比 NCU 的绝对计数是无效的，只能对比归一化后的比率，且比率的分母本身也要重新校准。</p>
+<p>验证方案应写成三步：第一步，在新硬件上重跑同一组 tile 配置，记录归一化指标（如 achieved occupancy 比率、memory throughput 占峰值比率）；第二步，用 SASS 静态检查确认生成的指令序列（向量化宽度、谓词数量、同步指令数）是否与原硬件一致，若不一致则归因不可迁移；第三步，做消融——人为把 tile 配置推到已知瓶颈（例如故意制造 bank conflict），看诊断器能否复现该标签，以此校准诊断器在新硬件上的灵敏度。这三步的时延成本主要是 NCU 的 replay 开销，每个 kernel 多次 replay，配置数乘以 replay 次数就是总测量时间。</p>
+<p>具体例子：原硬件上某 tile 配置的诊断为“同步开销主导”，依据是 barrier 指令占比高；迁到新硬件后，若该硬件的 barrier 实现或 warp 调度策略改变，同样的指令占比对应的实际停顿时间不同，标签虽同而物理含义已变。此时正确的做法不是沿用标签，而是用 stall reason 计数器重新归因。</p>
+
+<h3>六 · 解题路径与回退条件的写法</h3>
+<p>把上面的考点收束成一条可执行的解题路径：先列控制变量清单（硬件微架构、shape 整除性、dtype 位宽、tile 参数网格、诊断计数器语义），对每一项给出“迁移不变性”的判据与检验实验；再按失效概率排序，通常 shape 整除性与 dtype 位宽最先失效，因为它们直接改写资源映射的整除结构，硬件微架构次之，计数器语义最后但影响归因可信度。排序依据不是猜测，而是“该变量是否进入 tile 参数到性能的映射函数”——进入得越深，失效越早。</p>
+<p>回退条件的写法要可判定，不能是“效果不好就回退”。建议写成阈值形式：若新环境下重扫 tile 网格后的最优性能相对原配置的增益低于测量噪声（用重复测量的方差界定），则判定 tile 参数不可迁移，回退到在新硬件上独立调参；若尾块比例 <span>r</span> 超过给定阈值且尾块 CTA 的时延占比超过总时延的可观比例，则判定 shape 迁移失效，回退到带尾块专用 kernel 的路径；若 dtype 迁移后 roofline 的 AI 跨越了屋顶交点，则判定瓶颈类别标签失效，回退到按新 AI 重新归因。每个回退条件都对应一个可测量的量，而不是定性描述。</p>
+<p>最后落在工程判断上：TileBench 这类受控基准的价值在于它把“性能差异”分解成可归因的因子，但受控性的代价是结论的适用范围被控制变量本身限定。跨硬件、跨 shape、跨 dtype 迁移时，最可能失效的不是某个具体 tile 配置，而是“tile 参数到瓶颈类别”的那张映射表——因为这张表是在特定整除结构、特定位宽、特定计数器语义下拟合出来的。工程上稳妥的做法是把这张表当作假设而非结论，迁移时先做整除性与位宽的快速筛查（成本低、命中率高），再决定是否值得付出重扫网格与 NCU replay 的测量代价。</p>
+
+<h3>迁移失效的三个断点：shape 边界、dtype 语义与硬件代际</h3>
+<p>TileBench 的“受控”来自把 tile 形状、dtype、硬件三者作为自变量分离，但这也意味着任何一次迁移都同时改变了至少两个自变量，考点正在于识别哪个变量先失效。题干要求给出判断、验证方案与回退条件，解题路径应沿三条断点走：第一，shape 边界——tile 尺寸与问题规模不整除时，尾块（tail tile）的利用率骤降，roofline 上表现为有效带宽偏离峰值；第二，dtype 语义——fp16 与 bf16 在累加精度与舍入行为上不同，同一 tile 配置在 bf16 下可能通过正确性 oracle 却在 fp16 下溢出，反之亦然；第三，硬件代际——SM 数量、共享内存容量与 tensor core 指令形态变化会直接改变 tile 的可行域。判断顺序应是先查 shape 整除性，再查 dtype 累加链，最后查硬件约束，因为前两者可在单卡上静态排除，后者需要实测。</p>
+<p>验证方案的核心是把“迁移”拆成单变量对照：固定 tile 配置与 dtype，只换 shape，用 <code>ceil(M/T)</code> 与 <code>ceil(N/T)</code> 计算尾块占比，尾块占比超过阈值时预期性能塌陷；固定 shape 与硬件，只换 dtype，用正确性 oracle 的逐元素误差上界与累加器位宽比对，误差上界可写为 <span class="formula">$$ \epsilon_{\text{acc}} \le \gamma_{K} \sum |a_i b_i|,\quad \gamma_K = \frac{K u}{1 - K u} $$</span> 其中 <span class="formula">$$u$$</span> 为该 dtype 的单位舍入误差，<span class="formula">$$K$$</span> 为归约长度——K 增大时 fp16 累加的误差上界线性膨胀，这正是 dtype 迁移最易失效的位置。固定 shape 与 dtype 只换硬件，则用 NCU 的 shared memory 占用与 occupancy 作为回退判据。</p>
+<p>系统代价必须计入验证本身：逐元素 oracle 在 fp32 参考实现上运行，显存开销约为输出的 2–4 倍，大 shape 下会迫使分块校验，增加 host-device 同步次数；NCU profile 采集使 kernel 时延膨胀一个量级，不能与性能测量同轮进行。编译时间上，为每个 dtype 组合实例化模板会线性放大编译产物，Triton 的 autotune 在跨 dtype 搜索时配置空间翻倍，token 侧则表现为 agent 需要多轮执行反馈才能收敛。回退条件应明确：尾块占比超过整除阈值、oracle 误差超过 <span class="formula">$$\epsilon_{\text{acc}}$$</span> 上界、或 occupancy 因共享内存超限跌破基线，三者任一触发即回退到原硬件原 dtype 的已验证配置，而非继续调 tile。</p>
+<table class="mini"><thead><tr><th>断点</th><th>静态判据</th><th>实测代价</th></tr></thead><tbody><tr><td>shape 尾块</td><td>整除余数占比</td><td>有效带宽偏离峰值</td></tr><tr><td>dtype 累加</td><td>γ_K 误差上界</td><td>oracle 显存 2–4×</td></tr><tr><td>硬件代际</td><td>共享内存/occupancy</td><td>NCU 时延膨胀</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-p44 · 第 1/2 部分</p>

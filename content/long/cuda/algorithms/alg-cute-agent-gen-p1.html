@@ -1,0 +1,39 @@
+<h3>一 · 事故现场：编译通过的 kernel 为什么在评测里翻车</h3>
+<p>先看一个在 CuTe 生成流水线里真实会发生的翻车形态。某次 GEMM 生成任务中，agent 产出的 CuTe kernel 在本地编译一次通过，静态断言全绿，正确性 oracle 在小 shape 上也过了，于是被送进评测队列。评测端按 SOL 归一评分，结果这个 kernel 的分数远低于同 shape 的参考实现，NCU 显示 tensor core 利用率长期趴在低位，共享内存侧 bank conflict 计数异常高。回看代码，问题不在 MMA atom 选错，也不在 tile shape 离谱，而在 shared memory layout 的 swizzle 参数与 tiled_copy 的迭代顺序不匹配：逻辑上每个线程读到的元素是对的，但物理地址映射把同一 warp 的访问打到了同一个 bank 上，于是每一次 ldmatrix 都被串行化。这个 kernel 的正确性没问题，性能却塌了。</p>
+<p>这类事故暴露的是 CuTe 生成的根本困难：CuTe 的 Layout、Tensor、MMA 抽象把「逻辑索引」和「物理布局」彻底解耦，正确性只约束前者，性能几乎全部由后者决定。手写 CUTLASS/CuTe 时，工程师靠经验把 swizzle 和 tile 迭代对齐；LLM 直接写 CuTe 代码时，它能把 tiled_mma、tiled_copy 的骨架搭对，却极易在 swizzle 的位运算、layout 的 stride 顺序、copy atom 的重复次数上写出「语义等价但布局劣化」的版本。更麻烦的是，这种劣化不触发任何编译错误，也不触发 fp64 参考 oracle 的数值比对——它只体现在 NCU 的 bank conflict 和 tensor core 利用率上。换句话说，仅靠「编译通过 + 数值正确」这两道门，根本拦不住布局层面的性能事故。</p>
+<p>把评分公式摆出来看，问题更清楚：</p>
+<div class="formula">$$\text{SOL}=\max\left(\frac{F}{F_{\text{peak}}},\frac{B}{B_{\text{peak}}}\right),\quad \text{score}=\frac{\text{SOL}_{\text{gen}}}{\text{SOL}_{\text{ref}}}\cdot\mathbb{1}[\text{correct}]$$</div>
+<p>指示函数只惩罚不正确，不惩罚「正确但布局劣化」。一个 bank conflict 严重的 kernel 照样拿到 $\mathbb{1}[\text{correct}]=1$，但 $\text{SOL}_{\text{gen}}$ 被压到参考实现的零头，score 随之塌陷。评测翻车的本质是：正确性 oracle 与性能度量之间存在一条缝隙，而 CuTe 的布局参数恰好整条缝隙都落在里面。这就是为什么需要一套专门面向 CuTe 模板化生成与布局搜索的方法——它不是为了让 LLM 写出「能跑的 CuTe」，而是为了让 LLM 写出的 CuTe 在布局维度上可被系统性地枚举、编译验证、profile 定位并搜索到接近峰值的组合。</p>
+
+<h3>二 · 方法瞄准的具体问题：把布局从「自由文本」变成「可搜索参数」</h3>
+<p>这套方法解决的问题可以被精确地圈定：给定目标算子（GEMM / attention / conv）的 shape、dtype 与目标架构（sm80 / sm90），让 LLM 在 CuTe 的 Layout/Tensor/MMA 抽象层做组合式生成，把 layout、swizzle、tile shape、pipeline stage 当作可搜索参数，由 CuTe 模板实例化保证类型正确，再用 NCU 指标驱动布局搜索。它要回答的不是「这段 CuTe 代码语法对不对」，而是「在这组合法 atom 组合里，哪一个 layout/swizzle/tile 配置能把 tensor core 利用率和 DRAM 吞吐推到该 shape 的 roofline 附近」。</p>
+<p>关键机制在于把「布局」从 LLM 的自由文本输出里剥离出来，变成一组有限、可枚举、可被模板系统校验的参数。具体做法是：先解析目标算子，枚举合法的 CuTe atom 组合；LLM 只负责生成代码骨架——选 MMA atom、定义 tiled_mma、tiled_copy、shared memory layout 与 swizzle；随后模板实例化加编译，若失败则把 CuTe 的静态断言错误回灌给 LLM 修正 layout 参数；编译通过后跑 fp64 参考 oracle 与 NCU profile，采集 tensor core 利用率、bank conflict、DRAM 吞吐；最后以 SOL 利用率为目标对 layout/tile 参数做 keep-revert 搜索，输出最优 CuTe kernel。</p>
+<p>这个机制之所以成立，是因为 CuTe 的类型系统把大量布局错误前移成了编译期错误。swizzle 的位宽与 layout 的 stride 不匹配、copy atom 的重复次数与 tile 形状不整除、MMA atom 的布局与 shared memory layout 不兼容，这些在裸写 CUDA 时是运行期才暴露的静默错误，在 CuTe 里往往直接触发静态断言。LLM 于是不必「理解」每一个布局约束的数学含义，它只需要在合法组合的空间里试探，把编译错误当作负反馈信号。收敛速度的提升来自搜索空间的收缩：合法组合远少于所有可能的 layout 写法。</p>
+<p>代价同样明确。CuTe 模板实例化的编译时间很长，每轮搜索都要付一次完整编译的代价，当搜索轮数上升时，编译开销可能超过 LLM 生成本身的 token 开销，预算敏感的场景下这笔账算不过来。更隐蔽的代价是「编译通过但语义错」：LLM 对 CuTe 语义理解不足时，会写出类型系统接受、静态断言通过、但逻辑索引与物理布局对应关系错误的 layout，这类错误只能靠强 oracle 兜底，而 fp64 参考 oracle 的构造成本与运行成本又随 shape 增长。方法的设计因此必须在「搜索广度」与「每轮编译+验证成本」之间做取舍，这也是后面布局搜索策略要处理的核心张力。</p>
+
+<h3>三 · 它不解决什么：边界要划在编译期类型系统够不到的地方</h3>
+<p>这套方法的适用边界由 CuTe 类型系统能覆盖的范围决定，边界之外的问题它明确不解决。第一，它不解决算法层面的选择：attention 用 FlashAttention 式分块还是别的重排、GEMM 用 split-K 还是 stream-K、conv 用 implicit GEMM 还是 Winograd，这些是算子级决策，发生在 CuTe atom 枚举之前，布局搜索只能在既定算法骨架内找最优布局。第二，它不解决数值精度策略：TF32 与 FP32 累加的取舍、fp16 累加的溢出风险，属于编译基线锚定与精度 oracle 的范畴，CuTe 布局参数对此无能为力。</p>
+<p>第三，也是最需要强调的一条：它不解决「编译通过但语义错」的兜底。CuTe 静态断言覆盖的是类型与布局的结构性约束，不覆盖逻辑语义。一个 tiled_copy 的迭代顺序写反、一个 MMA atom 的 A/B 操作数位置对调，都可能通过编译并在某些 shape 上碰巧数值正确。方法本身把这类风险外推给正确性 oracle，因此它的可信度上限由 oracle 的强度决定——弱 oracle 之下，布局搜索会稳定地收敛到「编译通过、数值碰巧对、性能虚高」的局部最优。这一点与变异测试审计 checker、合约/形式化验证是互补关系，不是替代关系。</p>
+<p>第四，它不解决编译预算不可承受的场景。当目标算子的模板实例化本身就极重（大 tile、多 stage、复杂 swizzle 组合），单轮编译时间可能让 keep-revert 搜索的轮数被压到个位数，此时搜索的统计意义很弱，方法退化为「枚举几个候选、挑编译最快且能过的那个」，性能收益不可预期。工程判断是：编译时间与生成 token 成本的比值决定这套方法是否值得启用，比值过高时应退回手工调优或更粗粒度的模板参数扫描。</p>
+<p>把这些边界并排看，可以给出一个适用性判据：目标算子有明确的 CuTe atom 枚举空间、编译单轮成本在预算内、且存在强 fp64 oracle 与 NCU 可采集的指标，三条同时满足时方法有效；缺任何一条，收益都会被打折。下面的表格把「解决 / 不解决」对照列出，便于在接入前做判断。</p>
+<table class="mini"><thead><tr><th>维度</th><th>方法覆盖</th><th>方法不覆盖</th></tr></thead><tbody>
+<tr><td>布局与 swizzle</td><td>枚举合法组合，编译期校验，NCU 定位 bank conflict</td><td>类型系统够不到的语义错布局</td></tr>
+<tr><td>tile / pipeline</td><td>作为可搜索参数，SOL 驱动 keep-revert</td><td>算子级算法选择（split-K、Winograd 等）</td></tr>
+<tr><td>正确性</td><td>依赖 fp64 参考 oracle 兜底</td><td>oracle 本身的强度与覆盖</td></tr>
+<tr><td>成本</td><td>编译失败回灌加速收敛</td><td>编译预算不可承受时的搜索轮数塌缩</td></tr>
+</tbody></table>
+
+<h3>四 · 一个具体例子：sm90 GEMM 上 swizzle 参数如何决定成败</h3>
+<p>取一个 sm90 上的 GEMM 目标：给定 shape、dtype 与目标架构后，枚举合法 CuTe atom 组合，LLM 生成骨架时选了某个 MMA atom 与对应的 tiled_mma，shared memory layout 用一个带 swizzle 的复合 layout，tiled_copy 负责把 global 到 shared 的搬运。假设 LLM 第一版把 swizzle 的位宽取错，与 shared layout 的 stride 不整除，模板实例化直接触发静态断言，编译失败。回灌的断言信息指出 layout 的 stride 与 swizzle 约束冲突，LLM 据此修正参数，第二轮编译通过。</p>
+<p>编译通过不等于性能到位。NCU profile 采集到 tensor core 利用率偏低、shared memory bank conflict 计数偏高，说明 swizzle 虽然合法，但没有把同一 warp 的 ldmatrix 访问分散到不同 bank。此时 keep-revert 搜索开始工作：以 SOL 利用率为目标，对 swizzle 位宽、tile shape、pipeline stage 做参数扰动，每扰动一次就重新实例化、编译、跑 oracle 与 profile，指标改善则 keep，恶化则 revert。搜索过程中一个典型的现象是：tile shape 增大能提升数据复用、抬高 tensor core 利用率，但 shared memory 占用随之上升，可能压低 occupancy，两者在 SOL 上的净效应需要实测而非推断。这正是 NCU 指标回灌的价值——它把「布局参数 → 硬件计数器」的因果链显式化，让搜索不必盲试。</p>
+<p>这个例子里三类代价同时出现：编译时间（每轮实例化的固定开销）、oracle 运行时间（fp64 参考在小 shape 上尚可，大 shape 上显著）、以及搜索轮数带来的总 token 与总机时。工程上要判断的是：当编译开销已经超过生成开销时，是否值得继续加轮数。一个可操作的判据是把「单轮编译时间 × 预期轮数」与「手工调优一个已知良好布局的时间」做对比，前者更大就应停止搜索、退回人工给定布局参数。例子中的最终产出是一个编译通过、oracle 通过、NCU 指标接近 roofline 的 CuTe kernel，但它的可信度仍受限于 oracle 强度——如果 oracle 只覆盖了小 shape，大 shape 上的布局劣化仍可能漏网。</p>
+
+<h3>五 · 为什么必须是「模板化生成 + 布局搜索」而不是别的组合</h3>
+<p>把方法拆成两半看，各自解决不同的问题，合起来才闭合。模板化生成这一半解决的是「LLM 写 CuTe 易错」：CuTe 的 Layout/Tensor/MMA 抽象层把布局约束编码进类型，LLM 在合法组合中生成骨架，错误被静态断言拦截并回灌，收敛更快。布局搜索这一半解决的是「合法但非最优」：布局参数可枚举，配合 NCU 指标能定位 bank conflict 与低 tensor core 利用率的具体来源，keep-revert 在 SOL 目标下把参数推向峰值。两半缺一不可——只有模板化生成，会稳定产出「编译通过、性能平庸」的 kernel；只有布局搜索而缺少模板校验，搜索空间里充斥着编译不过或语义错的候选，每轮成本被浪费在无效实例化上。</p>
+<p>与相邻方法的边界也在这里显影。Roofline/SOL 归一评分提供的是目标函数，不是搜索机制；NCU 指标回灌提供的是观测信号，不是参数生成；MCTS/进化 keep-revert 搜索提供的是搜索骨架，但若候选不是 CuTe 合法组合，搜索会被编译失败主导。本方法的位置是：把「合法候选的生成」交给 CuTe 模板实例化，把「候选优劣的判断」交给 SOL 与 NCU，把「候选的演化」交给 keep-revert，三者串成一条闭环。闭环的每一环都有明确的失败模式：模板校验漏掉语义错、SOL 目标被错误 oracle 污染、keep-revert 在编译预算下轮数不足。识别这些失败模式，比记住方法的名字更重要。</p>
+<p>一个具体的工程判断落在参数枚举的粒度上。枚举合法 CuTe atom 组合时，粒度过粗会让搜索空间里全是明显劣化的布局，浪费编译轮次；粒度过细会让合法组合数量爆炸，单轮编译成本乘以组合数量直接击穿预算。合理的做法是先按 MMA atom 与 tile shape 的粗粒度分层，再在每层内对 swizzle 与 pipeline stage 做细粒度扰动，把编译预算集中在有希望的层。这个分层策略本身不产生性能数字，但它决定了方法能否在给定预算内跑完足够轮数——而这正是方法适用边界里「编译预算」一条的落地方式。</p>
+
+<h3>六 · 事故复盘落到机制：oracle 强度决定搜索的可信上限</h3>
+<p>回到开头的事故。那个 bank conflict 严重的 kernel 之所以能进评测队列，是因为流水线的门只查了编译与数值，没查布局质量；而它之所以在搜索阶段没被拦住，是因为当时的 oracle 只覆盖了小 shape，大 shape 上的布局劣化没有暴露。修复不是「让 LLM 更懂 CuTe」，而是把 NCU 指标接进搜索的判定环节，并把 fp64 oracle 的 shape 覆盖扩展到与评测分布一致。这两步分别对应方法机制里的「NCU 指标驱动布局搜索」与「强 oracle 兜底」，缺任何一步，同类事故都会以不同形态复发。</p>
+<p>由此得到一个可操作的工程判断：在接入 CuTe 模板化生成与布局搜索之前，先量化两个比值——单轮编译时间与单轮生成 token 成本的比值，以及 oracle 覆盖 shape 与评测 shape 分布的比值。前者过高说明搜索轮数会被编译预算压塌，方法应降级为粗粒度参数扫描；后者过低说明布局劣化会漏网，搜索会收敛到虚假最优。两个比值都合格时，方法才具备可信度；否则应先补 oracle 覆盖或压缩编译成本，再谈布局搜索的收益。这条判断落在具体机制上，而不是落在方法的名字上——名字不保证可信，机制和它的代价才保证。</p>
+<p class="paper-line">对应：algorithms/alg-cute-agent-gen · 第 1/8 部分</p>

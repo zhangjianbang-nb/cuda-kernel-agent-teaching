@@ -1,0 +1,80 @@
+{
+ "_paper_id": "paper-2611-14604",
+ "_domain": "cuda",
+ "_title": "KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation",
+ "_abstract_only": true,
+ "title_zh": "KernelMosaic: An Open Dataset and Agentic Framework for CUDA",
+ "background": "这篇论文发表于 2026 年（arXiv:2611.14604），属于 多轮 RL 与可验证奖励 方向。它要回答的问题是：Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimization.",
+ "problem": "Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimization. Constructing this supervision is challenging because of heterogeneous specifications, and useful",
+ "core_idea": "Constructing this supervision is challenging because of heterogeneous specifications, and useful implementations emerge through iterative complicated testing and refinement. We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified so",
+ "architecture": "We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified solutions and trajectories. Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, reference programs, mathematical specifications, and their intersections.",
+ "pipeline": [
+  "读取《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Constructing this supervision is challenging because of hete）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$R=\\sum_{t=0}^{T}\\gamma^{t}r_{t},\\qquad r_t=\\Delta\\text{speed}_t\\cdot\\mathbb{1}[\\text{pass}_t]$$",
+ "training": "论文给出的优化/训练配方：Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, reference programs, mathematical specifications, and their intersections. To build the solutions and trajectories, our agentic framework guides a strong ",
+ "walkthrough": "一次完整流程：先读取《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified solutions and trajectories. Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, r",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "To build the solutions and trajectories, our agentic framework guides a strong LLM through implementation, correctness repair, and performance optimization with reusable CUDA guidance and execution feedback. Supervised fine-tuning of a small open-source model on KernelMosaic raises correctness from ",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimizati",
+  "Constructing this supervision is challenging because of heterogeneous specifications, and useful implementations emerge through iterative complicated testing an",
+  "We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified solutions and trajectories."
+ ],
+ "limitations": [
+  "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, reference programs, mathematical specifications, and their intersections. To build the solutions and trajectories",
+ "summary": "Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimization. Constructing this supervision is challenging because of heterogeneous specifications, and useful implementations emerge through iterative complicated testing and refinement. We introduce KernelMosaic, an open dataset pairing diverse CUD",
+ "data_recipe": [
+  "评测负载：《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimization.",
+  "Constructing this supervision is challenging because of heterogeneous specifications, and useful implementations emerge through iterative complicated testing and refinement.",
+  "We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified solutions and trajectories.",
+  "Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, reference programs, mathematical specifications, and their intersections.",
+  "To build the solutions and trajectories, our agentic framework guides a strong LLM through implementation, correctness repair, and performance optimization with reusable CUDA guidance and execution feedback.",
+  "Supervised fine-tuning of a small open-source model on KernelMosaic raises correctness from 4%, 0%, and 0% to 88%, 82%, and 16% on KernelBench L1, L2, and L3, respectively, while increasing the fraction of tasks with ker",
+  "Further training experiments show that supervision from the curated trajectories substantially outperforms direct responses and promotes sustained testing and revision.",
+  "These results demonstrate that KernelMosaic enables a general-purpose model to achieve substantial gains in CUDA kernel generation."
+ ],
+ "anchors": [
+  "4",
+  "0",
+  "88",
+  "82",
+  "16"
+ ],
+ "pitfalls": [
+  "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-rl-data"
+}

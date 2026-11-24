@@ -1,0 +1,45 @@
+<h3>一 · 三条路线共享的“同一问题”是什么</h3>
+<p>把 Triton、CuTe、PTX 放在一起比较，前提是它们面对的是同一个可判定的问题：给定一个算子语义（例如 <span>d = A·B + C</span> 的 GEMM 变体）和一份目标架构约束（SM 数量、每 SM 的寄存器文件与 shared memory 容量、tensor core 指令形态、TMA 描述符能力），要求产出一个在受控基准上可正确性验证、且能被 NCU/SASS 证据归因到具体瓶颈的 kernel。三条路线的差异不在于“谁更底层”，而在于<strong>把架构特性编码进 DSL 的那一层放在哪里</strong>：Triton 把 tile 形状、流水级数、layout 交给编译器推导；CuTe 把 layout 与 tiling 显式提升为一等公民的类型代数；PTX 则把指令选择、寄存器分配、warp 级同步全部暴露给生成器。这个“编码层位置”决定了 LLM agent 能改什么、profile 能证明什么、以及每次迭代要付什么代价。</p>
+<p>一个具体的判别标准是：当 NCU 报出 “tensor pipe 利用率低、LSU 等待高” 时，三条路线给出的可改写自由度完全不同。Triton 路线只能调 <span>BLOCK_M/BLOCK_N/BLOCK_K</span>、<span>num_stages</span>、<span>num_warps</span> 与少量 compiler hint；CuTe 路线可以重写 <span>Layout</span> 与 <span>Swizzle</span>、替换 copy atom 与 MMA atom 的组合；PTX 路线可以直接换 <span>cp.async.bulk.tensor</span> 的 barrier 编排或 <span>wgmma</span> 的 commit/wait 分组。自由度越大，搜索空间越大，验证成本也越高——这正是三条路线代价差的根源。</p>
+
+<h3>二 · Triton：编译器承担 layout 推导，代价是证据链断裂</h3>
+<p>Triton 的机制核心是“块级程序 + 编译器推导 layout”。生成器写的是 <span>tl.load</span>/<span>tl.dot</span>/<span>tl.store</span> 这样的块语义，layout（哪个线程持有哪些元素、是否需要用 shared memory 做转置）由编译器在 lowering 阶段决定。流水线由 <span>num_stages</span> 控制软件流水深度，编译器据此插入异步拷贝与双缓冲。对 agent 而言，这意味着<strong>可搜索的参数空间是低维且离散的</strong>：tile 三元组、stage 数、warp 数，加上少量 <span>tl.max_contiguous</span>/<span>tl.multiple_of</span> 之类的对齐断言。伪代码上，agent 的改写动作形如：</p>
+<div class="formula">$$\text{rewrite}: (B_M, B_N, B_K, S, W) \rightarrow \text{Triton IR} \rightarrow \text{TTGIR} \rightarrow \text{LLVM/PTX}$$</div>
+<p>代价体现在两端。前端是<strong>编译时间</strong>：每次改 tile 都要重跑整条 lowering，autotune 式搜索会把编译开销放大到与运行时间同量级甚至更高，在 agent 多轮迭代中这是实打实的 token 与墙钟预算消耗。后端是<strong>证据链断裂</strong>：NCU 报出的 stall 原因发生在 SASS 层，而源码层只有块语义，从 “LSU throttle 高” 反推到 “应该把 B 矩阵的 load 改成转置友好的 layout” 这条映射并不唯一，agent 只能靠试。一个典型例子是 GEMM 中 <span>BLOCK_K</span> 取值的两难：取大可以摊薄 TMA/异步拷贝的启动开销、提高 tensor pipe 占用，但 shared memory 占用上升会压低 occupancy，且寄存器压力可能让编译器放弃某些流水；取小则相反。Triton 把这个权衡交给编译器，agent 只能用基准分数做黑盒反馈，无法从 profile 直接读出“是 smem 容量卡住了流水级数”这一因果。</p>
+<p>正确性代价相对低：块语义天然规避了 warp 级同步错误，正确性 oracle 只需覆盖边界 tile 与数值容差。所以 Triton 路线的工程判断是：<strong>当瓶颈在 tile 粒度可解释的范围内（occupancy、流水深度、全局访存合并）时优先用它</strong>；一旦 NCU 证据指向指令级或 barrier 级问题，它的改写自由度就不够了。</p>
+
+<h3>三 · CuTe：layout 成为类型，代价是组合爆炸与编译期负担</h3>
+<p>CuTe 的机制差异在于把 layout 从“编译器的内部决定”提升为“生成器可写的类型”。<span>Layout</span> 是形状与步长的复合，<span>Swizzle</span> 在其上叠加置换，<span>MMA atom</span>、<span>Copy atom</span>、<span>TiledMMA</span>、<span>TiledCopy</span> 通过 <span>composition</span> 与 <span>logical_divide</span> 组合成完整的 kernel 结构。于是 agent 的改写对象从标量参数变成了<strong>结构化的类型表达式</strong>：把 <span>row-major</span> 的 A 换成按 MMA atom 要求的 fragment layout，把 shared memory 的 bank 冲突用 swizzle 消掉，把 copy 的向量宽度与 TMA 描述符对齐。公式上，一次 tile 内的数据映射可以写成：</p>
+<div class="formula">$$\text{coord} = \text{Layout}_{\text{smem}} \circ \text{Swizzle} \circ \text{Layout}_{\text{gmem}}^{-1}(\text{idx})$$</div>
+<p>这条路线把“架构特性编码”做得最彻底：tensor core 的 fragment 分布、TMA 的多维拷贝、warp 间的分工都以类型形式写进源码，因此 NCU/SASS 证据到源码改写的映射是<strong>可追踪的</strong>——SASS 里看到的 <span>LDS</span> bank 冲突可以直接对应到某个 swizzle 选择，<span>HMMA</span> 的间隔可以直接对应到 TiledMMA 的 atom 排布。代价是组合爆炸：layout、atom、swizzle、stage 数的笛卡尔积远大于 Triton 的低维参数空间，agent 若没有 profile 引导就是在做高维盲搜；同时模板实例化的<strong>编译时间</strong>显著上升，CuTe 的重模板在多配置搜索时会把编译预算吃光。显存侧的代价则体现在 shared memory 的精细占用：swizzle 与 padding 的选择直接决定 smem 用量，进而决定能开几级流水，这是 CuTe 路线里最容易被 agent 忽略、却最常被 NCU 抓到的瓶颈。</p>
+<p>具体例子：一个 <span>M×N×K</span> 的 GEMM 在 CuTe 下，agent 可以把 <span>TiledCopy</span> 从 <span>AutoVectorizingCopy</span> 换成显式 <span>UniversalCopy</span> 加向量宽度，以匹配 TMA 的 128B 对齐；这一改动在源码层是一行类型替换，在 SASS 层表现为 <span>LDGSTS</span> 与 <span>LDG</span> 的比例变化，在 NCU 层表现为 LSU 吞吐与 smem 带宽占用的再分配。这种“一行类型 → 一条指令族”的对应关系正是 CuTe 相对 Triton 的核心增量，也是它相对 PTX 的核心节省：不需要手写寄存器分配与 barrier 编排。</p>
+
+<h3>四 · PTX：指令与同步全暴露，代价是正确性与可维护性</h3>
+<p>PTX 路线的机制是把生成粒度降到指令级：<span>mma.sync</span> 或 <span>wgmma</span> 的分组、<span>cp.async</span> 与 <span>mbarrier</span> 的到达/等待编排、寄存器复用与 <span>setmaxnreg</span> 的 warp 特化、<span>bar.warp.sync</span> 的收敛控制，全部由生成器显式写出。它编码架构特性的能力最强——warp 调度与异步流水的时间结构可以被精确指定，因此当 NCU 证据指向 “barrier 等待占比高” 或 “tensor pipe 有空泡” 时，PTX 路线是唯一能直接改写同步结构的层级。伪代码上，一个流水级的骨架是：</p>
+<div class="formula">$$\text{for } s:\; \text{cp.async.bulk} \rightarrow \text{mbarrier.arrive};\; \text{mbarrier.wait} \rightarrow \text{wgmma} \rightarrow \text{commit/wait}$$</div>
+<p>代价最重的是<strong>正确性</strong>：warp 级同步、barrier phase、寄存器生命周期任何一处写错，结果不是慢而是错，且错误往往是非确定性的 race，正确性 oracle 需要覆盖多轮重复执行与不同 occupancy 下的行为，验证成本远高于块语义路线。其次是<strong>可维护性与知识半衰期</strong>：PTX 的指令形态随架构迭代快速变化，一段为某代 tensor core 写的 <span>wgmma</span> 编排在下一代可能整体失效，agent 学到的模式迅速过时——这正是“架构特性快速迭代使 DSL 与 profile 知识迅速过时”在 PTX 路线上的集中体现。第三是<strong>编译与生成成本</strong>：手写 PTX 的 token 开销与调试轮次远高于前两条路线，agent 需要更多执行反馈才能收敛。</p>
+<p>具体例子：在需要 warp 特化（producer warp 做 TMA、consumer warp 做 MMA）的 kernel 里，PTX 路线可以显式给 producer 分配更少寄存器、给 consumer 分配更多，从而在不牺牲 occupancy 的前提下让 MMA 拿到足够寄存器；Triton 无法表达这种 warp 间的不对称，CuTe 只能通过有限的 atom 组合间接逼近。这个例子的代价是：一旦 <span>setmaxnreg</span> 的数值与实际的 register file 预算不匹配，就会触发 spill，NCU 上表现为 local memory 流量上升，而源码层看不出任何异常——证据到改写的映射在这里反而变难，因为可改写点太多，agent 需要在多个候选解释间做归因。</p>
+
+<h3>五 · 代价对照：三条路线在四个维度上的差</h3>
+<p>把机制差异折算成工程代价，可以按“改写自由度、证据可追踪性、验证成本、迭代开销”四个维度对照。下表只做定性排序，不引入未给定的数字。</p>
+<table class="mini"><thead><tr><th>维度</th><th>Triton</th><th>CuTe</th><th>PTX</th></tr></thead><tbody>
+<tr><td>可改写自由度</td><td>低维离散（tile/stage/warp）</td><td>高维结构化（layout/atom/swizzle）</td><td>指令级（同步/寄存器/指令族）</td></tr>
+<tr><td>SASS→源码映射</td><td>弱，需黑盒试错</td><td>强，类型与指令族对应</td><td>强但候选过多，归因难</td></tr>
+<tr><td>正确性验证成本</td><td>低（块语义）</td><td>中（layout 组合需覆盖）</td><td>高（race 与非确定性）</td></tr>
+<tr><td>单次迭代开销</td><td>编译快、搜索维度少</td><td>模板编译重、组合多</td><td>生成 token 多、调试轮次多</td></tr>
+</tbody></table>
+<p>这张表的用法不是“选一条最好的”，而是<strong>按 profile 证据选择改写层级</strong>。当 NCU 把瓶颈归因到 occupancy 与流水深度时，Triton 的低维搜索最划算；当归因到 bank 冲突、fragment 分布、TMA 对齐时，CuTe 的类型改写能给出可追踪的因果；当归因到 barrier 相位、warp 间负载不均、寄存器预算时，只有 PTX 能动到根因。反过来，如果 agent 在 Triton 层反复调 tile 却始终无法改善 tensor pipe 利用率，正确的判断不是“再搜一轮”，而是“证据已经越过了 Triton 的表达边界，应升级到 CuTe 或 PTX”。</p>
+<p>还有一个跨路线的共同代价：<strong>知识半衰期</strong>。三条路线的 DSL 知识与 profile 解读经验都绑定在具体架构上，架构迭代会让“某 swizzle 消某 bank 冲突”“某 barrier 编排喂饱某 tensor core”这类模式失效。因此 agent 的优化流程必须把 profile 证据作为每轮的锚点，而不是把历史模式当作可复用的先验——这也是为什么受控基准下的瓶颈归因比“套用已知最佳实践”更可靠。</p>
+
+<h3>六 · 路线选择的工程判据：从证据层级反推 DSL 层级</h3>
+<p>把三条路线的机制差异收敛成一个可执行的判据：<strong>先由 NCU/SASS 确定瓶颈所在的抽象层级，再由该层级反推 DSL 的最小充分表达力</strong>。若瓶颈可由 tile 粒度参数解释（occupancy 受限、流水级数不足、全局访存未合并），Triton 是充分且最省的；若瓶颈落在数据布局与指令族的匹配上（fragment 分布错位、smem bank 冲突、copy 向量宽度与 TMA 描述符不匹配），CuTe 的 layout 代数提供了可追踪的最小改写；若瓶颈落在时间结构上（barrier 相位、warp 特化、寄存器预算与 MMA 的耦合），PTX 是唯一能触及根因的层级。这个判据的代价是它要求 agent 具备读 NCU 指标到抽象层级的映射能力——而这正是 profile 证据的价值所在：它把“该用哪条路线”从偏好问题变成归因问题。</p>
+<p>具体到实现，agent 的每轮循环应携带上一轮的 NCU 摘要与 SASS 片段作为上下文，把“当前 DSL 层级是否已触及瓶颈根因”作为一个显式的终止/升级条件，而不是无限期地在同一层级内做参数搜索。这样做的直接收益是省掉无效的编译与 token 开销：在 Triton 层搜一个本质属于 barrier 编排的问题，无论搜多少轮都不会收敛。最终落在工程判断上——<strong>DSL 层级的选择不是风格偏好，而是由 profile 证据的粒度决定的成本最优解</strong>；三条路线的机制差异，本质上就是它们各自能把证据链闭合到哪一层。</p>
+
+<h3>三条路线各自会在哪里断掉：抽象泄漏、证据断链与系统代价</h3>
+<p>把 Triton、CuTe、PTX 看成“同一条 kernel 的三种写法”是错的。它们的真正差别在于<strong>谁替你做了架构决策、以及当决策做错时你还能看到什么</strong>。Triton 把 tile 形状、shared memory 分配、流水线深度收进编译器，代价是这些量成为不可直接寻址的黑箱：一旦某个 shape 落到编译器启发式的坏分支上，你在源码层几乎无法表达“我要 128B 的 TMA box、要 4 级 cp.async 流水”，只能靠改 block size 反复试。CuTe 把 layout 代数暴露出来，`Layout`、`Swizzle`、`TiledCopy` 的组合让 TMA 的 box 与 swizzle 模式成为可推导对象，代价是模板实例化与编译时间——一个复杂 GEMM 的 CuTe 实例化可以把编译推到分钟量级，且错误信息以模板展开深度计价。PTX 则把调度、寄存器分配、mma 指令形态全部交到手上，代价是正确性责任转移：你写的是指令序列，不是语义，任何一处 predicate 或 barrier 位置错误都不会被编译器拦住。</p>
+<p>失效条件可以按“抽象泄漏点”定位。Triton 的边界在非规则访存与跨 warp 数据交换：当 kernel 需要 warp 间显式协作（例如跨 CTA 的 reduction 或自定义 swizzle 的 bank 冲突规避）时，Triton 的编程模型没有对应原语，只能退化为多次 kernel 启动，此时端到端时延被 launch overhead 与中间张量写回显存吃掉。CuTe 的边界在动态 shape 与运行时分支：layout 是编译期类型，shape 一旦进入运行时域，`TiledCopy` 的划分就要靠额外的 dispatch 层，代码体积与寄存器压力同时上升。PTX 的边界在可移植性：为某一代 tensor core 的 mma 形态手写的序列，换到下一代指令集就要重写，而 DSL 层至少还能靠编译器后端吸收一部分。</p>
+<div class="formula">$$\text{有效加速} = \frac{T_{\text{ref}}}{T_{\text{launch}} + T_{\text{kernel}} + T_{\text{fallback}}}$$</div>
+<p>这个式子给出的是系统代价的判据：DSL 路线省下的 kernel 时间，会被 fallback 路径（多 kernel 拆分、host 端 dispatch、中间结果往返显存）抵消。一个具体例子是 flash-attention 类的分块 softmax：Triton 版本在规则 head dim 上能贴近 SOL，但当 head dim 不是 2 的幂、或需要跨 block 的 online rescale 与 TMA 多级流水协同时，Triton 生成的流水线深度往往浅于手写 CuTe 版本，此时 NCU 上表现为 DRAM throughput 未饱和而 SM 的 stall 集中在 barrier——这是抽象层没把流水线深度暴露出来的直接证据，而修复它要么写 CuTe，要么下沉到 PTX 手工排 barrier。</p>
+<table class="mini"><thead><tr><th>路线</th><th>架构决策归属</th><th>典型失效条件</th><th>主要系统代价</th></tr></thead><tbody><tr><td>Triton</td><td>编译器启发式</td><td>非规则访存、跨 warp 协作</td><td>fallback 多 kernel、launch 与显存往返</td></tr><tr><td>CuTe</td><td>layout 代数（编译期）</td><td>动态 shape、运行时分支</td><td>编译时间、模板体积、寄存器压力</td></tr><tr><td>PTX</td><td>作者本人</td><td>架构代际更替、指令形态变化</td><td>正确性风险、可移植性归零</td></tr></tbody></table>
+<p>更隐蔽的代价在证据链上。三条路线产出的 SASS 与源码的对应关系强度不同：PTX 手写序列与 SASS 近乎一一对应，NCU 的 stall 归因能直接落回具体指令；CuTe 经过模板与内联后，SASS 里的 mma 与 TMA 指令还能靠 layout 结构反推；Triton 生成的 SASS 与 Python 级源码之间隔着 MLIR 多层 lowering，NCU 报告里一条“long scoreboard stall”要映射回“把 BLOCK_K 调大”这类源码级动作，中间缺少可验证的桥。这正是 SASS 证据到源码改写映射困难的根源，也是为什么在受控基准下做瓶颈归因时，越低的抽象层越容易闭环，而越高的抽象层越依赖统计式的试错。</p>
+<p class="paper-line">对应：directions/dir-hw-dsl-profile · 第 2/5 部分</p>

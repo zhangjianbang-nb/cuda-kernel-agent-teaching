@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2606-20128",
+ "_domain": "cuda",
+ "_title": "The Correctness Illusion in LLM-Generated GPU Kernels",
+ "_abstract_only": true,
+ "title_zh": "The Correctness Illusion in LLM-Generated GPU Kernels",
+ "background": "这篇论文发表于 2026 年（arXiv:2606.20128），属于 基准与可信评测 方向。它要回答的问题是：Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks.",
+ "problem": "Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks. The number of inputs varies between benchmarks.",
+ "core_idea": "The number of inputs varies between benchmarks. The shape, dtype, and tolerance are fixed for each kernel.",
+ "architecture": "The shape, dtype, and tolerance are fixed for each kernel. We test that oracle empirically.",
+ "pipeline": [
+  "读取《The Correctness Illusion in LLM-Generated GPU Kernels》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（The number of inputs varies between benchmarks.）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：We test that oracle empirically. We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it under op-schema-aware seeded fuzzing wit",
+ "walkthrough": "一次完整流程：先读取《The Correctness Illusion in LLM-Generated GPU Kernels》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：The shape, dtype, and tolerance are fixed for each kernel. We test that oracle empirically.",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《The Correctness Illusion in LLM-Generated GPU Kernels》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it under op-schema-aware seeded fuzzing with a high-precision (fp64) CPU reference and per-(op, dtype) absolute tole",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks.",
+  "The number of inputs varies between benchmarks.",
+  "The shape, dtype, and tolerance are fixed for each kernel."
+ ],
+ "limitations": [
+  "《The Correctness Illusion in LLM-Generated GPU Kernels》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "We test that oracle empirically. We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it ",
+ "summary": "Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks. The number of inputs varies between benchmarks. The shape, dtype, and tolerance are fixed for each kernel. We test that oracle empirically. We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style bug",
+ "data_recipe": [
+  "评测负载：《The Correctness Illusion in LLM-Generated GPU Kernels》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks.",
+  "The number of inputs varies between benchmarks. The shape, dtype, and tolerance are fixed for each kernel.",
+  "The shape, dtype, and tolerance are fixed for each kernel. We test that oracle empirically.",
+  "We test that oracle empirically. We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it ",
+  "We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it under op-schema-aware seeded fuzz",
+  "The seeded oracle flags 9 of 9 buggy kernels and passes 15 of 15 correct controls, at zero precision cost on controls.",
+  "We extend the corpus to 26 ops (adding a flash-attention pair) and re-run the same protocol on five GPU classes (RTX 3060, A10, L40S, A100 SXM4, H100 NVL).",
+  "The verdicts are identical across all five GPUs: 10 of 10 illusions caught and 16 of 16 controls clean."
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《The Correctness Illusion in LLM-Generated GPU Kernels》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-oracle-formal"
+}

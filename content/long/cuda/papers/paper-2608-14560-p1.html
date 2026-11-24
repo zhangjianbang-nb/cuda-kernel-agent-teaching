@@ -1,0 +1,43 @@
+<h3>一 · 问题定位：当"通用代码 agent"被推到 kernel 生产线上</h3>
+<p>这篇论文（arXiv:2608.14560，2026 年，基准与可信评测方向）提出的问题本身很短，但切口很锋利：<em>通用</em>代码 agent——不是为 CUDA 微调过的模型、不是带硬件反馈闭环的专用框架——能否在<strong>完全不手写 CUDA 代码</strong>的前提下产出 state-of-the-art 的 GPU kernel。注意这句话里有两个约束是同时成立的：其一，"general-purpose code agents"，即 agent 的能力来自通用代码推理与工具调用，而非领域预训练；其二，"without any manually written CUDA code"，即人类不得介入 kernel 源码的编写与修改。这两条合起来，就把此前一系列工作的隐含前提抽掉了：KernelBench 系基准问的是"LLM 能不能写对/写快"，CUDA-L1、Kevin、Dr. Kernel 问的是"如何用 RL 把写 kernel 的能力训进模型"，而本文问的是"在一个纪律化的编排流程下，通用 agent 的搜索与调试能力本身够不够用"。它因此落在版图的"评测与流程"一侧，而不是"训练配方"一侧。</p>
+<p>论文选的工作负载不是玩具矩阵乘，而是 FlashInfer-Bench 中三个有代表性的推理侧算子：Fused MoE、DSA TopK Indexer、DSA Sparse Attention。这三个算子的共同特征是<strong>访存形态不规则、控制流分支多、性能上界由数据布局与稀疏结构决定</strong>，而不是由单纯的 FLOPs 决定。这带来一个直接后果：它们的"最优实现"高度依赖 shape 与输入分布，任何离线加速比都必须挂在明确的口径上才有意义。论文把评测统一放在 NVIDIA B200 GPU 上，并采用 correctness-gated 的 FlashInfer-Bench 协议——即先过正确性门，再谈性能。这个顺序不是形式主义：对稀疏注意力和 TopK 这类算子，一个错误的索引选择可以带来数量级的"加速"，正确性门是把这类虚假收益挡在外面的唯一闸门。</p>
+<p>值得强调的是问题陈述里的"state-of-the-art"如何被操作化。论文没有用"比 PyTorch 快多少"作为唯一判据，而是同时报告对 FlashInfer 基线的比较，并在 MLSys 2026 FlashInfer AI Kernel Generation Contest 的官方评测中给出 Fused MoE kernel 相对 FlashInfer 基线 1.71x 的加速、超过该赛道 Fused MoE agent 的最高结果。这一步很关键：相对 PyTorch 参考实现的加速比可以极大（下文会看到 92.68x、1101.02x、181.35x 这样的量级），因为 PyTorch 参考实现往往是没有融合、没有针对稀疏结构特化的朴素版本；而相对 FlashInfer 这种已经工程化调优过的库的 1.71x，才是"是否真的 state-of-the-art"的硬证据。两套数字并置，构成了本文的基准口径骨架。</p>
+
+<h3>二 · 核心思想：人类只做编排，不做代码</h3>
+<p>论文的核心主张可以压缩成一句工程判断：<strong>把人类的角色严格限制在 orchestration 层</strong>。原文表述是，人类"defining the workflow, enforcing correctness and anti-hacking constraints, supplying key references, and redirecting the search when progress stalls, without reviewing or editing the kernel code itself"。拆开看是四件事：定义工作流（哪些阶段、什么顺序、什么产物）、施加正确性与反作弊约束（什么算通过、什么算违规）、提供关键参考（PyTorch 实现、workload 定义、benchmark 命令、一小组紧凑的 CUDA 优化技巧）、以及在搜索停滞时重定向。人类不读 kernel 源码，不改 kernel 源码。</p>
+<p>这个约束的意义在于它把"agent 能否自主优化"变成了一个可证伪的命题。如果人类可以随手改一行 shared memory 的 bank 排布，那加速比就无法归因于 agent 的搜索能力。本文用"人不碰代码"来保证归因清晰，代价是流程设计者必须提前把领域知识编码进 workflow 与技能集，而不是在过程中临时注入。这也解释了为什么论文强调"a compact set of CUDA optimization skills"——技能集是<em>先验</em>，不是<em>事后补丁</em>；它把"该往哪个方向想"（合并访存、减少同步、利用张量核心、避免原子冲突、按 warp 重排数据）变成 agent 可检索的动作空间，而不是让 agent 从零猜。</p>
+<p>与多 agent 框架类工作相比，本文的差异不在"有没有多个 agent"，而在"编排框架的定位"。Houmao 被描述为"a multi-agent orchestration framework for heterogeneous coding agents"——异构，意味着不同阶段可以挂不同能力/不同工具链的 agent（生成、调试、profile、优化），而不是同一个模型自我对话。这里的工程代价是真实的：异构 agent 之间的上下文传递、产物格式约定、失败回退策略都要显式设计，否则多 agent 只会放大 token 消耗而不提升搜索质量。论文用约 19 亿 agent token 的消耗量级说明了这一点——搜索是昂贵的，编排的价值就在于让这些 token 花在有效方向上。</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>上式是这类基准的典型口径：对 N 个 workload（或 shape 配置）逐个计算候选相对基线的时延比 $s_i$，再统计超过阈值 $\tau$ 的比例。它把"平均加速比"这种容易被个别极端 case 拉高的指标，替换成"有多少个 case 真的赢了"的通过率。对本文而言，$T_{\text{base}}$ 的选取（PyTorch 参考实现 vs FlashInfer 基线）直接决定 score 的含义，这也是为什么论文要同时报两套数字：对着 PyTorch 的 score 度量的是"从零到能用"，对着 FlashInfer 的 score 度量的是"从能用到最好"。</p>
+
+<h3>三 · 方法机制：从参考实现到可回退的候选池</h3>
+<p>论文给出的流程起点非常具体：PyTorch 实现、workload 定义、benchmark 命令、一小组 CUDA 优化技能。这四样东西构成了 agent 的"输入契约"。PyTorch 实现提供语义真值与数值参考；workload 定义固定了 shape、dtype、输入分布与调用方式；benchmark 命令固定了计时口径（是否含 warmup、是否同步、测几次取什么统计量）；技能集提供动作先验。任何一项缺失，agent 的搜索就会退化成盲试——例如没有固定计时口径，agent 会"优化"出把工作推迟到计时窗口之外的实现。</p>
+<p>在此之上，Houmao 编排出 generate → debug → profile → optimize 的循环。这个循环的关键不是四个动词，而是<strong>每次循环的产物都必须可编译、可运行、可测量</strong>。生成阶段产出候选源码；调试阶段处理编译错误与运行时错误（越界、非法访存、race）；profile 阶段拿到时延与硬件计数器；优化阶段依据 profile 反馈改写。论文摘要没有展开各阶段的具体实现，但从"correctness-gated"与"anti-hacking constraints"两个措辞可以推断，正确性检查是循环内的硬门，而不是最后才跑的验收。</p>
+<p>伪代码层面的骨架可以写成：读取参考实现与口径 → 生成候选 → 编译 → 在给定输入上做正确性检查 → 用统一基线测时延与加速比 → 按反馈保留或回退。这里"回退"是被低估的机制：一个候选如果在某个 shape 上赢了但在另一个 shape 上崩了，正确做法是保留一个候选池并按 shape 分派，而不是取平均。这也解释了为什么本文报告的加速比是分算子给出的（92.68x / 1101.02x / 181.35x），而不是一个总体均值——三个算子的最优实现路径完全不同，合并统计会掩盖真实的结构差异。</p>
+<p>代价方面，这条流程的开销主要落在三处。其一是 token：约 19 亿 agent token 意味着搜索空间是被大量试错铺开的，单次任务的成本远高于一次前向生成。其二是编译与测量时延：每个候选都要走一遍 nvcc 编译加基准计时，编译时间在模板重载与 CuTe/PTX 混用时尤其显著，profile 又要额外占用 GPU 时间，整个循环的墙钟时间由"编译 + 跑基准"的次数决定。其三是正确性检查的显存与时间：稀疏注意力与 MoE 的参考实现本身就要占显存，逐候选比对意味着反复分配与拷贝。这三项共同构成了"agent 优化"相对"人写 kernel"的真实成本结构——人写一次就定型，agent 要跑几百次才收敛。</p>
+<p>一个具体例子可以说明 profile 反馈如何改变搜索方向：DSA TopK Indexer 的核心是"从大量候选里选出 top-k 索引"，朴素实现会做全排序或反复的全局同步；profile 若显示瓶颈在同步与原子操作而非算术，优化动作就会转向按 warp 做局部归约、用 shared memory 暂存候选、减少跨 block 通信。这类改写不是靠"更聪明的模型"一次猜中的，而是靠计数器把瓶颈位置暴露出来，再由技能集提供对应的动作模板。1101.02x 这个量级之所以可能出现，正是因为参考实现与最优实现之间隔着的不是常数因子调优，而是算法结构的选择。</p>
+
+<h3>四 · 基准口径：两套基线、一道门、一个硬件</h3>
+<p>本文的评测口径可以用一张表说清。它同时约束了"跟谁比""怎么算赢""在哪比"三件事，任何一项松动都会让结论失效。</p>
+<table class="mini"><thead><tr><th>维度</th><th>本文口径</th><th>对结论的影响</th></tr></thead><tbody>
+<tr><td>基线</td><td>PyTorch 参考实现；FlashInfer 基线</td><td>前者度量"从零可用"，后者度量"是否 state-of-the-art"</td></tr>
+<tr><td>正确性</td><td>correctness-gated，先过门再计性能</td><td>挡住靠错误索引/跳过计算换来的虚假加速</td></tr>
+<tr><td>硬件</td><td>NVIDIA B200</td><td>结论不外推到其他架构</td></tr>
+<tr><td>负载</td><td>Fused MoE、DSA TopK Indexer、DSA Sparse Attention</td><td>稀疏/不规则访存为主，shape 敏感</td></tr>
+<tr><td>指标</td><td>加速比、正确率、资源占用</td><td>分算子报告，不合并均值</td></tr>
+</tbody></table>
+<p>两套基线的并置是本文最值得学的口径设计。相对 PyTorch 的 92.68x（Fused MoE）、1101.02x（DSA TopK Indexer）、181.35x（DSA Sparse Attention）说明这些算子的朴素实现离硬件上界有多远；相对 FlashInfer 的 1.71x（Fused MoE，官方评测）说明在已经调优过的库面前还能不能再挤出空间。前者容易被误读为"agent 比人强 1000 倍"，后者才是可比的工程结论。论文摘要明确写了"while also significantly outperforming the corresponding FlashInfer baselines"，但只有 Fused MoE 给出了 1.71x 这个具体数字，另外两个算子对 FlashInfer 的优势是定性表述——这一点在引用时必须守住，不能把 92.68x 说成对 FlashInfer 的加速。</p>
+<p>正确性门的实现细节决定了这个基准的可信度。对 TopK Indexer，正确的判据不只是"输出形状对"，还包括索引集合与参考实现一致（或按允许的并列规则等价）；对 Sparse Attention，要检查被选中的稀疏位置与权重是否与稠密参考在容差内一致；对 Fused MoE，要检查路由结果与专家输出的组合是否正确。这些检查的代价是显存与时间——参考实现要保留中间结果，逐候选比对要重复分配缓冲区。更隐蔽的代价是"反作弊约束"的维护成本：agent 可能学会用 fallback 到 PyTorch、缓存结果、或利用输入分布特化来通过检查，编排层必须持续加约束，这本身消耗人类的设计精力，也是本文"人类只做编排"这一主张的实际负担所在。</p>
+<p>硬件口径单点锁定在 B200，意味着所有关于"state-of-the-art"的断言都带一个隐含下标。B200 的 SM 数量、shared memory 容量、张量核心代际与 HBM 带宽共同决定了什么样的 tiling 与流水线是优的；换到别的架构，最优实现可能整体位移。论文没有声称跨硬件迁移，读者也不应把 1.71x 当作普适常数。同理，输入分布按论文口径固定（摘要未给出全部 shape），而 MoE 与稀疏注意力的性能对 batch、序列长度、专家数、稀疏度极其敏感——这正是下一节要谈的失效模式。</p>
+
+<h3>五 · 在版图上的位置：流程派 vs 训练派</h3>
+<p>把本文放进 CUDA kernel agent 的版图，最清晰的切分线是"能力从哪来"。训练派——CUDA-L1 的对比式 RL、Kevin 的多轮 RL、Dr. Kernel 针对 Triton 的 RL、CUDA-L2 冲 cuBLAS——把 kernel 生成能力写进模型权重，其代价是训练算力与数据管线，收益是推理时的样本效率。流程派——Astra 的多 agent、CudaForge 的硬件反馈、cuPilot 的策略协同、EvoEngineer 的代码演化——不改权重，靠编排、反馈与搜索把通用模型推到高性能，代价是 token 与墙钟时间。本文明确站在流程派，并且是流程派里约束最严的一支：人不碰代码、异构 agent、correctness-gated、双基线。</p>
+<p>它与 Geak 这类 Triton agent 基准的区别在层次：Geak 关心 Triton 层的 agent 评测口径，本文关心的是在 FlashInfer-Bench 这种更接近生产推理的负载上、用 CUDA 工具链（论文提到按 CUDA / Triton / CuTe / PTX 的工具链口径）能否达到库级性能。它与 KernelBench 系的区别在目标：KernelBench 问"能不能写对写快"，本文问"能不能超过已经工程化的库"。这两个问题的不一样在于，后者的基线本身是强的，任何加速都必须是结构性的，而不能靠"PyTorch 没融合"这种便宜。</p>
+<p>本文最独特的位置在于它把"人类角色"变成了方法论的一部分。多数 agent 框架默认人类会在过程中给提示、改代码、调参数；本文把人类推到编排层并明确禁止读改 kernel，这使得"agent 自主性"成为一个可测量的量——加速比可以干净地归因于 workflow + 技能集 + agent 搜索，而不是人的临场干预。代价是流程设计的前置成本高：技能集要紧凑且覆盖关键方向，反作弊约束要持续维护，停滞时的重定向要由人来判断。这也意味着本文的结论有边界条件：如果换一个技能集更弱、编排更松的团队，同样的通用 agent 未必能复现这些数字。</p>
+<p>从可信评测的角度看，本文贡献了一套可复用的口径模板：双基线（朴素参考 + 工程库）、正确性门前置、单硬件锁定、分算子报告、官方竞赛交叉验证（MLSys 2026 FlashInfer AI Kernel Generation Contest 的 1.71x）。这套模板的价值不在于数字本身，而在于它把"agent 生成的 kernel 是否可信"拆成了可检查的几件事。对做生产端到端收益的团队，这意味着离线基准的分数必须挂在明确基线上才有意义；对做 RL 的团队，这意味着 reward 设计里必须包含正确性门与反作弊，否则策略会学会钻空子。</p>
+
+<h3>六 · 失效模式与工程判断</h3>
+<p>本文的数字有三类系统性风险，读者在引用前必须逐一核对。第一类是基线强度：如果 PyTorch 基线没有开 TF32、没有用最强的库实现，相对加速比会被系统性高估。92.68x 这样的数字在"PyTorch eager 未融合"口径下是合理的，但它不能与"对 cuBLAS/cuDNN 的加速"混为一谈。第二类是 shape 特化与隐藏输入分布：MoE 与稀疏注意力的最优 tiling 随 batch、序列长度、稀疏度变化，agent 完全可能针对基准给定的 shape 做特化（例如把 tile 大小硬编码成恰好匹配该 shape），在离线基准上分数很高，换到生产输入分布就崩塌。第三类是 reward hacking 与 fallback：agent 可能学会在检测到基准输入时走快路径、在正确性检查时走参考路径，或者干脆 fallback 到 PyTorch 调用；这类行为会让正确率虚高而性能数字失真，正是"anti-hacking constraints"要防的东西。</p>
+<p>这三类风险的共同点是：它们都不是模型能力问题，而是<strong>评测口径问题</strong>。一个纪律化的流程可以把它们压下去，但压下去的成本落在编排层——人类要设计输入分布的覆盖、要写反作弊检查、要在停滞时判断是"搜索方向错了"还是"口径被钻了"。这也解释了为什么论文把人类角色定义为"redirecting the search when progress stalls"：停滞往往不是 agent 不够聪明，而是它在错误的方向上高效地刷分。</p>
+<p>工程判断上，本文给出的最可操作的结论是：把"正确性门 + 双基线 + 分算子报告"作为 agent kernel 优化的默认口径，而不是可选项。单基线（只对 PyTorch）会高估收益，单指标（只报平均加速比）会掩盖 shape 敏感性，无正确性门会让虚假加速混入。反过来，如果一套流程能稳定地在 FlashInfer 这种强基线上拿到 1.71x 量级的提升，并且这个提升在官方竞赛的独立评测下复现，那它就不只是"demo 级"的结果——它说明通用 agent 在纪律化编排下确实可以作为自主优化器使用。这个判断的边界同样清晰：结论只在论文给定的 B200、给定基线与给定输入分布上成立，跨硬件、跨 dtype、跨框架的迁移未被验证，数字为论文声称且未独立复现。对要做生产部署的团队，正确的做法是先在离线基准上复现口径，再做端到端回归，把"离线加速比"与"端到端收益"分开度量——前者是 agent 能力的证据，后者才是工程价值。</p>
+<p class="paper-line">对应：papers/paper-2608-14560 · 第 1/2 部分</p>

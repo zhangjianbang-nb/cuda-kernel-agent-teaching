@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2608-01804",
+ "_domain": "cuda",
+ "_title": "LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation",
+ "_abstract_only": true,
+ "title_zh": "LEAP: Lean Environment-Feedback via Adaptive Pruning for Cod",
+ "background": "这篇论文发表于 2026 年（arXiv:2608.01804），属于 多轮 RL 与可验证奖励 方向。它要回答的问题是：Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities.",
+ "problem": "Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities. To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like",
+ "core_idea": "To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like Group Relative Policy Optimization (GRPO) tied to rule-based verification sandboxes. However, applying these frameworks to low-leve",
+ "architecture": "However, applying these frameworks to low-level systems programming, such as CUDA kernel generation-presents severe challenges: binary pass/fail rewards introduce severe signal sparsity, while multi-turn environmental feedback loops suffer from prohibitive compilation latencies and reward dilution a",
+ "pipeline": [
+  "读取《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（To bypass the heavy memory footprint of critic networks, cur）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$R=\\sum_{t=0}^{T}\\gamma^{t}r_{t},\\qquad r_t=\\Delta\\text{speed}_t\\cdot\\mathbb{1}[\\text{pass}_t]$$",
+ "training": "论文给出的优化/训练配方：In this work, we introduce LEAP (Lean Environment-Feedback via Adaptive Pruning), a scalable and computationally efficient multi-turn RL framework optimized for low-level hardware accelerator alignment. LEAP features Difficulty-Conditioned Pruning (DCP), a dyn",
+ "walkthrough": "一次完整流程：先读取《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：However, applying these frameworks to low-level systems programming, such as CUDA kernel generation-presents severe challenges: binary pass/fail rewards introduce severe signal sparsity, while multi-turn environmental fe",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "LEAP features Difficulty-Conditioned Pruning (DCP), a dynamic gating mechanism that adaptively cuts off simple and overly catastrophic tasks from multi-turn expansion, focusing resource-heavy compilation and hardware exploration exclusively on high-value, complex tasks. To fully operationalize these",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities.",
+  "To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like Group Relative Policy Optimizat",
+  "However, applying these frameworks to low-level systems programming, such as CUDA kernel generation-presents severe challenges: binary pass/fail rewards introdu"
+ ],
+ "limitations": [
+  "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "In this work, we introduce LEAP (Lean Environment-Feedback via Adaptive Pruning), a scalable and computationally efficient multi-turn RL framework optimized for low-level hardware accelerator alignment. LEAP features Dif",
+ "summary": "Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities. To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like Group Relative Policy Optimization (GRPO) tied to rule-based verification sandboxes. However, applying these frameworks to low-level system",
+ "data_recipe": [
+  "评测负载：《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities.",
+  "To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like Group Relative Policy Optimization (GRPO) tied to rule-based verification sandboxes.",
+  "However, applying these frameworks to low-level systems programming, such as CUDA kernel generation-presents severe challenges: binary pass/fail rewards introduce severe signal sparsity, while multi-turn environmental fe",
+  "In this work, we introduce LEAP (Lean Environment-Feedback via Adaptive Pruning), a scalable and computationally efficient multi-turn RL framework optimized for low-level hardware accelerator alignment.",
+  "LEAP features Difficulty-Conditioned Pruning (DCP), a dynamic gating mechanism that adaptively cuts off simple and overly catastrophic tasks from multi-turn expansion, focusing resource-heavy compilation and hardware exp",
+  "To fully operationalize these paths without manual hyperparameter engineering, we propose a Rank-Based Reward formulation.",
+  "By deriving scale-free relative advantages from pairwise tournament outcomes within the GRPO rollout group, our method inherently penalizes token inefficiency on simple prompts while maximizing learning gradients on chal",
+  "Empirical evaluations show that LEAP achieves superior first-turn proficiency and robust multi-turn debugging resilience while converging faster than unpruned multi-turn baselines, establishing a practical paradigm for l"
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-rl-data"
+}

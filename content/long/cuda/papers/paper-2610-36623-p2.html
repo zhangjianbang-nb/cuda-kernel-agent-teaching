@@ -1,0 +1,56 @@
+<h3>一 · 基准题面与“批适用”筛选口径</h3>
+<p>这篇论文的评测对象不是一张全新的 kernel 题库，而是把已有 agent 产出的“已发布产物”（released artifacts）重新放到批不变性（batch invariance, BI）的检验台上。这里的关键口径是“batch-applicable”：一个 kernel 只有在语义上会随 batch 维度变化时才纳入统计，纯 elementwise 且逐元素独立的实现天然 BI，纳入只会稀释分母。论文给出的核心统计量是 83 个批适用产物中发现 19 个确认的 BI 违规，这个 19/83 就是本部分所有指标的分母基准。读者要意识到，83 不是“所有 kernel”，而是“所有会被 batch 上下文影响的 kernel”，任何跨论文比较都必须先对齐这个筛选规则，否则分子分母都不可比。</p>
+<p>筛选本身有代价。判定一个 kernel 是否 batch-applicable 需要读它的归约结构：沿 batch 维做 reduce、做 softmax 归一化、做 layernorm 统计量、做 attention 的 KV 拼接，都属于会被 batch 组成改变的路径；而纯逐点算子则不属于。人工判定 83 个产物的结构风险，本质上是静态依赖分析的轻量版本，论文的 contract-guided static dependency analysis 正是把这一步形式化。工程上这意味着基准构建阶段就要付出阅读与标注成本，且标注错误会直接改变分母，因此“19/83”应被理解为带标注口径的数字，而非绝对物理量。</p>
+<p>具体例子：一个 fused softmax kernel 在 batch=1 与 batch=8 下，若归约树按 block 内线程数切分，则不同 batch 组成会改变每个归约段的元素数量，进而改变浮点加法顺序，产生末位差异。这类 kernel 属于 batch-applicable；而一个只做 <span>y = x * 2</span> 的 kernel 不属于。基准的分母只装前者。</p>
+
+<h3>二 · 基线、硬件与 dtype：可比性的三条边界</h3>
+<p>论文的基线口径是 PyTorch eager、torch.compile 与论文指定的库实现。这三者构成一条从“未融合参考”到“编译器融合”再到“厂商库”的阶梯，加速比的分母取哪一级，直接决定数字的量级。若基线用 eager，融合 kernel 的加速比会显著高于对 torch.compile 的加速比；若基线用 cuBLAS/cuDNN 这类库，则只剩很窄的优化空间。因此本部分要求：读任何 speedup 数字时，先确认分母是 eager 还是 compile 还是库，三者不可互换。</p>
+<p>dtype 是第二条边界。论文未在摘要级给出全部 dtype 组合，但 BI 的判定与 dtype 强耦合：fp32 归约的舍入误差在 batch 组成改变时更容易暴露，fp16/bf16 的累加器位宽与舍入模式会放大或掩盖差异，TF32 在 matmul 路径上默认开启与否会同时改变数值与性能。若基线未开 TF32 而 agent kernel 开了，加速比会被系统性高估；反之若基线开了 TF32 而候选 kernel 用 fp32 累加，正确性门会误杀。可比性要求基线、候选、BI 校验三处使用同一 dtype 与同一 TF32 开关状态，这一点必须在测量口径里显式记录，而不是默认。</p>
+<p>硬件是第三条边界。论文结论只在论文给定的 GPU 上成立，跨架构迁移未验证。不同 SM 数量、不同 shared memory 容量、不同 L2 大小会改变 tile 切分与归约树形状，从而同时改变性能和 BI 行为——一个在 A 卡上 BI 通过的 kernel，换到 B 卡上因 block 大小与 warp 数变化可能重新出现末位差异。因此“BI pass rate 从 67.6% 提升到 91.9%”是特定硬件上的口径，不能当作跨卡不变量。</p>
+<p>代价维度：dtype 混用会带来额外的 cast 指令与寄存器压力，实测中常表现为带宽利用率下降；TF32 开关影响的是 tensor core 吞吐而非正确性门本身，但它把“数值一致”与“性能可比”两件事绑在一起，任何一处不对齐都会让整张表失去意义。</p>
+
+<h3>三 · 指标族：faster rate、speedup、geomean、fast_p 与 roofline</h3>
+<p>论文的验收公式是 <span>accept = 1[pass ∧ s ≥ 1]</span>，其中 <span>s</span> 是加速比 <span>T_base / T_agent</span>。这个合取式把正确性门与性能门串成单一布尔量，是 faster rate 的原子定义：faster rate 就是被接受候选占全部候选的比例。注意 <span>s ≥ 1</span> 用的是严格阈值，意味着“与基线持平”不计入 faster，这一点在跨论文比较时经常被忽略——有的工作用 <span>s &gt; 1</span>，有的用 <span>s ≥ 1.05</span>，阈值不同则 faster rate 不可比。</p>
+<p>speedup 的聚合不能用算术平均。加速比是比值分布，长尾由个别极大值主导，算术平均会被单个 10× 的离群点拉高。论文口径使用几何平均（geomean），其定义是：</p>
+<div class="formula">$$\text{geomean}(s_1,\dots,s_n)=\exp\!\Big(\frac{1}{n}\sum_{i=1}^{n}\ln s_i\Big)$$</div>
+<p>几何平均对“翻倍”和“减半”对称，符合比值语义。代价是它对 <span>s &lt; 1</span> 的惩罚与对 <span>s &gt; 1</span> 的奖励同权，因此一个把部分 kernel 优化到 2×、另一些退化到 0.5× 的 agent，geomean 可能仍是 1，却掩盖了方差。工程判断：报告 geomean 时必须同时报告 faster rate 与最差候选的 <span>s</span>，否则无法区分“稳定小幅提升”与“高风险赌博”。</p>
+<p>fast_p 是 faster rate 的阈值化变体：统计 <span>s ≥ p</span> 的候选比例，p 常取 1.0、1.1、1.5 等档位。它把“是否更快”细化为“快多少”的分布，代价是需要更多候选样本才能让每个档位的比例稳定。roofline 则提供另一条正交口径：把候选 kernel 的实测吞吐对到其算术强度所对应的屋顶线位置，判断瓶颈是带宽还是算力。BI 校验与 roofline 无直接关系，但 roofline 能解释为什么某个 BI 通过的 kernel 仍然 <span>s &lt; 1</span>——它可能只是没打满带宽。</p>
+<p>论文给出的保留率口径是“retaining 91.8% of the baseline geomean”，即加入 BI 门之后 geomean 只损失约 8%。这个数字必须与 67.6%→91.9% 的 BI pass rate 一起读：前者说明 BI 门不是免费的，后者说明它换来了什么。两者构成一对权衡坐标，单独引用任一个都会误导。</p>
+<table class="mini"><thead><tr><th>指标</th><th>定义</th><th>可比性陷阱</th></tr></thead><tbody><tr><td>faster rate</td><td>accept 比例，accept=1[pass∧s≥1]</td><td>阈值取 1 还是 1.05 未统一</td></tr><tr><td>speedup</td><td>T_base/T_agent</td><td>分母是 eager/compile/库未标注</td></tr><tr><td>geomean</td><td>exp(mean(ln s))</td><td>掩盖方差，需配最差候选</td></tr><tr><td>fast_p</td><td>s≥p 的比例</td><td>样本量不足时档位比例抖动</td></tr><tr><td>BI pass rate</td><td>bitwise 一致的候选比例</td><td>依赖 batch 组成集合与硬件</td></tr></tbody></table>
+
+<h3>四 · 隐藏 shape 与输入分布：离线分数的崩塌点</h3>
+<p>BI 的检验对象不是单个 shape，而是“同一输入在不同 batch 上下文下的位级一致性”。这意味着评测必须构造一组 batch 上下文：固定被测请求的输入张量，改变与它同批的其他请求的数量与内容，观察输出是否逐位相同。论文的 dynamic validation of bitwise consistency across batch contexts 正是这一机制。隐藏 shape 的处理因此有两层：一层是常规的 shape 泛化（候选 kernel 是否对未见 shape 仍正确），另一层是 batch 组成泛化（候选 kernel 是否对未见 batch 邻居仍位级一致）。后者是这篇论文特有的口径，前者是所有 kernel 基准的共性。</p>
+<p>伪代码思路：对每个被测用例，固定输入 <span>x</span> 与参考输出 <span>y_ref</span>，枚举 batch 上下文集合 <span>B = {b_1, …, b_k}</span>，在每个 <span>b_i</span> 下运行候选 kernel 得到 <span>y_i</span>，判定 <span>∀i: bits(y_i) = bits(y_ref)</span>。代价是运行次数乘以 <span>k</span>，且 <span>k</span> 的选择直接决定检出率：<span>k</span> 太小会漏掉只在特定 batch 组成下触发的归约树重排，<span>k</span> 太大会把测量时延拉长到无法在优化循环内每轮执行。工程折中是分层抽样——先用少量上下文做快速门，失败即回退，通过后再用扩展集合复核。</p>
+<p>具体例子：一个 layernorm kernel 在 batch=4 时按 4 行切分 block，在 batch=7 时按 8 行补齐，补齐行的存在改变了 warp 内归约的参与线程集合，导致同一行的均值出现末位差异。若隐藏上下文集合只含 2 的幂，这个违规永远不会被检出。这正是“隐藏 shape/分布怎么处理”的核心：上下文集合的构造策略本身就是评测口径的一部分，必须公开。</p>
+<p>代价维度：每个候选多跑 <span>k</span> 次意味着编译时间之外的额外时延，且位级比较需要把输出搬回主机做逐字节比对，占用 PCIe 带宽与主机内存。在优化循环里，这把“每轮一次正确性检查”变成“每轮 <span>k</span> 次检查 + 一次比对”，是 BI 门相对普通正确性门的直接开销。</p>
+
+<h3>五 · 可核查的测量口径清单</h3>
+<p>为了让数字可复核，测量口径必须写成可执行的清单，而不是散落在正文的描述。以下每一条都对应一个可被第三方重跑的动作：</p>
+<ul>
+<li>基线锁定：记录 eager / torch.compile / 库实现三者的版本、编译选项、是否启用 TF32、是否启用 cudnn benchmark，并声明 speedup 的分母是哪一级。</li>
+<li>dtype 锁定：记录输入、累加器、输出的 dtype 组合，以及 fp16/bf16 的累加精度设置；候选与基线必须同配置。</li>
+<li>计时方法：声明是否使用 CUDA event、是否做 warmup、重复次数、是否剔除首次编译；BI 校验的运行不计入性能计时。</li>
+<li>batch 上下文集合：公开 <span>B</span> 的构造规则与基数 <span>k</span>，说明是否含非 2 的幂、是否含极端小 batch。</li>
+<li>位级比较口径：声明比较的是完整输出张量还是抽样切片，是否允许 NaN 的位模式差异。</li>
+<li>聚合方式：声明 geomean 的样本集合（是否含 <span>s &lt; 1</span> 的候选）、fast_p 的 p 档位、faster rate 的阈值。</li>
+<li>硬件与驱动：记录 GPU 型号、SM 数、驱动与 CUDA 版本，因为 BI 行为随 block 切分变化。</li>
+</ul>
+<p>这份清单的价值在于把“19/83”与“67.6%→91.9%”从叙事数字变成可重跑的量。任何缺失项都会让跨论文比较失效：例如未声明 TF32 状态，则 speedup 可能被高估；未声明 <span>B</span> 的基数，则 BI pass rate 可能被高估——因为小 <span>k</span> 天然更容易通过。</p>
+<p>代价维度：完整执行这份清单意味着每个候选的评测成本是普通基准的数倍，编译时间、运行次数、主机侧比对共同构成 token 之外的真实开销。在 agent 优化循环里，这意味着每轮反馈的时延上升，进而压缩了可探索的候选数量。论文用 successive acceptance gates 缓解这一点：结构风险高的候选在静态分析阶段就被拒，不进入昂贵的动态校验与性能基准，从而把 <span>k</span> 次运行的代价只花在有希望的候选上。</p>
+<p>具体例子：若某候选在静态依赖分析中被判定为沿 batch 维做跨行归约且未固定归约顺序，它会在性能基准之前被拒，反馈回 agent 的是“结构风险”而非“跑得慢”。这避免了为一个大概率 BI 失败的候选支付 <span>k</span> 次运行与位级比对的成本，是把测量口径嵌入优化循环的工程判断。</p>
+
+<h3>六 · 哪些数字不可比，以及为什么</h3>
+<p>第一类不可比：跨基线的 speedup。对 eager 的 3× 与对 cuBLAS 的 1.2× 不在同一尺度上，前者包含融合与 kernel launch 消除的收益，后者只剩 tile 与调度层面的收益。论文的 91.8% geomean 保留率是相对其自身基线口径的，换基线后这个比例不成立。</p>
+<p>第二类不可比：跨 batch 上下文集合的 BI pass rate。67.6% 与 91.9% 是在论文给定的 <span>B</span> 上测得的；若第三方用更大的 <span>k</span> 或含非 2 的幂的上下文，基线通过率会下降，提升幅度也会变化。BI pass rate 不是 kernel 的内禀属性，而是“kernel × 上下文集合 × 硬件”的联合属性。</p>
+<p>第三类不可比：跨 dtype 的数值一致性结论。fp32 下位级一致的 kernel 在 bf16 下可能因累加器舍入模式不同而出现差异；反之 bf16 下因精度粗可能掩盖 fp32 下暴露的末位差异。因此“BI 通过”必须带 dtype 前缀。</p>
+<p>第四类不可比：跨硬件的性能与 BI。SM 数与 shared memory 容量改变 tile 切分，进而改变归约树，性能与位级一致性同时漂移。论文明确局限：跨硬件、跨 dtype、跨框架迁移未验证。</p>
+<p>第五类不可比：faster rate 的阈值。accept 用 <span>s ≥ 1</span>，若他文用 <span>s ≥ 1.05</span>，同一批候选的 faster rate 会显著不同。工程判断：引用 faster rate 时必须附带阈值与分母基线，三者缺一不可。</p>
+<p>这些不可比性的共同根源是：BI 不是单一数值指标，而是一个带上下文参数的谓词。把它压缩成一个百分比，必然丢失 <span>B</span>、dtype、硬件、基线四个维度。论文的贡献之一正是把这个谓词显式化为验收门，而本部分的口径工作是把门的参数写清楚，让 19/83、67.6%→91.9%、91.8% 这三个数字各自落在可核查的坐标上，而不是被当作跨论文可比的通用分数。</p>
+
+<h3>口径的边界：BI 门通过率与几何均值保留率不可跨条件外推</h3>
+<p>该方案的评测口径有一处结构性错位：BI 通过率与加速比是在两个不同阶段测得的。静态依赖分析与动态位一致性校验作为 successive acceptance gates 插在性能基准测试之前，被拒的候选根本不进入计时环节。于是 67.6%→91.9% 的 BI 通过率提升与“保留 91.8% 基线几何均值加速比”这两个数字，分母并不相同——后者只在通过门禁的候选子集上取几何均值。若某 agent 框架的候选池里高风险结构占比高，门禁淘汰量大，剩余子集的几何均值会被幸存者偏差抬高，看起来“几乎不掉性能”，实际是分母缩水。可核查的口径必须同时报告：候选总数、门禁拒绝数、进入计时的候选数，以及几何均值是对全集还是对通过子集取的。缺失这四项，91.8% 无法与其他系统比较。</p>
+<div class="formula">$$\text{geomean}=\exp\!\Big(\frac{1}{|\mathcal{S}|}\sum_{i\in\mathcal{S}}\ln \frac{T_{\text{base},i}}{T_{\text{agent},i}}\Big),\quad \mathcal{S}=\{i:\text{BI}_i\land\text{pass}_i\}$$</div>
+<p>失效条件集中在 dtype 与 shape 两个维度。位一致性校验只在给定输入分布上成立：若基准 shape 集未覆盖生产中的极端 batch 组合（例如 batch=1 与 batch=64 混跑、变长序列 padding 差异），动态校验通过并不蕴含跨 batch context 的位不变。TF32 与 fp16 累加顺序对 batch 分块敏感，基线若未统一开启 TF32 或未用论文指定库，加速比会被系统性高估；反过来，BI 感知生成常要求固定归约顺序，代价是牺牲部分并行度——这部分时延损失在门禁阶段不可见，只在端到端回归里暴露。</p>
+<table class="mini"><thead><tr><th>口径项</th><th>可核查要求</th><th>不可比风险</th></tr></thead><tbody><tr><td>BI 通过率</td><td>声明校验所用 batch context 集合</td><td>shape 覆盖不同则分母不同</td></tr><tr><td>几何均值加速比</td><td>声明 S 为全集或通过子集</td><td>幸存者偏差抬高数值</td></tr><tr><td>基线</td><td>固定 eager/compile/库版本与 TF32 开关</td><td>弱基线虚高 speedup</td></tr></tbody></table>
+<p>工程判断落在门禁顺序上：把 BI 校验放在计时之前，省下的是无效 benchmark 的 GPU 时延与 token，代价是放弃了对“快但不 invariant”候选的性能画像——这类候选恰恰是 reward hacking 的高发区，agent 可能生成在特定 batch 下数值漂移但计时更优的 kernel。稳妥做法是对被拒候选抽样补测时延并记录漂移幅度，使拒绝理由可审计，而不是让门禁成为一个只输出布尔值的黑箱。</p>
+<p class="paper-line">对应：papers/paper-2610-36623 · 第 2/9 部分</p>

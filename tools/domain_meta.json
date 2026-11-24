@@ -1,0 +1,9 @@
+{
+ "cuda": {
+  "name": "CUDA Kernel Agent 方法与工程部署",
+  "name_en": "CUDA Kernel Agents",
+  "tagline": "从「能写」到「可信、能上线」：GPU kernel agent 的评测、反馈、RL 与生产账本",
+  "focus": "GPU kernel 生成的基准与可信评测、agent 脚手架与执行/硬件反馈、多轮 RL 与可验证奖励、正确性 oracle 与形式验证、生产端到端收益、Triton/CuTe/PTX 与 NCU/SASS profile",
+  "short": "CUDA Kernel Agent"
+ }
+}

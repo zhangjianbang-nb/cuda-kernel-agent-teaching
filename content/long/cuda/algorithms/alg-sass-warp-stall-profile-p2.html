@@ -1,0 +1,39 @@
+<h3>一 · 反汇编锚点：从 cubin 到可对齐的 SASS 序列</h3>
+<p>流动的第一步不是“看 profile”，而是先把二进制变成 agent 能读的文本坐标。输入是编译产物 cubin（或 fatbin 中的对应架构段）与 kernel 符号名；动作是 <code>cuobjdump -sass</code> 反汇编，输出是一段带 PC 偏移、操作码、操作数、谓词的指令序列，同时从 ELF 元数据里取出每线程寄存器数、shared memory 用量、local memory 帧大小。这一步的代价是确定性的：反汇编本身是静态的，不触发重放，耗时随 kernel 体积线性增长；真正的成本在“可读性”——模板实例化与 aggressive inline 会把源码行号压成一条 <code>/*addr*/</code> 注释甚至完全丢失，导致后续 stall 热点回填时坐标漂移。</p>
+<p>工程上必须在这一步就建立稳定的对齐键：以 PC 偏移（而非源码行号）作为唯一主键，把每条 SASS 指令连同其寄存器读写集合、访存宽度、是否分支目标一起结构化成记录。这样即使行号映射失真，PC 仍然是 ncu 采样与 SASS 行之间不会错的连接点。寄存器数在这里就要落账，因为它是后面判断 occupancy 上限的输入：</p>
+<div class="formula">$$\text{RegPressure}=\frac{\text{regs per thread}\times\text{threads per block}}{\text{regs per SM}}$$</div>
+<p>举例：一个以 <code>float4</code> 向量化访存为主的 kernel，反汇编后若看到寄存器数从预期的 40 余档跳到 60 以上，且出现 <code>LDL/STL</code>（local memory）指令，就说明编译器在展开循环时把活跃值挤出了寄存器文件——这条信息在源码里完全不可见，源码只有一行 <code>for</code> 循环。这一步的输出因此不是“指令清单”，而是“指令清单 + 资源账本 + PC 索引”，三者缺一，后面的 stall 归因就无从落地。</p>
+
+<h3>二 · PC 采样聚合：把 stall 周期摊到指令坐标上</h3>
+<p>第二步的输入是同一个 cubin 与一次受控的 ncu 采集配置，核心是 <code>smsp__pcsamp</code> 系列计数器：它在 SM 子分区层面按程序计数器采样 warp 的 stall 状态，输出的是“某个 PC 上、某类 stall 占了多少采样周期”。动作是把原始采样按 PC 聚合，得到每个 PC 的 stall 周期向量；输出是一张 PC → stall 类型分布的表，stall 类型至少区分 long scoreboard（等全局访存返回）、MIO throttle（访存/特殊功能单元队列拥塞）、barrier（同步等待）、not selected（warp 就绪但调度器选了别人）。</p>
+<p>聚合后的第一件产物是占比，而不是绝对周期——绝对周期随 kernel 规模与采样率漂移，占比才是可跨 kernel 比较、可注入 prompt 的信号：</p>
+<div class="formula">$$\text{StallShare}_k=\frac{\sum_{pc}\text{cycles}_k(pc)}{\sum_{pc}\sum_{k'}\text{cycles}_{k'}(pc)}$$</div>
+<p>代价在这里第一次变得尖锐：PC 采样需要 ncu 对 kernel 做重放（replay），单 kernel 剖析成本高，且采样率与 kernel 时长共同决定统计噪声；短 kernel 上 stall 占比的方差足以让 agent 误判主因。另一个代价是架构耦合：不同 SM 代际的 stall 分类口径与 SASS 编码都不同，同一份 PC 表不能跨代复用，反馈块必须绑定架构标签。举例：一个 reduction kernel 若 <code>barrier</code> 类占比显著高于 long scoreboard，说明瓶颈在同步收敛而非访存延迟，此时“加预取”是错的动作；反之若 long scoreboard 集中在少数 <code>LDG</code> 上，则预取与提高并行度才是对的。这个判断只有把 stall 类型摊到 PC 上才成立，源码级的“这行看起来慢”给不出类型。</p>
+
+<h3>三 · 热点映射与指令混合：从 PC 表回到 SASS 行</h3>
+<p>第三步把前两步的输出做连接：以 PC 为键，把 stall 周期向量贴回 SASS 指令序列，标注每条指令承载的主导 stall 类型，并按基本块汇总。输出是一组“热点 SASS 片段”，每段包含若干条指令、其 stall 类型、以及该段内的指令混合比例（LDG/FFMA/BAR 等操作码计数）。指令混合是判据而非装饰：FFMA 密集而 stall 以 not selected 为主，指向的是指令级并行不足或 warp 数不够；LDG 密集且 long scoreboard 高，指向访存延迟未被覆盖；BAR 密集且 barrier 高，指向同步结构本身。</p>
+<p>伪代码思路如下（不落实现细节，只表达流动）：对每个基本块，取块内各 PC 的 stall 向量求和得到块级分布，取块内操作码直方图得到混合向量，若块级主导 stall 占比超过阈值且块内指令数达到可读长度，则将该块标记为热点并截取为反馈片段；否则合并到相邻块。截断长度是显式代价：片段太长会稀释 prompt 的有效信息并推高 token 消耗，太短则丢失指令依赖上下文，工程上以“能看出一条依赖链”为下限。</p>
+<p>这一步的正确性代价最典型：SASS 与源码行号映射不精确，模板与内联场景下反馈块可能指向错误位置，agent 据此改错行是真实风险。缓解手段不是提高映射精度（那不可控），而是让反馈块以 PC 与指令文本自证——agent 看到的是指令本身而非行号，动作建议必须能由指令语义支撑。举例：反汇编显示循环被展开成 8 条 <code>FFMA</code>，紧随其后出现 <code>STL</code> 与 <code>LDL</code>，块级 stall 以 long scoreboard 为主——这组证据同时说明“展开发生了”“寄存器溢出到 local 了”“溢出访存正在拉长 scoreboard 等待”，三者互相印证，比任何单一线索都可靠。这正是源码级反馈看不到的编译器真实决策。</p>
+
+<h3>四 · 占用率判据：寄存器账本与 occupancy 的耦合</h3>
+<p>第四步是横向校验：把第三步的热点结论与第一步的寄存器账本对照，判断低效是否源于寄存器限制导致的 occupancy 下降，而非指令本身。输入是每线程寄存器数、每块线程数、SM 寄存器总量；输出是一个占用率上界估计与一句判据——“是否受寄存器限制”。这一步的必要性在于 stall 类型会骗人：long scoreboard 高既可能是访存延迟未被覆盖，也可能是并发 warp 太少、延迟根本藏不住，而后者根因在寄存器。</p>
+<p>代价体现在动作空间上：若判据指向寄存器限制，可选动作是降展开、缩块大小、或改写数据布局以降低活跃值，每一个都牵动正确性与性能两侧——降展开可能损失指令级并行，缩块可能削弱 shared memory 复用。举例：一个 GEMM 变体在反汇编中寄存器数偏高、块内 <code>FFMA</code> 密集但 stall 以 not selected 与 long scoreboard 混合为主，此时“再加预取”收益有限，因为 warp 数已被寄存器压住；正确动作是先释放寄存器压力再看 stall 分布是否迁移。这个判断必须由账本与 stall 分布联合给出，单看任一侧都会误判。</p>
+
+<h3>五 · 反馈块封装：把证据压成可注入的下一轮输入</h3>
+<p>第五步是封装：把“热点 SASS 片段 + stall 类型 + 建议动作”组织成一个反馈块，注入下一轮 prompt。输入是前四步的全部结构化产物；输出是一段受 token 预算约束的文本，其结构必须让 agent 能区分“证据”与“建议”——证据是 PC、指令文本、stall 占比、寄存器数，建议是由 stall 类型映射出的动作候选（long scoreboard 高 → 预取或增大并行；barrier 高 → 减少同步；MIO throttle 高 → 调整访存宽度或队列压力）。</p>
+<p>封装阶段的代价是 token 与信噪比：每个热点片段都携带指令文本，片段数一多，prompt 里证据的比例就会挤占任务描述与历史轮次的空间；同时建议动作若给得过窄，会把 agent 锁进单一路径，给得过宽则等于没给。工程判断是让建议以“类型 → 动作族”的形式出现，并附上该判断所依赖的 stall 占比阈值条件，使 agent 能在证据变化时自行改选动作。举例：反馈块写明某基本块 barrier 占比居首、块内含 <code>BAR.SYNC</code> 且其前后各有一串 <code>LDS</code>，建议族为“减少同步点或改双缓冲”，agent 据此重写同步结构而非盲目加预取——这正是 stall 类型直接指导动作的价值所在。</p>
+<p>最后落在机制上：这条流动的可靠性不取决于任何单步的精度，而取决于 PC 作为主键在反汇编、采样聚合、热点映射、占用率校验、反馈封装五步之间不被替换；一旦某步改用源码行号做连接，模板与内联就会把证据链切断，反馈块指向错误位置而 agent 无从察觉。跨代不可复用则是另一条硬约束：SASS 编码与 stall 分类随架构变化，反馈块必须携带架构标签，否则上一代的有效证据在下一代就是噪声。</p>
+
+<h3>从反汇编到反馈块：SASS 级 stall 剖析的边界与系统代价</h3>
+<p>把 SASS 剖析嵌入 agent 的一轮迭代，真正要拆的不是“怎么跑 ncu”，而是每一步的产物能否被下一轮 prompt 消费、以及在哪一步开始失真。第一步是 <code>cuobjdump -sass</code> 反汇编 cubin：输入是编译产物，输出是指令序列、每条指令的寄存器操作数与每线程寄存器数。这里的代价是静态的——反汇编本身不重放、不耗 GPU，但它只给出“编译器最终决定”，不含运行时行为。紧接着 <code>ncu</code> 以 <code>smsp__pcsamp</code> 采集 warp stall 采样与指令计数，按 PC 聚合周期，得到每类 stall 的周期分布。这一步的代价是系统性的：PC 采样需要 replay kernel，单 kernel 剖析成本随采样窗口与 replay 次数上升，且 replay 会改变缓存与调度状态，采样到的 stall 分布是“被观测扰动过的”分布。把两者对齐时，用 <span class="formula">$$\text{StallShare}_k=\frac{\sum_{pc}\text{cycles}_k(pc)}{\sum_{pc}\sum_{k'}\text{cycles}_{k'}(pc)}$$</span> 把 long scoreboard、MIO throttle、barrier、not selected 各自的占比算出来，再与指令混合（LDG/FFMA/BAR 比例）并置，才能判断热点是访存等待、共享内存吞吐受限还是同步栅栏。</p>
+<p>这一步的失效条件集中在“映射”上。SASS 与源码行号的对应在模板实例化、内联展开、循环展开后基本不可靠：编译器可以把一个源码循环摊成八条 FFMA，也可以把一段访存合并成单条 LDG，PC 落在哪条 SASS 上并不告诉你它来自哪一行源码。反馈块若强行标注源码位置，agent 下一轮就会去改一个与热点无关的变量。更稳的做法是只回灌“热点 SASS 片段 + stall 类型 + 建议动作”，把源码定位交给 agent 自己用寄存器数与指令形态反推。另一个失效条件是寄存器压力判据：<span class="formula">$$\text{RegPressure}=\frac{\text{regs per thread}\times\text{threads per block}}{\text{regs per SM}}$$</span> 只有在接近 1 时才说明 occupancy 被寄存器卡住；若该值不高而 long scoreboard 占比高，问题在访存延迟而非占用率，此时“减寄存器”是错误动作。不同架构的 SASS 指令集与 stall 分类口径不同，同一份反馈块跨代复用会把 agent 引向不存在的指令形态。</p>
+<p>代价还体现在反馈块的 token 预算上。一段热点 SASS 片段动辄数十条指令，加上 stall 类型与建议动作，单块轻松吃掉数百 token；若每轮都注入多块，prompt 长度会挤压真正需要 agent 推理的空间。工程上的折中是只回灌占比最高的前若干类 stall 对应的 SASS 窗口，并用指令混合比例做压缩摘要，而不是把整段反汇编贴进去。具体例子：某 kernel 反汇编显示循环体被展开为八条 FFMA 且伴随 STL/LDL 指令，ncu 采样显示 long scoreboard 占比居首、寄存器数偏高使 RegPressure 逼近上限——此时正确动作是降低展开因子或改用更小的 tile 以释放寄存器，而不是去调 shared memory 的 bank 排布；若反馈块错误地把热点标到源码的循环头上，agent 会反复调 tile 尺寸却不动展开策略，迭代在原地打转。</p>
+<p>因此这套机制的适用边界是：它擅长回答“编译器做了什么、运行时卡在哪类资源上”，不擅长回答“这段 SASS 对应哪行源码”。当 kernel 结构简单、无深层模板与内联时，PC 到源码的映射尚可；一旦进入 CuTe 模板或大规模内联，映射误差会主导反馈质量。系统代价的另一个来源是剖析的串行性——ncu replay 与反汇编都在单 kernel 粒度上做，无法与多 kernel 流水并行，agent 的每轮迭代因此被剖析时延拉长。工程判断是：把 SASS 反馈当作“动作选择器”而非“定位器”，只在 stall 占比与指令形态给出明确矛盾（如高 barrier 占比配高 BAR 指令密度）时才注入，其余情况用源码级反馈加寄存器数这一标量就够了。</p>
+
+<h3>当 SASS 反馈开始说谎：采样重放、行号漂移与跨代失效</h3>
+<p>这条流水线的每一步都在引入不可逆的信息损耗，而损耗会沿链路放大成错误的动作建议。第一步 <code>cuobjdump -sass</code> 本身是静态的：它给出指令序列与每线程寄存器数，却看不到运行时分支走向；寄存器数一旦超过阈值，<code>RegPressure</code> 逼近 1 时 occupancy 被硬性截断，此时任何“增大并行”的建议都是空话——并行度已被寄存器预算锁死。第二步 <code>ncu</code> 的 <code>smsp__pcsamp</code> 采样需要重放 kernel，单次剖析的时延与显存开销随采样粒度上升，且重放会改变缓存与调度状态，采样到的 stall 分布并非原始负载下的分布；对短 kernel，采样周期数不足，<code>StallShare</code> 的统计噪声足以让 long scoreboard 与 MIO throttle 的排序翻转。</p>
+<p>第三步的映射是最脆弱的环节。模板实例化、<code>__forceinline</code> 与循环展开会让一条源码行对应数十条 SASS，PC 到源码行的反查在优化后基本失效，反馈块指向的位置可能落在展开体的中段而非真正的热点。更隐蔽的是架构绑定：不同 SM 代的 SASS 编码、指令延迟与 scoreboard 深度不同，同一段“long scoreboard 高”的结论迁移到新卡上可能对应完全不同的成因，跨代复用反馈等于用旧地图导航。</p>
+<div class="formula">$$\text{StallShare}_k=\frac{\sum_{pc}\text{cycles}_k(pc)}{\sum_{pc}\sum_{k'}\text{cycles}_{k'}(pc)},\quad \text{RegPressure}=\frac{\text{regs per thread}\times\text{threads per block}}{\text{regs per SM}}$$</div>
+<table class="mini"><thead><tr><th>失效条件</th><th>表现</th><th>系统代价</th></tr></thead><tbody><tr><td>采样不足</td><td>StallShare 排序抖动</td><td>重放时延、误导动作</td></tr><tr><td>行号漂移</td><td>反馈指向展开体中段</td><td>agent 改错代码、多轮浪费 token</td></tr><tr><td>寄存器饱和</td><td>RegPressure→1，occupancy 封顶</td><td>并行建议无效，编译期溢出到 local</td></tr><tr><td>跨代迁移</td><td>SASS 编码与延迟失配</td><td>反馈不可复用，需重新剖析</td></tr></tbody></table>
+<p>工程判断因此落在“反馈块必须自带置信标记”上：当 PC 采样覆盖的周期数低于阈值、或寄存器数已触及 occupancy 上限时，反馈块应降级为“疑似”而非“确诊”，并把 <code>cuobjdump</code> 得到的静态指令混合（LDG/FFMA/BAR 比例）作为交叉验证——静态比例与动态 stall 占比矛盾时，优先信静态，因为前者不受重放扰动。对模板密集的 kernel，宁可放弃行号映射、只给“热点 PC 区间 + stall 类型”，也不要给出一个精确但错误的源码行。</p>
+<p class="paper-line">对应：algorithms/alg-sass-warp-stall-profile · 第 2/8 部分</p>

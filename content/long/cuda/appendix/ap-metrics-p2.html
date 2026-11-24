@@ -1,0 +1,73 @@
+<h3>二 · 字段字典：分子分母必须成对出现</h3>
+<p>速查表的第一性问题是“这个数字的分子是什么、分母是什么”。任何指标在落表时都必须写成三元组 <code>(字段名, 分子, 分母)</code>，缺一项即视为口径不完整，不得进入报表。工程上最常见的错误不是算错，而是同一列里混入了不同分母：有人用“算子自身耗时”做分母，有人用“端到端含 launch 与同步的耗时”做分母，两者相差一个数量级时，加速比会凭空翻倍。</p>
+<p>把口径写成可执行的形式，可以定义一个归一化函数：</p>
+<div class="formula">$$\text{ratio} = \frac{T_{\text{ref}}(x)}{T_{\text{impl}}(x)},\quad T = \text{median}\big(\{t_i\}_{i=1}^{n}\big),\ i \in [w+1,\, w+n]$$</div>
+<p>其中 <code>w</code> 是 warmup 次数，<code>n</code> 是计时重复次数，前 <code>w</code> 次全部丢弃。关键在于 <code>T_ref</code> 与 <code>T_impl</code> 必须使用同一 <code>w</code>、同一 <code>n</code>、同一计时边界（是否含 <code>cudaDeviceSynchronize</code>、是否含内存分配、是否含 autotune 首调用）。速查表要求每个字段显式声明这四个开关，任一开关不一致即判定为不可比。</p>
+<p>代价层面：把计时边界扩到端到端，会把 launch 开销与 Python 侧调度纳入分子，对小 kernel 而言这部分可占主导，导致加速比被系统性压低；反之把边界缩到纯 kernel 内，会掩盖真实部署收益。因此速查表规定：<strong>kernel 级指标与端到端指标分列两栏，禁止跨栏比较</strong>。具体例子：一个 elementwise 融合算子，kernel 内耗时从 40 单位降到 25 单位，但端到端因多一次同步从 60 单位升到 70 单位——两栏各自如实记录，不做加权合成。</p>
+
+<h3>三 · 阈值表：什么数字才算“过”</h3>
+<p>阈值不是拍脑袋的常数，而是与基线绑定的一对上下界。速查表对每类指标给出“合格线”与“可疑线”两条：合格线用于判定是否值得进入下一轮优化，可疑线用于触发人工复核（通常是测量伪影或作弊迹象）。判定逻辑写成伪代码思路如下：</p>
+<ul>
+<li>读入 <code>impl_time</code>、<code>ref_time</code>、<code>sol_time</code>（roofline 下界）三个量；</li>
+<li>若 <code>impl_time &lt; sol_time × (1 - ε)</code>，标记 <code>SUSPICIOUS_UNDER_SOL</code>，因为任何实现都不应显著快于硬件下界，ε 取测量噪声量级；</li>
+<li>若 <code>impl_time / ref_time</code> 落在合格线内且正确性通过，标记 <code>PASS</code>；</li>
+<li>若正确性用例通过率不足全量，无论多快一律 <code>FAIL</code>。</li>
+</ul>
+<p>SOL 利用率的口径必须写清分母取的是哪一层下界：是 HBM 带宽下界、还是含片上缓存复用后的有效下界、还是 roofline 拐点处的算力下界。三者数值不同，混用会让“利用率”出现大于 1 的情形。速查表要求字段名后缀标注下界来源，例如 <code>sol_util_hbm</code> 与 <code>sol_util_compute</code> 分开登记。</p>
+<p>代价：阈值收紧会提高复核成本。以可疑线为例，每触发一次人工复核需要重跑 profile 并比对 SASS，单次复核的机时与人力开销远高于自动判定，因此可疑线应设在“噪声不可能达到”的位置，而不是设在“期望性能”的位置。具体例子：某 reduction kernel 报告的时间低于按 HBM 带宽估算的下界，触发 <code>SUSPICIOUS_UNDER_SOL</code>，复核发现计时循环里输入张量被编译器提升到循环外未重新读取，属于测量伪影而非真实加速。</p>
+
+<h3>四 · 统计口径：中位数、离散度与置信区间</h3>
+<p>速查表统一规定用中位数而非均值作为点估计，理由是 GPU 计时分布右偏：偶发的调度抖动与时钟降频会拉长尾部，均值被少数长尾样本污染。同时必须报告离散度，否则中位数无法判断可信度。采用分位数区间作为非参数置信区间：</p>
+<div class="formula">$$\text{CI}_{1-\alpha} = \big[\,q_{\alpha/2},\ q_{1-\alpha/2}\,\big],\quad \text{spread} = \frac{q_{0.75}-q_{0.25}}{q_{0.50}}$$</div>
+<p>字段上对应 <code>median</code>、<code>p10</code>、<code>p90</code>、<code>iqr_ratio</code> 四个槽位。<code>iqr_ratio</code> 超过约定上限时，该次测量标记为 <code>UNSTABLE</code>，其结果不得用于跨实现比较，只能作为趋势参考。这条规则直接约束了多轮优化的判据：相邻两轮的中位数差异若落在各自区间之内，不得宣称“有提升”。</p>
+<p>重复次数 <code>n</code> 的选取与离散度挂钩：先做小样本预跑估计 <code>iqr_ratio</code>，离散度大则加大 <code>n</code>，直到区间半宽相对中位数降到可接受比例。这带来明确的时延代价：每个候选实现都要付出 <code>w+n</code> 次调用的墙钟时间，在 autotune 搜索空间大时，计时开销本身会超过编译开销。具体例子：一个候选配置在 <code>n</code> 较小时 <code>iqr_ratio</code> 偏高，扩容 <code>n</code> 后区间收窄，此前被判为“快”的配置实际与基线区间重叠，属于噪声。</p>
+<p>另一个必须写进速查表的字段是 <code>clock_state</code>：记录测量期间的时钟与功耗状态是否锁定。未锁定时，前后两次测量的中位数不可直接相减。此项不产生额外机时，但需要在报表里作为布尔列存在，缺失即视为口径不完整。</p>
+
+<h3>五 · 时间类字段：编译、autotune 与首调用</h3>
+<p>时间字段分三类，速查表要求全部单列，禁止合并成“总耗时”：<code>compile_time</code>（从源码到可加载模块）、<code>autotune_time</code>（搜索配置并计时择优）、<code>first_call_time</code>（含惰性初始化、上下文创建、JIT 链接）。稳态 <code>steady_time</code> 只统计 warmup 之后的重复调用。三者相加才是用户真实感知的首次可用时延，但优化决策要分别看：编译时间影响迭代速度，autotune 时间影响部署冷启动，稳态时间影响吞吐。</p>
+<p>口径上有一个易错点：autotune 内部的计时是否计入 <code>autotune_time</code> 的分子。速查表规定计入，因为搜索过程消耗的墙钟时间与 GPU 机时是真实成本；但要在字段旁标注搜索空间规模，否则不同实现之间的 autotune 时间不可比。伪代码思路：</p>
+<ul>
+<li><code>t0 = now()</code>；遍历候选配置，每个配置执行 <code>w+n</code> 次并取中位数；</li>
+<li>选出中位数最小者，记录其配置哈希；</li>
+<li><code>autotune_time = now() - t0</code>，同时写入 <code>num_configs</code> 与 <code>n</code>；</li>
+<li>后续稳态测量复用该配置，不得再次触发搜索。</li>
+</ul>
+<p>代价非常直接：搜索空间翻倍，<code>autotune_time</code> 近似线性增长，而稳态收益往往只有个位数百分比。因此在速查表中设置一条工程判断：若 <code>autotune_time</code> 相对 <code>steady_time</code> 的比值超过约定阈值，且稳态提升幅度小于测量区间的半宽，则该 autotune 视为负收益，应退回固定配置。具体例子：某 matmul 变体在扩大 tile 搜索空间后稳态中位数改善落在区间内，但冷启动时间显著上升，按此规则不予采纳。</p>
+
+<h3>六 · 资源类字段：显存与带宽的口径</h3>
+<p>显存占用必须区分 <code>peak_alloc</code>（进程级峰值分配）、<code>peak_reserved</code>（缓存分配器保留量）与 <code>workspace</code>（kernel 自身临时缓冲）。三者常被混为一谈，导致“显存占用降低”的结论无法复现。速查表规定：比较两个实现时，只允许比较同名字段；<code>workspace</code> 的变化要单独说明是否随问题规模线性增长。</p>
+<p>带宽类指标的分母是有效字节数，而不是理论峰值乘以时间。有效字节数要按实际访存模式统计：融合算子若把两次读一次写合并为一次读一次写，分母随之改变，此时带宽利用率上升不代表硬件被更好地使用，而是工作量定义变了。速查表因此要求每个带宽字段附带 <code>bytes_model</code> 说明，取值为“按张量元素数×元素宽度”或“按实测计数器”，二者不可混用。公式上：</p>
+<div class="formula">$$\text{bw_util} = \frac{B_{\text{eff}}}{t_{\text{median}}\cdot \text{BW}_{\text{peak}}}$$</div>
+<p>其中 <code>B_eff</code> 的口径来源必须与 <code>bw_util</code> 同栏登记。代价在于：用实测计数器获取 <code>B_eff</code> 需要额外的 profile 轮次，增加机时；用解析模型则零成本但会系统性高估或低估。工程判断是——正确性判定与横向排名用解析模型保证可比性，单点深挖时再用计数器校正。</p>
+<p>具体例子：一个归一化算子把读写合并后，解析模型下的 <code>B_eff</code> 减半，<code>bw_util</code> 数值上升，但实际 DRAM 事务数并未同比下降，说明部分流量被缓存吸收。速查表要求此时在备注列写明“util 上升源于工作量重定义”，避免被误读为优化成果。</p>
+<p>最后一条硬性口径：所有资源字段必须与问题规模绑定登记，脱离规模的显存与带宽数字不进入速查表。规模变化时字段整体重测，不允许按比例外推。</p>
+
+<table class="mini">
+<thead>
+<tr><th>字段</th><th>分子</th><th>分母</th><th>必带开关</th><th>阈值动作</th></tr>
+</thead>
+<tbody>
+<tr><td>speedup</td><td>T_ref 中位数</td><td>T_impl 中位数</td><td>同 w/n、同计时边界</td><td>区间重叠不判提升</td></tr>
+<tr><td>sol_util_hbm</td><td>B_eff</td><td>t·BW_peak</td><td>bytes_model 标注</td><td>低于下界触发复核</td></tr>
+<tr><td>pass@k</td><td>k 次内通过用例数</td><td>用例总数</td><td>采样温度、k 值</td><td>非全量通过即 FAIL</td></tr>
+<tr><td>latency_p50</td><td>—</td><td>单次调用墙钟</td><td>含/不含同步</td><td>iqr_ratio 超限标 UNSTABLE</td></tr>
+<tr><td>peak_alloc</td><td>—</td><td>进程峰值</td><td>绑定问题规模</td><td>跨规模不外推</td></tr>
+<tr><td>compile_time</td><td>源码到模块</td><td>—</td><td>工具链版本</td><td>与稳态分列</td></tr>
+<tr><td>autotune_time</td><td>搜索全程墙钟</td><td>—</td><td>num_configs、n</td><td>负收益则退回固定配置</td></tr>
+</tbody>
+</table>
+
+
+<h3>速查表的失效边界：口径字段在什么条件下会反噬</h3>
+<p>速查表的价值在于“照着填就能对齐”，但它的危险也在于此：一旦字段被当成无条件契约，口径就会在边界条件下反噬。以加速比为例，速查表规定分子是基线耗时、分母是候选耗时，且两者必须同机、同输入、同精度、同 warmup 与重复次数。失效条件出现在基线本身不稳定时——若基线 kernel 的耗时分布是双峰的（例如受 L2 命中率切换影响），中位数会落在两峰之间的空档，此时加速比的分母失去物理意义。工程判断是：速查表必须附带一条“分布诊断”前置字段，要求记录 p10/p50/p90 的离散度；当 p90/p10 超过阈值时，加速比字段标记为“不可比”，而不是照算。代价是每次评测多一次分位数统计与一次标记写入，属于毫秒级开销，但能阻止一批“中位数幻觉”进入排行榜。另一个典型失效是 SOL 利用率：分子用实测吞吐、分母用 roofline 峰值，而峰值依赖显存带宽与算力中较小者；当 kernel 是混合负载（部分 compute-bound、部分 memory-bound）时，单一 roofline 分母会系统性高估利用率，速查表应要求同时记录 bandwidth-SOL 与 compute-SOL 两个分母，否则该字段只在纯负载下可信。</p>
+<p>阈值字段的边界更隐蔽。pass@k 的速查表口径是“k 次采样中至少一次通过正确性 oracle”，但 oracle 本身的严格度决定了这个字段的上限：若 oracle 只做逐元素 allclose 而不检查 NaN/Inf 传播、不检查非连续 stride 下的别名行为，那么 pass@k 会在“数值近似正确但语义错误”的样本上虚高。失效条件是 oracle 的容差与 dtype 绑定——fp16 下 allclose 的相对容差若沿用 fp32 的值，会放过累积误差；速查表应把容差写成 (dtype, atol, rtol) 三元组而非单值。系统代价体现在 oracle 调用次数：k 次采样意味着 k 次前向 + k 次比对，若 oracle 含 CPU 端参考实现，单次比对可能是 GPU 计算的数倍时延，此时 pass@k 的评测成本由 oracle 而非 kernel 主导。具体例子：一个 reduction kernel 在 k=8 时全部通过 allclose，但其中 3 次在 stride 非连续的输入上产生越界读——这类错误不会被数值比对捕获，只能靠速查表里独立的“边界输入集”字段兜底。</p>
+<p>显存占用与编译/autotune 时间这两个字段的边界在于“测量点”而非“数值”。速查表要求显存占用取峰值而非稳态，峰值必须在 warmup 之后、正式重复之前用一次显式同步采样；失效条件是 caching allocator 的碎片保留——峰值采样若发生在多次不同 shape 的调用之后，allocator 可能保留已释放的块，使峰值虚高，从而让一个本可通过的配置被判为超限。编译与 autotune 时间则必须区分“首次编译”“缓存命中”“autotune 搜索”三段，速查表若只留一个字段，会把 autotune 的搜索开销摊进部署时延，导致端到端收益被低估。代价是字段数量增加带来的记录负担：每配置多记两个时间戳与一个 allocator 状态标志，属于微秒级写入，但要求评测脚本在 autotune 前后各插一次同步点，这会打断流水线重叠，使被测 kernel 的有效吞吐略低于无插桩版本——因此速查表应规定插桩版本与生产版本的耗时分别上报，不得混用同一分母。</p>
+<div class="formula">$$\text{可比性标志} = \mathbb{1}\left[\frac{p90}{p10} \le \tau_{d}\right] \cdot \mathbb{1}\left[\text{oracle.dtype} = \text{kernel.dtype}\right] \cdot \mathbb{1}\left[\text{peak sampled post-warmup}\right]$$</div>
+<table class="mini"><thead><tr><th>字段</th><th>失效条件</th><th>代价</th></tr></thead><tbody><tr><td>加速比</td><td>基线分布双峰，p90/p10 超阈</td><td>每次多一次分位数统计</td></tr><tr><td>SOL 利用率</td><td>混合负载，单 roofline 分母</td><td>需双分母，记录量翻倍</td></tr><tr><td>pass@k</td><td>oracle 容差未绑定 dtype</td><td>k 次 oracle 调用主导时延</td></tr><tr><td>显存峰值</td><td>allocator 碎片保留致虚高</td><td>需同步采样，打断重叠</td></tr></tbody></table>
+
+<h3>速查表自身的失效边界：口径字段何时必须重写</h3>
+<p>速查表把字段、阈值、口径压成一行行可照抄的条目，但它的前提是“测量对象与统计量在同一抽象层”。一旦分母被替换，表就不再可照抄。典型失效条件有三类：其一，pass@k 的分子从“k 次采样中至少一次通过”改为“k 次独立重跑均通过”，两者在正确性 oracle 抖动下差异被放大，必须把 oracle 的判定次数写进字段，否则同一阈值对应不同语义；其二，加速比的基准从“同一框架的参考实现”换成“厂商库最优实现”，分母口径变了，阈值必须重标；其三，SOL 利用率的分母从 roofline 的理论峰值改为实测带宽上限，分子不变而比值系统性下移。判据可写成一条重写条件：若字段 <code>denom_src</code> 与 <code>oracle_calls</code> 任一变更，则该行阈值作废，需重跑 warmup 与重复次数标定。</p>
+<div class="formula">$$\text{valid}(r)=\mathbb{1}\big[\text{denom\_src}_r=\text{denom\_src}_0 \land \text{oracle\_calls}_r=\text{oracle\_calls}_0\big]$$</div>
+<p>系统代价落在三处：重标定一行阈值需要重跑该 kernel 的 warmup 与重复采样，编译与 autotune 时间被计入分母后，单行重标定的 wall-clock 从秒级升到分钟级；若把置信区间算法从 bootstrap 换成 t 分布，需保留原始样本而非仅存中位数，显存与落盘体积随重复次数线性增长；token 侧代价是速查表条目本身变长，agent 每轮注入上下文的字段数增加，挤占可用于代码生成的预算。具体例子：某 Triton kernel 的加速比行原分母为 eager 参考实现，换为 CuTe 实现后同一阈值下通过率口径不再可比，必须整行重写并重跑中位数与区间，而不是在旧表上打补丁。</p>
+<table class="mini"><thead><tr><th>字段</th><th>失效触发</th><th>重写动作</th></tr></thead><tbody><tr><td>pass@k 分子</td><td>oracle 判定次数变更</td><td>重定 k 与 oracle_calls</td></tr><tr><td>加速比分母</td><td>参考实现替换</td><td>重标阈值、重跑 warmup</td></tr><tr><td>SOL 分母</td><td>峰值口径改为实测</td><td>整行重写并保留原始样本</td></tr></tbody></table>
+<p class="paper-line">对应：appendix/ap-metrics · 第 2/5 部分</p>

@@ -1,0 +1,45 @@
+<h3>一 · 现场：一个 nightly 里崩掉的 fused 算子</h3>
+<p>设想一个中等规模的推理服务：模型里有一个自定义的 fused residual-LN-GELU 算子，原本由一位资深 GPU 工程师手写 CUDA，跑在 A100 上，shape 固定为 batch×seq×hidden 的一组常见值。这个 kernel 在离线 benchmark 里比 PyTorch eager 快，但一旦换到 H100、换到不同的 seq 长度、换到 bf16 而非 fp16，它就退化成和 eager 持平甚至更慢。更糟的是，它只支持 contiguous 输入，非 contiguous 时走 fallback 到 PyTorch，正确性没问题，但性能断崖。团队于是面临一个典型的三选一：继续手写第二个变体、改用 Triton 写一个更可移植的版本、或者干脆退回库调用。这三条路正是这篇论文之前 GPU kernel 工程的主流做法，也是 KernelBenchX 要系统量化其失败边界的对象。</p>
+<p>这个现场的关键不是“kernel 写得不够快”，而是“我们不知道它在哪一类任务上、以什么方式失效”。手写 CUDA 的失效是隐性的：编译通过、单测通过、离线加速比漂亮，但在生产 shape 分布上崩掉。库调用的失效是显性的：没有对应算子，只能组合多个 op，多一次显存往返。Triton 的失效介于两者之间：语法可移植，但 autotune 的搜索空间与后端 codegen 的质量决定了它能否逼近手写上限。论文的问题陈述正是从这里切入——LLM-based Triton kernel generation has attracted significant interest, yet a fundamental empirical question remains unanswered: where does this capability break down, and why? 注意这个问句的重心是“where”和“why”，不是“how fast”。这说明在 KernelBenchX 之前，社区已经有了生成能力，缺的是分类学意义上的失效定位。</p>
+<p>把这三条路放在同一张表上，痛点结构就清楚了。手写 CUDA 的开发周期以人日计，性能上限最高但可维护性最差；Triton 的开发周期以小时计，性能上限受 codegen 与 autotune 约束；库调用开发周期接近零，但覆盖率和融合能力受限。三者共同的正确性负担都落在工程师身上：没有统一的 oracle，没有跨硬件的回归口径，没有对“正确但慢”这一类的系统性统计。论文后来给出的一个数字直接命中这一点：46.6% of correct kernels are slower than the PyTorch eager baseline。也就是说，在旧方案的世界里，“正确”与“有用”是两个独立维度，而工程流程往往只验证前者。</p>
+<table class="mini"><thead><tr><th>路线</th><th>开发周期量级</th><th>性能上限来源</th><th>主要正确性风险</th><th>可维护性代价</th></tr></thead><tbody><tr><td>手写 CUDA</td><td>人日</td><td>工程师对 memory hierarchy 与指令级并行的掌控</td><td>shape/dtype 特化导致的静默 fallback</td><td>每个硬件代际、每个 shape 变体都要新分支</td></tr><tr><td>Triton</td><td>小时</td><td>block size、num_warps、num_stages 的 autotune 空间</td><td>mask 边界、归约轴顺序、fp32 累加缺失</td><td>后端 codegen 变更即需重测</td></tr><tr><td>库调用</td><td>接近零</td><td>厂商手调 kernel 与启发式选择</td><td>语义组合错误、非连续输入</td><td>算子缺失时只能拼积木，融合机会丢失</td></tr></tbody></table>
+<p>这张表不是要论证某条路线更优，而是要说明：三条路线各自的失效模式不同，因此需要一个按任务类别切分的评测框架，而不是一个总分排行榜。这正是 KernelBenchX 的 category-aware 设计的动机——176 tasks in 15 categories，用类别而不是均值来解释方差。论文的第一个发现直接把这个动机量化了：Category explains nearly three times more variance in semantic correctness than method (9.4% vs 3.3% explained deviance)。换句话说，在旧方案里，选哪条路线（method）对正确性的解释力，远不如“这是哪一类任务”来得重要。</p>
+
+<h3>二 · 手写 CUDA 的隐性税：特化即负债</h3>
+<p>手写 CUDA 的性能上限来自对硬件细节的显式控制：shared memory 的 bank 排布、warp 内 shuffle 归约、cp.async 的流水、寄存器压力与 occupancy 的取舍。这些控制让一个精心调过的 kernel 能贴着 roofline 走。但代价是每一处控制都绑定了一个假设：假设输入 contiguous、假设 hidden 是 128 的倍数、假设 dtype 是 fp16、假设 SM 数量是 108。任何一个假设被打破，要么走 fallback，要么产生错误结果。工程上通常用模板加 dispatch 来覆盖变体，但模板组合数是乘法增长的：dtype × layout × shape 档位 × 硬件代际。这就是“特化即负债”。</p>
+<p>用公式表达这个负债。设一个算子需要覆盖的配置空间为 <span>𝒞</span>，每个配置的手写与验证成本为 <span>c</span>，则总维护成本近似为：</p>
+<div class="formula">$$\text{Cost}_{\text{maint}} = |\mathcal{C}| \cdot c + \lambda \cdot |\mathcal{C}_{\text{fallback}}|$$</div>
+<p>其中 <span>λ</span> 是 fallback 路径的性能损失系数。<span>|𝒞|</span> 随硬件代际与 dtype 增加而增长，<span>c</span> 包含编写、单测、跨卡回归三部分。这个式子的工程含义是：手写路线的边际成本不随任务复杂度线性增长，而随配置空间组合爆炸。一个 fused 算子从 1 个配置扩到 8 个配置，成本不是 8c，而是 8c 加上 dispatch 逻辑的维护与测试矩阵。</p>
+<p>具体例子：一个 LayerNorm 加残差加激活的融合 kernel，手写版本在 hidden=4096、fp16、contiguous 下达到接近带宽上限的吞吐；但当 hidden=4095（非对齐）时，向量化加载退化为标量加载，吞吐掉到一半以下；当输入是非连续 stride 时，直接走 fallback。工程师的应对是加一个对齐检查分支，但这个分支本身引入了 divergence 与额外的指令开销，且需要在每个新 shape 上重新验证。这就是为什么论文强调 task structure determines correctness more than method design——手写路线的正确性风险不在算法，而在结构假设的覆盖度。</p>
+<p>性能代价还体现在编译时间上。手写 CUDA 的模板实例化与 nvcc 编译在配置空间大时以分钟计，CI 里每个变体都要编译一遍。这在旧方案里是可接受的，因为变体数量有限；但一旦引入自动生成，候选数量从个位数涨到几十上百，编译时间就成为流水线的瓶颈。论文的流程里“编译候选”是独立一步，正是因为编译本身是一个需要计量的成本项。手写路线在这个维度上没有优势，只是过去没人把它当作瓶颈来统计。</p>
+
+<h3>三 · Triton 的甜区与盲区：autotune 不是免费的</h3>
+<p>Triton 把 block-level 编程模型抽象成 tile 上的操作，工程师写的是“每个 program 处理一块数据”，编译器负责映射到 warp 与 shared memory。这大幅降低了开发周期，也让同一份代码能跨 NVIDIA 与 AMD 后端。但 Triton 的性能上限不由源码单独决定，而由 autotune 的搜索空间与后端 codegen 共同决定。设搜索空间为 <span>𝒮</span>（block size、num_warps、num_stages 的笛卡尔积），autotune 的代价是：</p>
+<div class="formula">$$\text{Tune}_{\text{cost}} = |\mathcal{S}| \cdot (t_{\text{compile}} + t_{\text{bench}}) + t_{\text{cache miss}}$$</div>
+<p>在离线 benchmark 里，这个代价可以摊薄，因为同一 shape 反复跑。但在生产里，shape 分布是长尾的，每个新 shape 触发一次 cache miss 就意味着一轮 autotune。这就是 Triton 的盲区：甜区是规则、对齐、固定 shape 的批量负载；盲区是长尾 shape、动态 shape、以及需要跨 op 融合的场景。</p>
+<p>具体例子：一个 reduction 类算子，Triton 默认的 block size 在 seq 长度不是 2 的幂时会产生大量 masked lane，有效吞吐下降。工程师可以手动指定 block size 来规避，但这又回到了特化。论文的第二个发现正好落在这个机制上：iterative refinement improves correctness, but not performance。Across GEAK iterations, compile rate rises from 52.3% to 68.8% while average speedup declines from $1.58\times$ to $1.44\times$; newly rescued kernels consistently underperform persistently correct ones ($1.16\times$ vs ...)。这个数字链条说明：多轮改写把“编译不过”的候选救回来了，但救回来的候选是性能上的二等公民。原因是修复编译错误通常靠加 mask、改 dtype、拆循环，这些动作本身就在削弱向量化与流水。</p>
+<p>正确性代价在 Triton 里表现为语义细节：归约的累加精度、mask 的边界条件、原子操作的顺序。一个 fp16 输入在 fp32 累加后转回 fp16，与直接在 fp16 里累加，结果差异在长归约上会放大。这类错误不会让编译失败，只会让数值偏离参考实现，因此需要 oracle 而不是单测来抓。论文的评测口径里“正确性检查”是独立门，正是因为这类静默错误在旧方案里经常被“跑通了”掩盖。可维护性代价则是后端版本耦合：Triton 的 codegen 在版本间会变，同一个 kernel 的 SASS 在不同版本下不同，性能回归需要重新 profile。</p>
+
+<h3>四 · 库调用的天花板：融合机会的丢失</h3>
+<p>库调用是开发周期最短的路线，cuBLAS、cuDNN、以及各框架的 fused op 库提供了经过厂商手调的 kernel。它的性能上限在单算子层面很高，但在组合层面有天花板：库的粒度是算子，不是图。一个 attention 变体如果需要“QK^T 后接一个自定义的 mask 再加 softmax 再接一个自定义的缩放”，库只能提供其中几段，剩下的段要么用 eager 拼，要么写自定义 kernel。拼积木的代价是显存往返：每多一个 op，就多一次 global memory 读写。</p>
+<p>用带宽账来量化这个代价。设中间张量大小为 <span>B</span> 字节，融合前有 <span>k</span> 个 op 串联，则额外流量为：</p>
+<div class="formula">$$\text{Traffic}_{\text{extra}} = 2 \cdot (k-1) \cdot B$$</div>
+<p>系数 2 是因为每个中间结果既要写又要读。在带宽受限的算子上，这个额外流量直接折算成时延。具体例子：一个 norm+scale+bias 的三段组合，eager 下三次读写，融合后一次读写，理论带宽收益接近 3 倍；但如果库没有对应的 fused 版本，工程师只能在“拼积木但正确”和“手写但难维护”之间选。这就是库调用路线的结构性痛点：它不是性能不够，而是融合粒度不够。</p>
+<p>正确性代价在库调用里反而最低，因为库的实现经过广泛验证；代价转移到了语义组合上——工程师要保证自己拼出来的组合与参考语义一致，尤其是 broadcast、dtype promotion、非连续输入这些边界。可维护性代价是版本锁定：库的启发式选择在不同版本、不同硬件上会变，同一个调用在不同环境下可能走不同的 kernel，性能不可预测。论文的第三个发现 correctness does not imply efficiency 在这里有一个尖锐的版本：46.6% of correct kernels are slower than the PyTorch eager baseline，而 eager baseline 本身就是库调用的组合。也就是说，即使候选 kernel 正确，它也可能打不过“拼积木”的基线，因为拼积木至少用到了厂商手调的算子。</p>
+
+<h3>五 · 为什么非改不可：三个不可通约的失效维度</h3>
+<p>把三条路线的痛点并置，会发现它们不在同一个维度上可比。手写 CUDA 的失效是覆盖度（配置空间没铺满），Triton 的失效是搜索与修复的副作用（救回来的候选性能差），库调用的失效是融合粒度（拼积木的流量税）。旧方案的评测方式——一个总分、一个平均加速比——无法区分这三类失效，因为它们对均值的贡献方式不同：覆盖度失效表现为长尾 shape 上的崩溃，修复副作用表现为均值被拉低，融合粒度失效表现为系统性打不过基线。这就是“非改不可”的第一层理由：评测口径与失效结构不匹配。</p>
+<p>第二层理由是跨硬件方差。论文给出的数字是 cross-hardware speedup variance reaches $21.4\times$。这个量级说明，在 A100 上调出来的加速比，搬到另一张卡上可能完全反转。旧方案的评测通常在单卡上做，工程判断因此建立在不可迁移的数字上。一个在离线 benchmark 上 1.58× 的候选，跨硬件后方差可达 21.4×，这意味着“快”这个结论本身没有跨硬件的稳定性。工程上要做的不是追求更高的单卡加速比，而是先确定这个加速比在目标硬件分布上的符号是否稳定。</p>
+<p>第三层理由是类别间的失败率差异极大。论文的数字：72% of Fusion tasks fail across all five methods while Math tasks are solved consistently。Fusion 类任务的失败率是 72%，Math 类任务则稳定可解。这个对比说明，旧方案里“LLM 能不能写 kernel”这个问题问错了——正确的问法是“在哪一类任务上、以什么机制失败”。Fusion 任务的失败机制是跨 op 的语义与内存布局协调，Math 任务的失败机制则弱得多，因为数学算子的语义边界清晰、参考实现唯一。工程判断因此要按类别分配验证预算，而不是平均用力。</p>
+<p>这三层理由共同指向一个结论：需要一个按类别切分、同时度量正确性与硬件效率、并且把跨硬件方差纳入口径的基准。论文的 score 公式体现了这个口径的一个切面：</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>这里 <span>s_i</span> 是第 i 个任务的加速比，<span>τ</span> 是阈值，score 是“达到阈值加速比的任务占比”。这个形式的工程含义是：它不奖励单个任务上的极端加速比，而是奖励在任务集合上的稳定达标率。对比旧方案的“平均加速比”，这个口径对长尾失败更敏感——一个任务崩掉就把该任务的指示函数打成 0，不会被其他任务的高加速比平均掉。阈值 <span>τ</span> 的选择本身是一个工程判断：设得太低，正确但慢的候选也能得分；设得太高，跨硬件方差会让分数不可复现。论文没有在摘要里给出 <span>τ</span> 的具体取值，但这个公式的结构已经说明了旧方案缺的是什么——一个对失败敏感、对均值不敏感的聚合方式。</p>
+
+<h3>六 · 旧方案的工程债如何传导到生产</h3>
+<p>把上述痛点放到生产链路上，会看到一条传导链：离线 benchmark 上的加速比 → 生产 shape 分布上的实际时延 → 端到端收益。旧方案在每一环都有泄漏。第一环的泄漏是基线口径：如果基线没开 TF32、没用最强库，加速比会被高估；论文的局限说明里明确提到这一点。第二环的泄漏是 shape 特化与隐藏输入分布，离线分数在生产上崩塌。第三环的泄漏是 fallback 与 reward hacking，正确率虚高。这三环泄漏叠加，就是“离线漂亮、上线回退”的典型现场。</p>
+<p>具体机制：一个候选 kernel 在离线用固定 shape 测出 1.58×，但生产里 30% 的请求落在非对齐 shape 上，走 fallback 到 eager，这部分请求的时延反而比纯 eager 高，因为多了一次 dispatch 判断与可能的布局转换。端到端收益因此不是离线加速比的线性外推，而是按 shape 分布加权的期望。设 shape 分布为 <span>p(x)</span>，候选在 shape <span>x</span> 上的加速比为 <span>s(x)</span>，fallback 比例为 <span>f</span>，则端到端期望加速比为：</p>
+<div class="formula">$$\mathbb{E}[s] = (1-f)\cdot \mathbb{E}_{x\sim p}[s(x)] + f \cdot s_{\text{fallback}}$$</div>
+<p>当 <span>s_{\text{fallback}} &lt; 1</span> 时，fallback 比例 <span>f</span> 直接吃掉融合收益。旧方案的评测不度量 <span>f</span>，因为离线 benchmark 的输入分布是固定的、通常是规则的。这就是为什么论文把“输入分布按论文口径”列为评测要素——分布本身是口径的一部分，不是附属细节。</p>
+<p>工程债的另一端是可维护性。手写 CUDA 的每个变体都要人维护，Triton 的每个 autotune 配置都要随后端版本重测，库调用的每个版本升级都要重新验证启发式选择。这三类维护成本在旧方案里是分散的、没有统一计量的。论文的流程把“编译、正确性检查、统一基线测量、按反馈保留或回退”串成一条可复现的链路，其工程意义在于把维护成本显式化：编译时间、正确性门的通过率、回退率都是可计量的量，而不是隐性的工程师时间。</p>
+<p>最后落在一个具体的工程判断上：在引入任何自动生成之前，必须先建立按类别切分的正确性 oracle 与统一的基线口径，否则生成能力越强，离线分数越漂亮，生产回退越难定位。论文的第一个发现——task structure determines correctness more than method design，9.4% vs 3.3% explained deviance——把这个判断量化了：方法选择对正确性的解释力只有类别结构的三分之一左右。这意味着旧方案里“换一个更好的生成方法”不是主要杠杆，“按类别定位失效”才是。Fusion 类 72% 的全方法失败率说明，在这类任务上，无论用哪种旧路线或新方法，失败是结构性的，需要的是分解任务、显式协调跨 op 的内存布局，而不是在单 kernel 层面继续调参。这个判断直接决定了后续评测框架必须 category-aware，也决定了工程预算应该按类别分配，而不是按方法分配。</p>
+<p class="paper-line">对应：papers/paper-2605-04956 · 第 1/9 部分</p>

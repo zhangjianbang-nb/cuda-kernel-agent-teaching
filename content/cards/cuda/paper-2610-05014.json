@@ -1,0 +1,81 @@
+{
+ "_paper_id": "paper-2610-05014",
+ "_domain": "cuda",
+ "_title": "MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code",
+ "_abstract_only": true,
+ "title_zh": "MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Bey",
+ "background": "这篇论文发表于 2026 年（arXiv:2610.05014），属于 基准与可信评测 方向。它要回答的问题是：Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills.",
+ "problem": "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills. Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured.",
+ "core_idea": "Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured. We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific",
+ "architecture": "We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh attempt at the same problem in another. Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that",
+ "pipeline": [
+  "读取《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Kernel benchmarks score each attempt's implementation for co）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that differ only in the DSL. The agent first attempts each variant solo and is instructed to distill what it learns into a natural-language skill, which is ",
+ "walkthrough": "一次完整流程：先读取《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh attempt at the same problem in another. Its 74 problems are fused su",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "The agent first attempts each variant solo and is instructed to distill what it learns into a natural-language skill, which is transferred whether or not the source attempt passes verification. The skill is the only extra input to a skill-conditioned attempt by the same model in the other DSL.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills.",
+  "Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured.",
+  "We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh attempt "
+ ],
+ "limitations": [
+  "《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that differ only in the DSL. The agent first attempts each variant solo and is instructed to distill what it learns ",
+ "summary": "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills. Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured. We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh att",
+ "data_recipe": [
+  "评测负载：《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills.",
+  "Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured.",
+  "We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh attempt at the same problem in another.",
+  "Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that differ only in the DSL.",
+  "The agent first attempts each variant solo and is instructed to distill what it learns into a natural-language skill, which is transferred whether or not the source attempt passes verification.",
+  "The skill is the only extra input to a skill-conditioned attempt by the same model in the other DSL.",
+  "We compare each skill-conditioned attempt with the solo attempt on the same variant under matched per-attempt budgets, scoring correctness and end-to-end runtime.",
+  "Across six models and both directions, paired lift over solo attempts ranges from -19% to +29%."
+ ],
+ "anchors": [
+  "19",
+  "29",
+  "16",
+  "45",
+  "71",
+  "54"
+ ],
+ "pitfalls": [
+  "《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

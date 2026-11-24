@@ -1,0 +1,48 @@
+<h3>一 · 问题的定义：从“能跑”到“逼近 SOL”之间的鸿沟</h3>
+<p>这个方向要解决的问题可以精确地表述为：给定一段算子语义（例如一个 attention 变体或一个 fused MLP），如何让 LLM/agent 产出的 kernel 在目标架构上逼近 roofline 给出的 speed-of-light 上界，而不是停在一个“能跑、正确、但只发挥了高层 API 默认路径性能”的版本上。高层 API 调参的天花板是框架作者写死的调度策略；而性能上限由硬件细节决定——tensor core 的指令形状与累加器布局、TMA 的多维拷贝与 barrier 语义、warp 调度与寄存器压力之间的耦合。这些细节不会出现在 PyTorch 的算子签名里，也不会出现在 LLM 的预训练语料里，于是产生了一个结构性缺口：<strong>LLM 缺乏架构感知，而性能恰恰由架构细节决定</strong>。</p>
+<p>把缺口形式化。设算子在一个给定 shape 下的 roofline 上界为</p>
+<div class="formula">$$T_{\text{SOL}} = \max\left(\frac{\text{FLOPs}}{\text{Peak FLOPS}},\ \frac{\text{Bytes}}{\text{Peak BW}}\right)$$</div>
+<p>而 agent 实际产出 kernel 的实测时间为 $T_{\text{real}}$，则待优化的目标是 $\eta = T_{\text{SOL}} / T_{\text{real}}$。问题的难点不在 $\eta$ 的定义，而在于 $\eta$ 与源码之间的映射不是解析可得的：同一段 Triton 代码，改变 block size、num_warps、num_stages 或是否走 TMA 路径，$\eta$ 会跳到完全不同的档位，而这种跳变只能由 profile 证据揭示。因此本方向的核心命题是：<strong>用硬件感知 DSL 提供可组合的抽象来表达架构特性，用 NCU/SASS profile 提供证据来归因瓶颈，二者闭环，才能把 $\eta$ 从“高层 API 默认值”推到接近 1</strong>。</p>
+<p>一个具体例子能说明这条鸿沟的形状：一个在 Triton 里用默认 `tl.dot` 写出的 GEMM，在语义上完全正确，编译器也会自动选择 MMA 指令，但当 tile 形状与 shared memory 布局不匹配 tensor core 的 fragment 排布时，会出现大量 bank conflict 与冗余的 shared memory 往返，此时 NCU 报告的是 shared memory 吞吐成为瓶颈而非 DRAM 带宽——这个信号在源码层面完全不可见，只能通过 profile 反推到 tile 与 swizzle 的选择上。代价是明确的：不做这一步，性能停在默认档；做这一步，需要付出额外的 profile 采集与多轮迭代的编译时间。</p>
+
+<h3>二 · 边界：这个方向管什么，不管什么</h3>
+<p>边界必须划清，否则会与相邻方向重复劳动。本方向管的是“架构特性如何被编码进生成与优化流程”：DSL 层（Triton 的 block-level 抽象、CuTe 的 layout/algorithm 组合、PTX 的内联汇编与指令级控制）负责<em>表达</em>，profile 层（NCU 的 metric 采集、SASS 的反汇编与指令级归因）负责<em>验证表达是否奏效</em>。它不管训练配方，不管 agent 脚手架的整体编排，也不管端到端产品收益的度量——那些是其他方向的领地，此处只用一句话指路：脚手架决定“怎么多轮问”，本方向决定“每一轮问什么、拿什么证据判断”。</p>
+<p>边界之内有三个必须区分的层次，混层是本方向最常见的工程错误：</p>
+<ul>
+<li><strong>DSL 抽象层</strong>：决定哪些硬件特性“可被表达”。Triton 能表达 tile 级并行与流水 stage，但对 warp 级的手工调度与寄存器分配的暴露有限；CuTe 用 layout 代数把 thread/value 的映射显式化，能表达 tiled MMA 的 fragment 布局；PTX 则把指令选择、barrier、异步拷贝全部摊开。抽象越低，可表达的架构特性越多，但生成难度与正确性风险同步上升。</li>
+<li><strong>Profile 证据层</strong>：决定哪些瓶颈“可被观测”。NCU 给出的是聚合 metric（如 DRAM throughput、shared memory bank conflict 数、warp stall 原因分布），SASS 给出的是指令级事实（实际发射的 MMA 指令形状、谓词、双发射情况）。两者粒度不同，前者适合定位瓶颈类别，后者适合验证某条改写是否真的改变了指令流。</li>
+<li><strong>归因与改写层</strong>：决定证据如何变成源码改动。这是本方向最脆弱的一环——从 SASS 级证据到源码级改写的映射困难，是核心挑战之一，因为编译器优化（指令重排、循环展开、寄存器重用）会在源码与 SASS 之间插入一层不可逆的变换。</li>
+</ul>
+<p>一个边界判定的具体例子：如果 agent 只是在 Triton 里调 `num_stages` 并观察 wall-clock 变化，这属于黑盒调参，不构成硬件感知优化——因为它没有建立“哪个 stage 数对应哪种流水重叠、哪个 metric 证明重叠发生了”的证据链。只有当中控流程能说出“NCU 显示 MMA pipe 利用率上升而 DRAM 等待下降，因此 stage 增加确实换来了计算与拷贝的重叠”，才落进本方向的边界。代价在于：每条这样的证据链都需要一次受控基准下的 profile 采集，采集本身有开销（kernel replay、metric 多路复用），并且需要固定 shape 与输入分布才能比较，这限制了它在动态 shape 场景下的直接可用性。</p>
+
+<h3>三 · 为什么其他方向替代不了</h3>
+<p>逐条说明不可替代性，每一条都对应一个其他方向在原理上做不到的事。</p>
+<p><strong>基准与可信评测</strong>能告诉你“这个 kernel 比基线快还是慢、正确性是否通过”，但它给出的是端到端标量，无法回答“慢在哪条流水线上”。一个 kernel 端到端慢 30%，可能是 DRAM 带宽打满，也可能是 tensor core 利用率只有一半，两者的改写方向完全相反。评测方向的产出是判定，本方向的产出是归因；判定不能替代归因，因为从标量到机制不是可逆映射。</p>
+<p><strong>Agent 脚手架与执行反馈</strong>决定多轮迭代的编排、上下文管理与工具调用，但它不决定每一轮拿什么证据。若反馈信号只有“编译成功/失败 + 运行时间”，agent 的搜索等价于在源码空间里做无梯度随机游走；把 NCU metric 与 SASS 片段注入反馈，搜索才获得方向。脚手架是管道，本方向是管道里流动的证据内容——管道不能替代内容。</p>
+<p><strong>多轮 RL 与可验证奖励</strong>需要一个奖励信号。若奖励只是正确性与相对加速比，RL 会收敛到“在训练分布内有效的调参模式”，而无法学到架构特定的指令级策略，因为奖励对“为什么快”不敏感。本方向提供的 profile 派生信号（如瓶颈类别是否从 memory-bound 转为 compute-bound）可以作为更细粒度的奖励塑形，但这是 RL 方向消费本方向的产出，而非替代它。</p>
+<p><strong>正确性 oracle 与形式验证</strong>保证语义等价，但它对性能完全沉默。一个被形式验证证明等价的 kernel 可以慢十倍。反过来，本方向的改写必须挂在正确性 oracle 之下才可信——性能优化不能以语义漂移为代价。两者是正交约束，不是替代关系。</p>
+<p><strong>生产端到端部署</strong>度量真实负载下的收益，但它发生在优化之后，且端到端信号被框架开销、调度抖动、数据分布稀释，无法反推 kernel 级瓶颈。一个在微基准上 $\eta$ 提升显著的 kernel，在端到端里可能被 launch 开销吃掉——这个判断只能由本方向的受控基准加 profile 给出，部署方向拿到的是结论而非机制。</p>
+<p>代价与例子：假设一个 fused softmax kernel 在评测里显示比基线快 1.2 倍但离 SOL 仍远。评测到此为止；本方向介入后，NCU 显示 warp stall 主要集中在 barrier 等待，SASS 显示每轮迭代末尾有一次全 block 同步，于是改写方向是把 reduction 拆成 warp 级 shuffle 加更细粒度的同步。这个改写不是评测、脚手架、RL、验证或部署任一方向能独立产出的，它需要 DSL 表达（warp shuffle 在 Triton 里需借助特定原语或在 CuTe/PTX 层显式写出）与 profile 证据（stall 原因分布）同时在场。</p>
+
+<h3>四 · 核心机制：DSL 表达与 profile 归因的闭环</h3>
+<p>闭环的形状是一个受控的“假设—改写—验证”循环，每一轮都由 profile 证据驱动，而不是由 wall-clock 驱动。伪代码思路如下：</p>
+<ul>
+<li>固定 shape 与输入分布，先在高层 DSL（Triton）产出正确版本，采集一次基线 NCU 剖面，得到瓶颈类别 $b_0$（memory-bound / compute-bound / latency-bound / occupancy-limited）。</li>
+<li>依据 $b_0$ 选择改写假设：若 memory-bound，考虑 TMA 多维拷贝与 swizzle 布局；若 compute-bound，考虑 tile 形状对齐 tensor core fragment、提高 MMA 指令密度；若 latency-bound，考虑流水 stage 与异步拷贝重叠。</li>
+<li>在更低层 DSL（CuTe 或 PTX）实现假设，重新采集 NCU 与 SASS，比较目标 metric 是否移动、非目标 metric 是否退化。</li>
+<li>只有当目标 metric 移动且正确性 oracle 通过时，才接受改写；否则回退并记录该假设被证伪的证据。</li>
+</ul>
+<p>这个循环的关键在于“非目标 metric 是否退化”这一检查。硬件资源是耦合的：提高 occupancy 会挤压寄存器，进而迫使编译器 spill；引入 TMA 会占用 shared memory 并改变 barrier 结构，可能反而增加同步等待。因此单 metric 优化是危险的，必须成组观测。一个具体例子：把 Triton 的 `num_warps` 从 4 提到 8 以提升并行度，NCU 显示 occupancy 上升，但 SASS 显示寄存器 spill 增加、local memory 流量上升，最终端到端反而变慢——这个反例只有在 SASS 级证据在场时才能被识别，wall-clock 只会告诉你“变慢了”，不会告诉你“因为 spill”。</p>
+<p>性能与正确性代价在这里是双重的。性能代价：每轮 profile 采集需要 kernel replay 与 metric 多路复用，采集本身可能比 kernel 执行慢一个量级，多轮循环的编译时间（尤其 CuTe 模板实例化与 PTX 内联汇编的编译）会显著拉长迭代周期。正确性代价：越往低层走，越容易写出在特定 shape 下正确、在边界 shape 下错误的代码（如 TMA 的越界处理、warp shuffle 的 mask 边界），因此每一层改写都必须挂在正确性 oracle 之下，而不能靠“跑通一个 case”来判定。</p>
+
+<h3>五 · 结构性挑战：知识过时与证据到源码的映射</h3>
+<p>本方向有两个无法靠工程技巧消除的结构性挑战，它们决定了这个方向的长期维护成本。</p>
+<p><strong>挑战一：架构特性快速迭代使 DSL 与 profile 知识迅速过时。</strong>每一代架构都会改变 tensor core 的指令形状、引入新的异步拷贝机制、调整 warp 调度与 shared memory 层级。这意味着“上一代有效的 tile 形状与 stage 数”在新架构上可能不再是优解，甚至不再是合法解；profile 的 metric 名称与语义也会随 NCU 版本变化。对 agent 而言，这直接转化为上下文预算问题：把架构特定的调优知识写进 prompt 或检索库，会在架构换代时整体失效，而重新采集与验证这些知识需要消耗大量 token 与编译时间。工程上的应对不是“维护一份永久知识库”，而是把知识表达为<em>可被 profile 快速证伪的假设</em>——即闭环本身比知识条目更耐久。</p>
+<p><strong>挑战二：SASS 级证据到源码级改写的映射困难。</strong>编译器在源码与 SASS 之间插入了指令重排、循环展开、谓词化、寄存器重用等变换，使得“SASS 里看到一条低效指令”无法直接定位到“源码里哪一行该改”。更麻烦的是，同一段源码在不同编译选项下可能生成完全不同的指令流，因此 SASS 证据的有效性依赖于编译配置的固定。一个具体例子：SASS 显示 MMA 指令之间有较长的依赖停顿，直觉上应改写为更大的 tile 以增加指令级并行，但实际上停顿可能来自 shared memory 的布局冲突导致的加载延迟，真正的改写点是 swizzle 而非 tile 大小——这个区分只能靠 NCU 的 stall 原因分布与 SASS 的指令序列交叉验证，单看任一层都会误判。</p>
+<p>这两个挑战共同决定了一个工程判断：本方向的价值不在于积累“架构调优技巧清单”，而在于建立一条<strong>从 DSL 表达到 profile 证据再到受控改写的可重复链路</strong>，使得每当架构换代，链路本身仍然可用，只是链路里流动的假设需要重新采集与证伪。代价是明确的：链路的每次运行都要付出 profile 采集时延、编译时间与 token 消耗，因此它不适合被无差别地应用到所有 kernel 上，而应优先用于那些 roofline 上界与实测差距大、且端到端收益敏感的算子。</p>
+
+<h3>六 · 工程判断：什么情况下这条链路值得跑</h3>
+<p>把边界与代价收束成一个可操作的判断标准。链路值得跑的条件是三者同时成立：其一，该算子的 $T_{\text{SOL}}$ 与当前实测 $T_{\text{real}}$ 之间存在显著差距，且差距不能被高层 API 的常规调参吃掉；其二，该算子在目标负载中占据足够的时间占比，使得 kernel 级 $\eta$ 的提升能穿透到端到端；其三，该算子的 shape 分布相对稳定，使得受控基准下的 profile 结论可迁移——动态 shape 会让固定 shape 下采集的证据迅速失效，此时链路的收益被采集成本抵消。</p>
+<p>反之，若算子已经是 memory-bound 且实测带宽接近峰值，或 shape 高度动态，则链路的边际收益低，应把预算留给其他方向。这个判断本身不是定性的“看情况”，而是可以用 profile 基线直接判定的：先采一次 NCU，若瓶颈 metric 已接近硬件峰值，则说明该算子已逼近其可达上界，改写空间有限；若瓶颈 metric 远离峰值且 stall 原因集中在某一类，则链路有明确的攻击面。这一步的代价是一次 profile 采集，相对于多轮盲目改写所消耗的编译时间与 token，这个前置成本是划算的。</p>
+<p>最终落在具体机制上：本方向的工程核心是把“架构特性”从不可见的硬件事实，转化为 DSL 里可表达的构造，再转化为 profile 里可观测的 metric，最后转化为受控改写里可证伪的假设。这条转化链的每一环都有明确的失败模式——DSL 表达不了、profile 观测不到、改写证伪不了——而工程判断就是识别当前卡在哪一环，并决定是否值得为它付出采集与编译的代价。</p>
+<p class="paper-line">对应：directions/dir-hw-dsl-profile · 第 1/5 部分</p>

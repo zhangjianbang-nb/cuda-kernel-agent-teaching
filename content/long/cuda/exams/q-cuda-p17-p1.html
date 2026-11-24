@@ -1,0 +1,55 @@
+<h3>一 · 题干里的三层信息：任务、约束、可观测信号</h3>
+<p>《Optimizing CUDA like a Human: Micro-Profiling Tools as Expert Surrogates for LLM-Based GPU Kernel Optimization》这类题目的题干通常不会把“要做什么”写成一句话，而是把任务嵌在三个层次里：第一层是<strong>优化对象</strong>——给定一个参考实现（reference kernel）或一段 PyTorch 语义，要求产出一个语义等价但更快的 kernel；第二层是<strong>评价协议</strong>——用什么基线、什么输入形状、什么计时方式、允许多少次重试；第三层是<strong>可观测信号</strong>——agent 在搜索过程中能拿到什么反馈（编译是否通过、正确性是否通过、profile 计数器、SOL 百分比）。读题的第一步不是写代码，而是把这三层拆成一张表，因为绝大多数失分不是 kernel 写得慢，而是把评价协议读错了：拿一个在错误形状上测出的时延去和基线比，或者把 warmup 阶段的时延算进均值。</p>
+<p>拆题的具体机制是“把题干还原成一次可复现的实验”。给定题干后，先固定四元组 <em>(dtype, shape, baseline 实现, 计时口径)</em>，再问：题干是否明确要求“与基线在同一设备、同一 dtype、同一 shape 下比较”？如果没有明说，就要在解题路径里显式声明自己的假设，并把该假设写进提交说明——这是工程判断，不是文字游戏。举例：题干给出“对 <code>softmax</code> 沿最后一维做优化，输入 <code>[B, N]</code>，基线为 PyTorch 原生实现”，那么考点立刻分叉：当 <code>N</code> 很小（行内元素少、并行度不足）时考的是<strong>行内并行与 warp 内归约</strong>；当 <code>N</code> 很大（单行放不进 shared memory）时考的是<strong>分块与两趟归约</strong>。同一个题干，两个形状对应两条完全不同的解题路径，而题干往往只给一个形状，这就是需要读者自己补的约束。</p>
+<p>代价在这里体现为 token 与编译时间：如果把形状空间当成无限网格去搜，每次编译加计时都是一次真实开销，agent 的上下文会被大量失败的编译日志占满。合理的做法是先按“形状分档”做粗筛（小 N / 中 N / 大 N 各取一个代表点），把编译次数控制在个位数，再在最有希望的一档上做细搜。这一步不产生任何加速比，但它决定了后面所有测量的可信度。</p>
+
+<h3>二 · 考点识别：从题干关键词映射到 kernel 属性</h3>
+<p>题干里的形容词和名词几乎一一对应着 kernel 的某个属性，读题就是做这个映射。常见映射如下表，左列是题干措辞，右列是它真正在考的东西，以及对应的第一个要看的指标。</p>
+<table class="mini">
+<thead><tr><th>题干措辞</th><th>真实考点</th><th>首要观测指标</th></tr></thead>
+<tbody>
+<tr><td>“memory-bound”“带宽受限”</td><td>全局内存访问模式、合并访问、是否有多余的 load/store</td><td>achieved DRAM throughput 占峰值比例</td></tr>
+<tr><td>“compute-bound”“算力受限”</td><td>指令级并行、寄存器压力、是否被 occupancy 卡住</td><td>SM 利用率与 issue slot 利用率</td></tr>
+<tr><td>“latency-sensitive”“小 shape”</td><td>kernel launch 开销、尾部效应、并行度不足</td><td>kernel 时延与 launch 开销之比</td></tr>
+<tr><td>“numerically stable”</td><td>归约顺序、累加精度、是否用 fp32 累加 fp16 输入</td><td>正确性 oracle 的最大相对误差</td></tr>
+<tr><td>“fused”“避免中间张量”</td><td>显存流量削减、寄存器内复用</td><td>总字节流量对比基线的下降比例</td></tr>
+</tbody>
+</table>
+<p>这张表的作用是防止“凭直觉优化”。一个被标为 memory-bound 的 kernel，如果 agent 去调大 tile size 提高计算密度，方向就错了；反过来，一个 compute-bound 的 kernel 去减少 global load 也不会有效。识别考点的机制是<strong>先做一次 roofline 定位</strong>：用题干给出的 shape 和 dtype 估算最小必需字节流量 <code>B_min</code> 与最小必需浮点运算量 <code>F_min</code>，算出算术强度 <code>I = F_min / B_min</code>，再与设备的 <code>F_peak / B_peak</code> 拐点比较。若 <code>I</code> 落在拐点左侧，考点就是带宽；右侧才是算力。这一步只用题干信息就能完成，不需要跑任何 profile，是读题阶段性价比最高的动作。</p>
+<div class="formula">$$I=\frac{F_{\min}}{B_{\min}},\qquad \text{bound}=\begin{cases}\text{memory}, & I &lt; F_{\text{peak}}/B_{\text{peak}}\\ \text{compute}, & I \ge F_{\text{peak}}/B_{\text{peak}}\end{cases}$$</div>
+<p>代价：roofline 定位是定性判断，它给出的是“上限在哪”，不是“当前实现离上限多远”。如果题干给的 shape 恰好落在拐点附近，单靠 <code>I</code> 无法判定，必须补一次实测 profile，这就多花一轮编译与计时。举例：一个逐元素 <code>gelu</code> 的题干，<code>F_min</code> 是每元素若干次超越函数运算，<code>B_min</code> 是读一次写一次，算术强度极低，几乎必然落在带宽侧——此时考点不是“算得更快”，而是“少读少写、保证合并访问”。若题干还要求“in-place”，那考点立刻多一条：输出覆盖输入是否引入读写依赖，从而改变可向量化的宽度。</p>
+
+<h3>三 · 解题路径：从基线复现到候选生成的四段式</h3>
+<p>读题之后要给出的是路径，而不是答案。路径的第一段是<strong>基线复现</strong>：把题干给的 reference 实现原样跑一遍，记录其时延 <code>T0</code>、输入 shape、dtype、计时口径（是否含 warmup、是否用 CUDA event、是否同步）。这一段的目的不是优化，而是建立“可比性锚点”。如果基线本身没有被复现，后面任何加速比都失去意义。第二段是<strong>候选生成</strong>：按第二节判定的 bound 类型，从对应的优化库里取 2–3 个候选（例如带宽侧取向量化 + 合并访问 + 减少中间张量；算力侧取 tile 分块 + 寄存器复用 + 指令重排），每个候选都写成可编译的最小改动，而不是一次性重写。第三段是<strong>正确性过滤</strong>：每个候选先过正确性 oracle，再过性能测量，顺序不能反——一个跑得快但算错的 kernel 在评测里是零分，先测性能会浪费计时预算。第四段是<strong>归因</strong>：对通过过滤的候选做一次 profile，确认提速来自预期的那个机制（带宽下降、occupancy 提升、指令数减少），而不是来自测量噪声或形状特例。</p>
+<p>这四段的伪代码思路可以写成状态机：</p>
+<ul>
+<li><code>state = baseline_reproduced</code>：只有当 <code>T0</code> 与题干声明的基线量级一致时才进入下一状态；否则回到读题，检查 shape/dtype 是否读错。</li>
+<li><code>state = candidate_compiled</code>：编译失败要保留错误信息，它是下一轮修改的输入，不是丢弃的噪声。</li>
+<li><code>state = correctness_passed</code>：oracle 的容差必须与题干一致；题干没说就用与基线相同的 dtype 做逐元素比对，并额外检查 NaN/Inf 行为。</li>
+<li><code>state = speedup_measured</code>：只有当前三个状态都成立，才计算 <code>T0/T1</code>。</li>
+</ul>
+<p>代价：这条路径的时间预算主要花在编译与计时上，而不是“想”。每多一个候选就多一次编译（秒级到分钟级）和一次计时（毫秒级但需要多次重复取中位数）。工程判断是：候选数量控制在 3 个以内，把省下的预算用在“对失败候选做一次 profile 归因”上，因为失败候选的 profile 往往比成功候选更能揭示题干没写出来的约束。举例：一个 reduction 题干，候选 A 用 shared memory 两趟归约，候选 B 用 warp shuffle 单趟归约；在小 shape 下 B 更快，在大 shape 下 A 更稳。若不跑 profile 就看不出 B 的提速来自“少了一次 shared memory 往返”而不是“少了一次 global load”，归因错了，下一轮就会往错误方向改。</p>
+
+<h3>四 · 加速比公式与“不可比”的四个条件</h3>
+<p>论文报告的加速比按最朴素的比值计算：基线时延 <code>T0</code> 除以候选时延 <code>T1</code>。</p>
+<div class="formula">$$\text{speedup}=\frac{T_0}{T_1}$$</div>
+<p>这个公式只有一行，但它成立需要四个前提同时为真，缺一个数字就不可比。第一，<strong>同一基线</strong>：<code>T0</code> 必须来自题干指定的 reference 实现，而不是另一个已经优化过的版本；把 <code>T0</code> 换成更慢的实现会凭空放大比值。第二，<strong>同一 shape 与 dtype</strong>：不同 shape 下 kernel 的 bound 类型可能翻转，小 shape 的比值和大 shape 的比值不能放在一张表里比较。第三，<strong>同一计时口径</strong>：是否含 launch 开销、是否含 warmup、是否用同步计时，都会系统性改变 <code>T1</code>；尤其在小 shape 下，launch 开销占比高，口径差异足以让比值翻倍。第四，<strong>同一正确性标准</strong>：候选必须通过 oracle，否则它的 <code>T1</code> 是一个“算错的快”，不构成有效加速。</p>
+<p>论文中出现的 2.42、4.69、5.30、1.23 与 26、23 这两组数字，正好说明“不可比”的两种典型情形。前一组（2.42、4.69、5.30、1.23）量级在个位数，后一组（26、23）量级在两位数——把它们直接并列会误导读者以为后者是“更好的方法”。实际上，两位数比值通常出现在<strong>基线极弱</strong>的场景：基线是一个未做任何融合、未做向量化的朴素实现，或者 shape 恰好让基线落入并行度极低的区间，此时 <code>T0</code> 被放大，比值自然大。个位数比值更可能出现在基线已经接近 roofline 的场景，此时每一分提速都来自真实的机制改进。因此，读到 26 和 23 时，正确的反应不是“这个方法强 26 倍”，而是追问：<code>T0</code> 是什么实现？shape 是什么？计时口径是否含 launch？三个问题有一个答不上来，这个数字就不能与 2.42 放在同一张对比表里。</p>
+<p>代价：追求大比值会诱导 agent 选择“弱基线 + 小 shape”的组合，因为那里最容易出数字，但这类提速在生产端到端收益上往往接近于零——小 shape 下省下的几微秒会被框架调度开销吞掉。工程判断是：读题时若题干没有明确基线强度，就自己补一个“强基线”作为第二锚点（例如用 PyTorch 原生算子或一个已知接近 SOL 的实现），用两个 <code>T0</code> 分别算两个比值，并在提交里说明哪个是主指标。这一步多花一次基线复现的编译与计时，但能防止整份提交建立在一个不可比的数字上。</p>
+
+<h3>五 · 需要调用的公式清单与调用时机</h3>
+<p>读题阶段要列的公式不止 speedup 一个，而是一组“什么时候该用哪个”的清单。下面四个是本部分必须能随手写出的：</p>
+<ul>
+<li><strong>加速比</strong> <code>T0/T1</code>：只在正确性通过、口径一致时调用；用于最终报告，不用于中间搜索排序（中间排序用绝对时延更稳）。</li>
+<li><strong>算术强度</strong> <code>I = F/B</code>：在读题阶段调用，用于判定 bound 类型，决定候选库的方向。</li>
+<li><strong>有效带宽</strong> <code>B_eff = Bytes / T</code>：在 profile 归因阶段调用，与设备峰值带宽比较，得到“离 SOL 多远”的百分比；它比 speedup 更能说明剩余空间。</li>
+<li><strong>占用率约束</strong> <code>occupancy = active_warps / max_warps</code>：在算力侧候选失败时调用，用于判断是寄存器压力还是 shared memory 限制了并行度。</li>
+</ul>
+<p>调用时机的机制是“先粗后细”：读题时只用 <code>I</code> 做二选一；候选生成后用绝对时延做排序；只有进入归因阶段才调用 <code>B_eff</code> 与 occupancy。顺序颠倒的代价是：过早计算 speedup 会让搜索被“比值好看”的候选带偏，而过晚计算 <code>B_eff</code> 则无法判断一个提速是“真的接近上限”还是“基线太弱”。举例：一个 <code>layernorm</code> 题干，读题时算出 <code>I</code> 落在带宽侧，于是候选全部围绕“一次读入、寄存器内完成均值方差、一次写出”来设计；归因阶段用 <code>B_eff</code> 与峰值带宽比，若只到峰值的六成，说明还有合并访问或向量化宽度的问题，而不是算法问题——这时不该再去改归约顺序。</p>
+<p>代价：每个公式都需要一次测量或一次估算作为输入。<code>I</code> 只需题干信息，成本最低；<code>B_eff</code> 需要一次带计数器的 profile，成本是一次额外编译加计时；occupancy 需要编译期资源报告，成本较低但需要读懂寄存器与 shared memory 的分配。工程判断是：把成本最低的 <code>I</code> 放在最前面做筛选，把成本最高的 <code>B_eff</code> 只留给最终 1–2 个候选，避免在每个失败候选上都跑一遍完整 profile。</p>
+
+<h3>六 · 把“不可比”写进解题路径：一个具体的拆题示例</h3>
+<p>假设题干是：“优化一个 <code>[4096, 4096]</code> fp16 的矩阵乘加偏置，基线为朴素三重循环实现，报告加速比。”拆题时先做三件事。第一，识别基线强度：三重循环实现没有 shared memory 分块、没有向量化，其 <code>T0</code> 会被显著放大，因此这里出现的两位数比值不能与“基线为 cuBLAS”的场景并列。第二，判定 bound：矩阵乘的 <code>I</code> 随 tile 增大而上升，<code>[4096,4096]</code> 规模下若不做分块，global load 次数是 <code>O(N^3)</code> 级别，必然落在带宽侧；考点是<strong>分块复用</strong>而非指令调度。第三，列公式：先用 <code>I</code> 确认方向，再用 <code>B_eff</code> 判断分块后是否接近峰值带宽，最后才用 <code>T0/T1</code> 报告，并在报告里注明 <code>T0</code> 是朴素实现、计时是否含 launch。</p>
+<p>这个例子的代价在于：朴素基线的 <code>T0</code> 很大，单次计时就需要更长的重复次数才能取到稳定中位数，编译与计时的总预算被基线复现吃掉一大块；而如果题干其实想要的是“与 cuBLAS 比”，那么整条路径的候选设计都要改——分块策略要按 cuBLAS 的 tile 粒度对齐，否则 <code>T1</code> 再快也只是赢了一个弱基线。工程判断是：在读题阶段就把“基线是谁”写成显式假设，并准备一个强基线作为对照；若两个比值差距悬殊（例如一个两位数、一个个位数），以强基线的比值为准，因为它更接近生产端到端收益。</p>
+<p>最后落在机制上：读题与考点拆解的产出不是一段代码，而是一份<strong>可执行的约束清单</strong>——bound 类型、基线身份、shape 分档、计时口径、正确性容差、要调用的公式及其顺序。这份清单决定了后面每一轮候选生成的方向和每一次测量的可信度；清单里任何一项缺失，都会在最终报告里变成一个不可比的数字。</p>
+<p class="paper-line">对应：exams/q-cuda-p17 · 第 1/2 部分</p>

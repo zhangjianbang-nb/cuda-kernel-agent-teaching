@@ -1,0 +1,70 @@
+<h3>一 · 字段表：一条 kernel 记录必须落盘的列</h3>
+<p>速查表的骨架是字段。字段不是看板的美化项，而是回溯的最小证据单元：任何一次 kernel 生成，若缺了某一列，事后就无法判定“是模型退化还是环境漂移”。下面这张表按“必填/条件必填/可选”三档给出，工程上建议把必填列做成写入端硬校验——缺列直接拒绝入库，而不是事后补。</p>
+<table class="mini">
+<thead><tr><th>字段</th><th>档位</th><th>取值口径</th><th>缺失代价</th></tr></thead>
+<tbody>
+<tr><td>commit_hash</td><td>必填</td><td>生成该 kernel 的代码仓库完整 SHA，含 prompt 模板与解码参数所在文件</td><td>无法区分“同一 prompt 不同模板”导致的差异，回归告警失去基线</td></tr>
+<tr><td>env_snapshot_id</td><td>必填</td><td>指向不可变镜像或 lockfile 的标识，而非“cuda 12.x”这类浮动描述</td><td>驱动/CUDA/库任一漂移都会污染性能对比，NCU 指标不可复现</td></tr>
+<tr><td>driver_version / cuda_version / lib_versions</td><td>必填</td><td>展开后的精确版本串，库至少含 cuBLAS、cuDNN、Triton 或 CuTe 版本</td><td>同一 kernel 在不同库版本下 SASS 不同，正确性 oracle 结论可能翻转</td></tr>
+<tr><td>gpu_model / sm_count / clock_policy</td><td>必填</td><td>设备型号与 SM 数，锁定频率策略（是否开启持久时钟）</td><td>roofline 分母失真，SOL 百分比不可比</td></tr>
+<tr><td>kernel_source_hash</td><td>必填</td><td>生成产物（CUDA C++/Triton/CuTe/PTX）的规范化哈希</td><td>无法判定两次运行是否同一份代码，失败样本归档失效</td></tr>
+<tr><td>correctness_oracle_id</td><td>必填</td><td>所用验证器及其容差配置的标识</td><td>“通过”失去语义，不同 oracle 的通过率不可合并统计</td></tr>
+<tr><td>metric_bundle</td><td>必填</td><td>时延分位、带宽利用率、显存峰值、编译耗时的统一口径标识</td><td>看板数字互相矛盾，无法做跨轮对比</td></tr>
+<tr><td>failure_bucket</td><td>条件必填</td><td>失败时必填，取自失败模式库的枚举值</td><td>失败样本无法聚类，RL 反馈信号退化为二值</td></tr>
+<tr><td>trace_id / parent_run</td><td>条件必填</td><td>多轮生成时必填，串起同一任务的所有尝试</td><td>无法计算“第几轮才收敛”，多轮收益无法归因</td></tr>
+<tr><td>token_cost</td><td>可选</td><td>该次生成消耗的 prompt/completion token 数</td><td>成本估算只能按均值摊，长尾任务被低估</td></tr>
+</tbody>
+</table>
+<p>字段设计的关键判断是：把“环境”拆成可枚举的精确串，而不是塞进一个自由文本备注。env_snapshot_id 与展开版本串并存是刻意的冗余——前者用于机器比对，后者用于人读与跨镜像迁移。写入端的校验逻辑可以写成一句伪代码：<em>if any(field in REQUIRED and record[field] is null): reject(record, reason=missing_evidence)</em>。这条拒绝路径本身要计数，因为“被拒绝的记录数”是追踪链路健康度的先行指标：拒绝率上升通常意味着生成侧开始产出无法归因的产物。</p>
+
+<h3>二 · 阈值表：什么算漂移、什么算回归</h3>
+<p>阈值不是拍脑袋的绝对值，而是相对于基线的相对量，且必须绑定统计口径。下表给出可直接照用的判定线，全部以“同 env_snapshot_id 下的基线运行”为参照；跨环境比较一律不判定为回归，只标记为“不可比”。</p>
+<table class="mini">
+<thead><tr><th>检查项</th><th>阈值口径</th><th>触发动作</th><th>误报/漏报代价</th></tr></thead>
+<tbody>
+<tr><td>时延回归</td><td>同分位（如 p50 与 p99 分别比）相对基线抬升超过预设比例，且连续 N 次运行同向</td><td>告警并冻结该 commit 的自动合并</td><td>单次抖动误报会消耗人力；只看均值会漏掉 p99 长尾恶化</td></tr>
+<tr><td>带宽/SOL 下滑</td><td>实测带宽占 roofline 上限的比例下降超过预设百分点</td><td>附 NCU 采样快照，进入人工复核队列</td><td>SOL 分母依赖 clock_policy，未锁频时误报率高</td></tr>
+<tr><td>显存峰值抬升</td><td>峰值显存相对基线抬升超过预设比例</td><td>阻断部署，因显存是硬约束而非软指标</td><td>阈值过紧会把合理的 workspace 增长判死</td></tr>
+<tr><td>编译耗时</td><td>单 kernel 编译时间超过预算上限，或相对基线倍增</td><td>标记为“可用但不可迭代”，降级到离线队列</td><td>编译时间直接吃 token 预算与多轮 RL 的墙钟，漏判会拖垮搜索吞吐</td></tr>
+<tr><td>正确性通过率</td><td>同一 oracle 下通过率相对基线下降，按样本量给置信区间</td><td>立即归档失败样本并重跑 oracle</td><td>小样本下通过率波动大，需按样本量分层设阈值</td></tr>
+<tr><td>追踪完整率</td><td>必填字段缺失记录占比超过预设比例</td><td>视为可观测性故障，优先于性能告警处理</td><td>追踪断裂时所有性能结论都失去前提</td></tr>
+</tbody>
+</table>
+<p>把“连续 N 次同向”写进阈值是必要的工程妥协：GPU 上的时延分布天然有抖动，单点越线不足以判定回归。判定逻辑可形式化为：</p>
+<div class="formula">$$\text{regress} = \mathbb{1}\left[\frac{m_{\text{new}} - m_{\text{base}}}{m_{\text{base}}} > \tau \;\wedge\; \text{sign}_1 = \cdots = \text{sign}_N\right]$$</div>
+<p>其中 $m$ 是所选口径下的指标值，$\tau$ 是预设比例，$\text{sign}_i$ 是第 $i$ 次运行的差值符号。这里刻意不写具体 $\tau$ 与 $N$ 的数值——它们应由各团队的基线抖动实测决定，写死数字反而制造虚假精确。代价方面：阈值收紧会把编译耗时波动误判为回归，导致离线队列积压；阈值放松则让 p99 级别的长尾退化溜进生产。一个具体例子：某 Triton kernel 在换用新版本库后 p50 几乎不变，但 p99 抬升明显，若阈值只看均值则完全漏检——这正是分位口径必须写进字段的原因。</p>
+
+<h3>三 · 口径表：同名指标的不同算法必须显式区分</h3>
+<p>口径是速查表里最容易被忽略、也最容易在看板上制造假共识的一栏。“时延”至少有三套算法：端到端墙钟（含 launch 与同步）、kernel 自身执行时间（CUDA event 包裹）、以及稳态吞吐下的摊薄时间。三者数值可以差出一个数量级，混在同一张图里就是灾难。下表把常用指标的口径固定下来，要求 metric_bundle 字段引用其中之一。</p>
+<table class="mini">
+<thead><tr><th>指标</th><th>口径定义</th><th>适用场景</th><th>不可用于</th></tr></thead>
+<tbody>
+<tr><td>kernel 时延</td><td>CUDA event 包裹单次 launch，排除 host 侧开销</td><td>kernel 级优化对比、roofline 对齐</td><td>端到端收益评估（会高估收益）</td></tr>
+<tr><td>端到端时延</td><td>含数据搬运、launch、同步的墙钟</td><td>生产收益核算</td><td>kernel 间横向比较（被框架开销稀释）</td></tr>
+<tr><td>稳态吞吐</td><td>多次迭代摊薄，预热后取稳定段</td><td>批处理场景容量规划</td><td>低延迟单发场景</td></tr>
+<tr><td>带宽利用率</td><td>实测字节数除以 roofline 上限，字节数须声明是否含非必需搬运</td><td>判断是否 memory-bound</td><td>跨设备比较（上限不同）</td></tr>
+<tr><td>SOL 百分比</td><td>以 roofline 模型为分母，模型参数须随记录落盘</td><td>上限逼近度评估</td><td>作为唯一优化目标（会诱导过拟合基准形状）</td></tr>
+<tr><td>编译时间</td><td>从源码到可加载产物的墙钟，区分冷/热缓存</td><td>迭代吞吐与 token 预算核算</td><td>与运行时指标混排</td></tr>
+</tbody>
+</table>
+<p>口径冲突的典型例子：某 kernel 的 kernel 时延下降，但端到端时延上升，原因是新增了一次 device-to-host 同步。若看板只展示 kernel 时延，这次退化会被完全掩盖。工程上的硬规则是：任何跨轮对比必须声明 metric_bundle，且 bundle 内各项口径不可中途更换；更换口径等同于更换基线，必须重跑基线而非直接比较历史数据。这一条要写进回归告警的判定前置条件——口径不一致时，告警系统应输出“不可比”而不是“通过”。</p>
+
+<h3>四 · 版本固定的检查粒度：从镜像到 SASS</h3>
+<p>版本固定常被简化为“锁 CUDA 版本”，但真正决定 kernel 行为的是更下游的产物。检查粒度应至少覆盖四层：容器镜像 digest、驱动与 CUDA toolkit 精确版本、数学库与编译器版本、以及最终生成的 SASS。前两层由 env_snapshot_id 承担，第三层由 lib_versions 展开，第四层则需要一个额外的校验字段——SASS 哈希或指令计数摘要。理由很直接：同一份 CUDA C++ 源码在不同编译器版本下可能生成不同的指令序列，寄存器压力与占用率随之改变，性能结论不可迁移。</p>
+<p>检查逻辑可以写成一条流水线伪代码：<em>snapshot = resolve(env_snapshot_id); assert snapshot.driver == record.driver_version; assert hash(sass_of(record.kernel_source_hash)) == record.sass_hash</em>。任何一步断言失败，该记录降级为“仅存档、不参与统计”。代价是每次生成都要多付一次编译与哈希的开销——编译时间本就是预算项，SASS 哈希只是在其后追加一次读取，量级可忽略；但若对每个候选都做全量 SASS 比对，多轮 RL 的搜索吞吐会被拖慢，因此实践中只对“进入候选池”的产物做 SASS 级固定，其余仅记录源码哈希。具体例子：某次回归告警指向性能下滑，排查发现 env_snapshot_id 未变但 lib_versions 中 Triton 版本被镜像构建脚本隐式升级，SASS 摘要比对立刻定位到差异层，避免了在模型侧做无谓的调参。</p>
+
+<h3>五 · 失败样本归档与回归告警的联动字段</h3>
+<p>失败样本归档若只存一段报错文本，就无法被复用为 RL 的可验证奖励信号。归档记录必须携带 failure_bucket（来自失败模式库的枚举）、触发该失败的输入形状与 oracle 配置、以及最小复现命令的标识。回归告警则要能反向索引到这些归档：当某条告警触发时，系统应自动列出“历史上同一 failure_bucket 的样本及其修复 commit”，把告警从“发现问题”推进到“指向已知解法”。</p>
+<p>联动的最小字段集是三元组（failure_bucket, kernel_source_hash, env_snapshot_id）。三者组合唯一确定一次失败的可复现条件。告警侧的判定可以写成：<em>if alert.regress and exists(archive[failure_bucket == alert.bucket]): attach(archive_refs)</em>。代价在于归档存储与索引维护：失败样本往往包含大形状输入，全量落盘会推高存储成本，因此归档策略应只保留能触发失败的最小形状，并在字段中标注“最小化后的形状”而非原始形状。一个具体例子：某 kernel 在特定 batch 形状下越界，归档时保留最小触发形状与 oracle 容差，后续同类告警直接命中该归档，人工复核时间从“重新构造输入”降为“比对已知样本”。</p>
+
+<h3>六 · 速查表的使用纪律：三栏对齐才算一条合格记录</h3>
+<p>把字段、阈值、口径三张表并置，会发现它们必须成组使用：字段定义“记什么”，口径定义“怎么算”，阈值定义“何时报警”。任何一条记录若只满足其中两栏，就构成可观测性缺口。例如记录了时延字段但未声明口径，阈值判定就失去分母；声明了口径但 env_snapshot_id 缺失，跨环境比较就会把驱动漂移误判为模型退化。工程判断上，应把“三栏对齐”做成入库校验的复合条件，而不是三套独立的检查脚本。</p>
+<p>使用纪律可以收敛为一条：<strong>不可比的记录不进统计，不完整的记录不进看板，未归档的失败不进奖励</strong>。前两条保护统计口径，第三条保护多轮 RL 的信号质量——失败样本若未带 failure_bucket 就进入奖励计算，等价于把噪声当负样本，搜索方向会被系统性带偏。代价是入库吞吐下降：复合校验会拒绝一部分本可用于粗略统计的记录，但换来的是任何一次告警都能追溯到具体 commit 与环境快照，这正是本条目所要求的可追溯性下限。</p>
+
+<h3>速查表的边界：字段可信度、阈值失效与口径漂移</h3>
+<p>这张表能照着用，前提是每个字段都有明确的“不可信条件”。追踪 ID 在跨节点重跑时会因调度器重写而失效，此时应回退到 (commit, 环境快照哈希) 二元组做联合索引；版本字段的边界在于驱动与 CUDA 运行时的 ABI 兼容窗口——驱动主版本升级会静默改变 PTX JIT 的目标架构，使同一 commit 的 SASS 发生漂移，因此版本固定必须记录到 <span class="mono">nvcc --version</span> 的 build 号而非仅主次版本。指标看板的失效条件是采样口径：若 kernel 级指标取自 profiler 的 replay 模式，其耗时含额外 replay 开销，不能与端到端 wall time 直接比较，表中应显式标注“仅用于相对比较”。失败样本归档的边界是复现所需的最小环境集，缺少 GPU 型号或 MPS 配置时归档即降级为“不可复现样本”，只能用于模式统计。</p>
+<div class="formula">$$\text{可追溯性} = \frac{\#\{\text{样本} \mid \text{commit} \wedge \text{env-hash} \wedge \text{driver-build} \text{ 均可解析}\}}{\#\{\text{样本}\}}$$</div>
+<p>阈值一侧的代价是告警噪声与漏报的权衡。回归告警若以固定百分比设阈，在低占空比 kernel 上会被启动开销淹没；改用相对基线中位数的稳健 z 分数（以 MAD 归一）可压低噪声，但代价是每次回归判定需重算基线，引入额外一次全量 profile 的时延与显存占用。口径漂移最典型的例子是“带宽利用率”字段：有的看板按理论峰值算，有的按实测 STREAM 峰值算，两者混用会让同一 kernel 的达标判定翻转，因此表中必须把分母口径写成枚举值而非自由文本。</p>
+<table class="mini"><thead><tr><th>字段</th><th>失效条件</th><th>口径要求</th></tr></thead><tbody><tr><td>trace_id</td><td>跨节点重跑被重写</td><td>与 env-hash 联合索引</td></tr><tr><td>driver_build</td><td>主版本升级致 PTX JIT 漂移</td><td>记录 build 号</td></tr><tr><td>kernel_time</td><td>replay 模式含额外开销</td><td>标注仅相对比较</td></tr><tr><td>bw_util</td><td>分母口径不一致</td><td>枚举理论/实测峰值</td></tr></tbody></table>
+<p>工程判断落在字段的“可判定性”上：一个字段若无法在归档缺失时给出明确的降级语义，就不该进速查表。版本固定字段的代价是存储——每次生成都落一份环境快照哈希与驱动 build，长期累积的元数据量随生成轮次线性增长，需要在归档侧做按 commit 的去重压缩，否则回归检索的时延会随历史长度上升而劣化。</p>
+<p class="paper-line">对应：appendix/ap-bi · 第 2/5 部分</p>

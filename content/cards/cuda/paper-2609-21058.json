@@ -1,0 +1,87 @@
+{
+ "_paper_id": "paper-2609-21058",
+ "_domain": "cuda",
+ "_title": "How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?",
+ "_abstract_only": true,
+ "title_zh": "How Much of a Real Workload Can LLM-Generated GPU Kernels Ac",
+ "background": "这篇论文发表于 2026 年（arXiv:2609.21058），属于 基准与可信评测 方向。它要回答的问题是：Language models can now write GPU kernels that outperform PyTorch.",
+ "problem": "Language models can now write GPU kernels that outperform PyTorch. We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently verified speedups on 22 of 56, inclu",
+ "core_idea": "We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently verified speedups on 22 of 56, including three convolutions, with a median of 1.235x. Open-weights mode",
+ "architecture": "Open-weights models are far behind: the best reaches 30.4% correct with three verified speedups and solves zero convolutions. We then ask a question the literature does not: what fraction of a real model's wall clock do such kernels govern?",
+ "pipeline": [
+  "读取《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（We evaluate five model configurations on KernelBench level 1）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：We then ask a question the literature does not: what fraction of a real model's wall clock do such kernels govern? Profiling seven workloads across three domains, we find the addressable fraction ranges from 8.9% to 58.2%.",
+ "walkthrough": "一次完整流程：先读取《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Open-weights models are far behind: the best reaches 30.4% correct with three verified speedups and solves zero convolutions. We then ask a question the literature does not: what fraction of a real model's wall clock do ",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "Profiling seven workloads across three domains, we find the addressable fraction ranges from 8.9% to 58.2%. On transformers, 80-86% of runtime is spent in cuBLAS GEMM and FlashAttention, bounding realistic end-to-end improvement at roughly 1%, and the fraction shrinks with model scale.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Language models can now write GPU kernels that outperform PyTorch.",
+  "We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently ver",
+  "Open-weights models are far behind: the best reaches 30.4% correct with three verified speedups and solves zero convolutions."
+ ],
+ "limitations": [
+  "《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "We then ask a question the literature does not: what fraction of a real model's wall clock do such kernels govern? Profiling seven workloads across three domains, we find the addressable fraction ranges from 8.9% to 58.2",
+ "summary": "Language models can now write GPU kernels that outperform PyTorch. We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently verified speedups on 22 of 56, including three convolutions, with a median of 1.235x. Open-weights models are far behind: the best reaches 30.4% correct with three verified spe",
+ "data_recipe": [
+  "评测负载：《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Language models can now write GPU kernels that outperform PyTorch.",
+  "We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently verified speedups on 22 of 56, including three convolutions, wi",
+  "Open-weights models are far behind: the best reaches 30.4% correct with three verified speedups and solves zero convolutions.",
+  "We then ask a question the literature does not: what fraction of a real model's wall clock do such kernels govern?",
+  "Profiling seven workloads across three domains, we find the addressable fraction ranges from 8.9% to 58.2%.",
+  "On transformers, 80-86% of runtime is spent in cuBLAS GEMM and FlashAttention, bounding realistic end-to-end improvement at roughly 1%, and the fraction shrinks with model scale.",
+  "On recommenders it is 58.2%, concentrated in a single embedding kernel.",
+  "We introduce DLRM-Bench, 12 recommender kernel problems in KernelBench format, and measure a 41.7% win rate at a 1.552x median there, projecting 8.63% end-to-end."
+ ],
+ "anchors": [
+  "91.1",
+  "1.235",
+  "30.4",
+  "8.9",
+  "58.2",
+  "86",
+  "1",
+  "41.7",
+  "1.552",
+  "8.63",
+  "283",
+  "0.3"
+ ],
+ "pitfalls": [
+  "《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-prod-e2e"
+}

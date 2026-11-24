@@ -1,0 +1,1544 @@
+[
+ {
+  "id": "paper-2502-10517",
+  "title": "KernelBench: Can LLMs Write Efficient GPU Kernels?",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Anne Ouyang",
+   "Simon Guo",
+   "Simran Arora",
+   "Alex L. Zhang",
+   "William Hu",
+   "Christopher Ré",
+   "Azalia Mirhoseini"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2502.10517",
+   "code": ""
+  },
+  "arxiv": "2502.10517",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Efficient GPU kernels are crucial for building performant machine learning architectures, but writing them is a time-consuming challenge that requires significant expertise; therefore, we explore using language models (LMs) to automate kernel generation. We introduce KernelBench, an open-source framework for evaluating LMs' ability to write fast and correct kernels on a suite of 250 carefully selected PyTorch ML workloads. KernelBench represents a real-world engineering environment and making progress on the introduced benchmark directly translates to faster practical kernels. We introduce a new evaluation metric fast_p, which measures the percentage of generated kernels that are functionally correct and offer a speedup greater than an adjustable threshold p over baseline. Our experiments across various state-of-the-art models and test-time methods show that frontier reasoning models perform the best out of the box but still fall short overall, matching the PyTorch baseline in less than 20% of the cases. While we show that results can improve by leveraging execution and profiling feedback during iterative refinement, KernelBench remains a challenging benchmark, with its difficulty increasing as we raise speedup threshold p.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2507-11948",
+  "title": "Kevin: Multi-Turn RL for Generating CUDA Kernels",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Carlo Baronio",
+   "Pietro Marsella",
+   "Ben Pan",
+   "Simon Guo",
+   "Silas Alberti"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2507.11948",
+   "code": ""
+  },
+  "arxiv": "2507.11948",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Writing GPU kernels is a challenging task and critical for AI systems' efficiency. It is also highly iterative: domain experts write code and improve performance through execution feedback. Moreover, it presents verifiable rewards like correctness and speedup, making it a natural environment to apply Reinforcement Learning (RL). To explicitly incorporate the iterative nature of this process into training, we develop a flexible multi-turn RL recipe that addresses unique challenges encountered in real-world settings, such as learning from long trajectories and effective reward attribution across turns. We present Kevin - K(ernel D)evin, the first model trained with multi-turn RL for CUDA kernel generation and optimization. In our evaluation setup, Kevin shows significant gains over its base model (QwQ-32B), improving correctness of generated kernels (in pure CUDA) from 56% to 82% and mean speedup from 0.53x to 1.10x of baseline (PyTorch Eager), and surpassing frontier models like o4-mini (0.78x). Finally, we study its behavior across test-time scaling axes: we found scaling serial refinement more beneficial than parallel sampling. In particular, when given more refinement turns, Kevin shows a higher rate of improvement.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2507-14111",
+  "title": "CUDA-L1: Improving CUDA Optimization via Contrastive Reinforcement Learning",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Xiaoya Li",
+   "Albert Wang",
+   "Guoyin Wang",
+   "Jiwei Li",
+   "Chris Shum"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2507.14111",
+   "code": ""
+  },
+  "arxiv": "2507.14111",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "The exponential growth in demand for GPU computing resources has created an urgent need for automated CUDA optimization strategies. While recent advances in LLMs show promise for code generation, current SOTA models achieve low success rates in improving CUDA speed. In this paper, we introduce CUDA-L1, an automated reinforcement learning framework for CUDA optimization that employs a novel contrastive RL algorithm. CUDA-L1 achieves significant performance improvements on the CUDA optimization task: trained on A100, it delivers an average speedup of x3.12 with a median speedup of x1.42 against default baselines over across all 250 CUDA kernels of KernelBench, with peak speedups reaching x120. In addition to the default baseline provided by KernelBench, CUDA-L1 demonstrates x2.77 over Torch Compile, x2.88 over Torch Compile with reduce overhead, x2.81 over CUDA Graph implementations, and x7.72 over cuDNN libraries. Furthermore, the model also demonstrates portability across different GPU architectures. Beyond these benchmark results, CUDA-L1 demonstrates several properties: it 1) discovers a variety of CUDA optimization techniques and learns to combine them strategically to achieve optimal performance; 2) uncovers fundamental principles of CUDA optimization, such as the multiplicative nature of optimizations; 3) identifies non-obvious performance bottlenecks and rejects seemingly beneficial optimizations that actually harm performance. The capabilities demonstrate that, RL can transform an initially poor-performing LLM into an effective CUDA optimizer through speedup-based reward signals alone, without human expertise or domain knowledge. This paradigm opens possibilities for automated optimization of CUDA operations, and holds promise to substantially promote GPU efficiency and alleviate the rising pressure on GPU computing resources.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2507-23194",
+  "title": "Geak: Introducing Triton Kernel AI Agent & Evaluation Benchmarks",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Jianghui Wang",
+   "Vinay Joshi",
+   "Saptarshi Majumder",
+   "Xu Chao",
+   "Bin Ding",
+   "Ziqiong Liu",
+   "Pratik Prabhanjan Brahma",
+   "Dong Li"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2507.23194",
+   "code": ""
+  },
+  "arxiv": "2507.23194",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "The demand for AI-generated GPU kernels is rapidly growing, influenced by the need for scalable, hardware-optimized solutions in both industry and academia. As deep learning workloads grow in complexity and diversity, it is imperative to automate low-level kernel development to meet performance and productivity demands. Major cloud providers, semiconductor companies, and research institutions are now investing heavily in AI-driven code generation for GPUs, aiming to reduce manual optimization efforts while achieving near-expert performance on hardware like AMD MI300X. The Triton language, a Python-based DSL for GPU programming, has emerged as a popular target for such AI-generated kernels due to its balance of performance and ease-of-coding. In this work, we present an evaluation suite for Triton-based GPU kernels and GEAK (Generating Efficient AI-centric GPU Kernels)-a framework that leverages cutting-edge LLMs to generate performant Triton code specifically for AMD GPUs, including the AMD MI300X and MI250. GEAK leverages inference-time compute scaling to produce Triton-based GPU kernels using a reasoning loop adapted from Reflexion-style feedback mechanisms. On two evaluation benchmarks, GEAK significantly outperformed the baselines of directly prompting frontier LLMs as well as Reflexion-based generation pipelines by achieving correctness up to $63$% and execution speed up of up to $2.59$X. These results highlight the promise of GEAK-like agentic code generation for accelerating the adoption of diverse hardware platforms and democratizing access to expert-level kernel performance.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2511-01884",
+  "title": "CudaForge: An Agent Framework with Hardware Feedback for CUDA Kernel Optimization",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Zijian Zhang",
+   "Rong Wang",
+   "Shiyang Li",
+   "Yuebo Luo",
+   "Mingyi Hong",
+   "Caiwen Ding"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2511.01884",
+   "code": ""
+  },
+  "arxiv": "2511.01884",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Developing efficient CUDA kernels is increasingly critical for AI applications such as large-scale LLM training. However, manual kernel design is both costly and time-consuming, motivating automatic approaches that leverage LLMs for code generation. Existing methods for automatic kernel generation, however, often produce low-efficiency kernels, incur high computational overhead, and fail to generalize across settings. In this work, we propose CudaForge, a training-free multi-agent workflow for CUDA kernel generation and optimization. Our workflow is inspired by the iterative workflow of human experts, which contains steps such as developing initial kernels, testing correctness, analyzing hardware feedback, and iterative improvement. More specifically, CudaForge employs two LLM agents: a Coder and a Judge, that iteratively generate, correct, and optimize CUDA kernels, while integrating hardware feedback such as Nsight Compute (NCU) metrics. In extensive evaluations, we show that CudaForge, by leveraging base models like OpenAI-o3, achieves 97.6\\% correctness of generated kernels and an average 1.68$\\times$ speedup over PyTorch baselines, substantially surpassing state-of-the-art models including OpenAI-o3 and Kevin on KernelBench.Beyond accuracy and speed, CudaForge demonstrates strong generalization across GPUs (A100, RTX 6000, 4090, 3090) and base models (OpenAI-o3, GPT-5, gpt-oss-120B, Claude-Sonnet-4, QwQ-32B), while maintaining high efficiency. In particular, generating an optimized kernel takes about 26.5 minutes on one RTX6000 and incurs about \\$ 0.3 API cost, which is significantly cheaper than existing agentic work that costs 6 H100 hours and \\$ 5 API cost per kernel. Our results highlight that multi-agent, training-free workflows can enable cost-effective, generalizable, and high-performance CUDA kernel optimization. Code available at https://github.com/OptimAI-Lab/CudaForge",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2512-02551",
+  "title": "CUDA-L2: Surpassing cuBLAS Performance for Matrix Multiplication through Reinforcement Learning",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Songqiao Su",
+   "Xiaoya Li",
+   "Albert Wang",
+   "Guoyin Wang",
+   "Jiwei Li",
+   "Chris Shum"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2512.02551",
+   "code": ""
+  },
+  "arxiv": "2512.02551",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "In this paper, we propose CUDA-L2, a system that combines large language models (LLMs) and reinforcement learning (RL) to automatically optimize Half-precision General Matrix Multiply (HGEMM) CUDA kernels. Using CUDA execution speed as the RL reward, CUDA-L2 automatically optimizes HGEMM kernels across 1,000 configurations. CUDA-L2 systematically outperforms major matmul baselines to date, from the widely-used torch.matmul to state-of-the-art Nvidia's closed-source libraries, i.e., cuBLAS, cuBLASLt. In offline mode, where kernels are executed consecutively without time intervals, CUDA-L2 yields +22.0% over torch.matmul on average; +19.2% over cuBLAS using the optimal layout configuration (normal-normal NN and transposed-normal TN); +16.8% over cuBLASLt-heuristic, which queries cuBLASLt library and selects the algorithm based on the heuristic's suggestion; and +11.4% over the most competitive cuBLASLt-AutoTuning model, which selects the fastest algorithm from up to 100 candidates from cuBLASLt's suggestions. In server mode, where kernels are executed at random intervals simulating real-time inference, the speedups further increase to +28.7%, +26.0%, +22.4%, and +15.9% for torch.matmul, cuBLAS, cuBLASLt-heuristic, and cuBLASLt-AutoTuning respectively. CUDA-L2 shows that even the most performance-critical, heavily-optimized kernels like HGEMM can be improved through LLM-guided RL automation by systematically exploring configuration spaces at scales impractical for humans. Project and code can be found at github.com/ornith-ai/CUDA-L2",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2602-05885",
+  "title": "Dr. Kernel: Reinforcement Learning Done Right for Triton Kernel Generations",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Wei Liu",
+   "Jiawei Xu",
+   "Yingru Li",
+   "Longtao Zheng",
+   "Tianjian Li",
+   "Qian Liu",
+   "Junxian He"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2602.05885",
+   "code": ""
+  },
+  "arxiv": "2602.05885",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "High-quality kernel is critical for scalable AI systems, and enabling LLMs to generate such code would advance AI development. However, training LLMs for this task requires sufficient data, a robust environment, and the process is often vulnerable to reward hacking and lazy optimization. In these cases, models may hack training rewards and prioritize trivial correctness over meaningful speedup. In this paper, we systematically study reinforcement learning (RL) for kernel generation. We first design KernelGYM, a robust distributed GPU environment that supports reward hacking check, data collection from multi-turn interactions and long-term RL training. Building on KernelGYM, we investigate effective multi-turn RL methods and identify a biased policy gradient issue caused by self-inclusion in GRPO. To solve this, we propose Turn-level Reinforce-Leave-One-Out (TRLOO) to provide unbiased advantage estimation for multi-turn RL. To alleviate lazy optimization, we incorporate mismatch correction for training stability and introduce Profiling-based Rewards (PR) and Profiling-based Rejection Sampling (PRS) to overcome the issue. The trained model, Dr Kernel-14B, reaches performance competitive with Claude-4.5-Sonnet in Kernelbench. Finally, we study sequential test-time scaling for Dr Kernel-14B. On the KernelBench Level-2 subset, 31.6% of the generated kernels achieve at least a 1.2x speedup over the Torch reference, surpassing Claude-4.5-Sonnet (26.7%) and GPT-5 (28.6%). When selecting the best candidate across all turns, this 1.2x speedup rate further increases to 47.8%. All resources, including environment, training code, models, and dataset, are included in https://www.github.com/hkust-nlp/KernelGYM.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2602-24286",
+  "title": "CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Weinan Dai",
+   "Hanlin Wu",
+   "Qiying Yu",
+   "Huan-ang Gao",
+   "Jiahao Li",
+   "Chengquan Jiang",
+   "Weiqiang Lou",
+   "Yufan Song"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2602.24286",
+   "code": ""
+  },
+  "arxiv": "2602.24286",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "GPU kernel optimization is fundamental to modern deep learning but remains a highly specialized task requiring deep hardware expertise. Despite strong performance in general programming, large language models (LLMs) remain uncompetitive with compiler-based systems such as torch.compile for CUDA kernel generation. Existing CUDA code generation approaches either rely on training-free refinement or fine-tune models within fixed multi-turn execution-feedback loops, but both paradigms fail to fundamentally improve the model's intrinsic CUDA optimization ability, resulting in limited performance gains. We present CUDA Agent, a large-scale agentic reinforcement learning system that develops CUDA kernel expertise through three components: a scalable data synthesis pipeline, a skill-augmented CUDA development environment with automated verification and profiling to provide reliable reward signals, and reinforcement learning algorithmic techniques enabling stable training. CUDA Agent achieves state-of-the-art results on KernelBench, delivering 100\\%, 100\\%, and 92\\% faster rate over torch.compile on KernelBench Level-1, Level-2, and Level-3 splits, outperforming the strongest proprietary models such as Claude Opus 4.5 and Gemini 3 Pro by about 40\\% on the hardest Level-3 setting.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-21331",
+  "title": "AutoKernel: Autonomous GPU Kernel Optimization via Iterative Agent-Driven Search",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Jaber Jaber",
+   "Osama Jaber"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.21331",
+   "code": ""
+  },
+  "arxiv": "2603.21331",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Writing high-performance GPU kernels is among the most labor-intensive tasks in machine learning systems engineering. We present AutoKernel, an open-source framework that applies an autonomous agent loop to GPU kernel optimization for arbitrary PyTorch models. Given a model, AutoKernel profiles it to identify computational bottlenecks, ranks them by Amdahl's law impact, and iteratively refines Triton or CUDA C++ kernel implementations through hundreds of experiments without human intervention. A five-stage correctness harness covering smoke tests, shape sweeps, numerical stability, determinism verification, and edge-case coverage ensures every candidate kernel is validated before any speedup is recorded. The system comprises over 9,000 lines of Python, 18 starter kernel implementations across two backends, a six-tier optimization playbook, and integration with the KernelBench benchmark suite. AutoKernel covers nine kernel types spanning the dominant operations in modern transformer architectures. On an NVIDIA H100, our Triton kernels outperform both PyTorch eager and torch.compile (max-autotune) on the majority of tested configurations: 5.29x over eager on RMSNorm, 2.82x on softmax, and 2.21x on cross-entropy, while beating torch.compile by 2.83x, 3.44x, and 2.94x respectively. In community deployment, an AutoKernel-optimized kernel achieved first place on the vectorsum_v2 B200 leaderboard. The full system is available at https://github.com/RightNow-AI/autokernel.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-29010",
+  "title": "Improving Efficiency of GPU Kernel Optimization Agents using a Domain-Specific Language and Speed-of-Light Guidance",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Siva Kumar Sastry Hari",
+   "Vignesh Balaji",
+   "Sana Damani",
+   "Qijing Huang",
+   "Christos Kozyrakis"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.29010",
+   "code": ""
+  },
+  "arxiv": "2603.29010",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Optimizing GPU kernels with LLM agents is an iterative process over a large design space. Every candidate must be generated, compiled, validated, and profiled, so fewer trials will save both runtime and cost. We make two key observations. First, the abstraction level that agents operate at is important. If it is too low, the LLM wastes reasoning on low-impact details. If it is too high, it may miss important optimization choices. Second, agents cannot easily tell when they reach the point of diminishing returns, wasting resources as they continue searching. These observations motivate two design principles to improve efficiency: (1) a compact domain-specific language (DSL) that can be learned in context and lets the model reason at a higher level while preserving important optimization levers, and (2) Speed-of-Light (SOL) guidance that uses first-principles performance bounds to steer and budget search. We implement these principles in $μ$CUTLASS, a DSL with a compiler for CUTLASS-backed GPU kernels that covers kernel configuration, epilogue fusion, and multi-stage pipelines. We use SOL guidance to estimate headroom and guide optimization trials, deprioritize problems that are near SOL, and flag kernels that game the benchmark. On 59 KernelBench problems with the same iteration budgets, switching from generating low-level code to DSL code using GPT-5-mini turns a 0.40x geomean regression into a 1.27x speedup over PyTorch. Adding SOL-guided steering raises this to 1.56x. Across model tiers, $μ$CUTLASS + SOL-guidance lets weaker models outperform stronger baseline agents at lower token cost. SOL-guided budgeting saves 19-43% of tokens while retaining at least 95% of geomean speedup, with the best policy reaching a 1.68x efficiency gain. Lastly, SOL analysis helps detect benchmark-gaming cases, where kernels may appear fast while failing to perform the intended computation.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2604-01489",
+  "title": "CuTeGen: An LLM-Based Agentic Framework for Generation and Optimization of High-Performance GPU Kernels using CuTe",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Tara Saba",
+   "Zhiyang Chen",
+   "Jikai Jason Li",
+   "Anne Ouyang",
+   "Xujie Si",
+   "Fan Long"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2604.01489",
+   "code": ""
+  },
+  "arxiv": "2604.01489",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "High-performance GPU kernels are critical to modern machine learning systems, yet developing them remains a manual, expert-driven process. Recent work has explored using LLMs to automate kernel generation, but generated kernels still fall short of carefully tuned references on standardized benchmarks. We present CuTeGen, an agentic GPU kernel synthesis framework that treats kernel development as a structured generate-test-refine workflow over the CuTe abstraction layer. Two design choices distinguish CuTeGen from prior work: targeting CuTe rather than raw CUDA, which exposes performance-critical structures such as tiling and data movement while remaining stable enough for iterative refinement, and a delayed profiling schedule that withholds low-level performance feedback until the kernel's high-level structure has stabilized. On the 209 tasks of KernelBench Level-1 and Level-2, CuTeGen achieves an average speedup of 1.71$\\times$ over PyTorch and outperforms the prior agentic baseline CudaForge (0.89$\\times$) at comparable per-task generation cost. Code available at https://github.com/taratt/cutegen.git",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2605-04956",
+  "title": "KernelBenchX: A Comprehensive Benchmark for Evaluating LLM-Generated GPU Kernels",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Han Wang",
+   "Jintao Zhang",
+   "Kai Jiang",
+   "Haoxu Wang",
+   "Jianfei Chen",
+   "Jun Zhu"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2605.04956",
+   "code": ""
+  },
+  "arxiv": "2605.04956",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "LLM-based Triton kernel generation has attracted significant interest, yet a fundamental empirical question remains unanswered: where does this capability break down, and why? We present KernelBenchX, a benchmark designed to answer this question through category-aware evaluation of correctness and hardware efficiency across 176 tasks in 15 categories. Our systematic comparison of five representative methods yields three main findings. First, task structure determines correctness more than method design. Category explains nearly three times more variance in semantic correctness than method (9.4% vs 3.3% explained deviance), and 72% of Fusion tasks fail across all five methods while Math tasks are solved consistently. Second, iterative refinement improves correctness, but not performance. Across GEAK iterations, compile rate rises from 52.3% to 68.8% while average speedup declines from $1.58\\times$ to $1.44\\times$; newly rescued kernels consistently underperform persistently correct ones ($1.16\\times$ vs $1.58\\times$ speedup in round~0$\\to$1). Third, correctness does not imply efficiency. 46.6% of correct kernels are slower than the PyTorch eager baseline, and cross-hardware speedup variance reaches $21.4\\times$. Besides, quantization remains completely unsolved (0/30 successes) despite non-trivial compilation rates, revealing systematic misunderstanding of numerical computation contracts rather than surface-level syntax errors. These findings suggest that future progress depends on handling global coordination, explicitly modeling numerical precision, and incorporating hardware efficiency into generation. The code is available at https://github.com/BonnieW05/KernelBenchX",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2605-16819",
+  "title": "AgentKernelArena: Generalization-Aware Benchmarking of GPU Kernel Optimization Agents",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Sharareh Younesian",
+   "Wenwen Ouyang",
+   "Sina Rafati",
+   "Mehdi Rezagholizadeh",
+   "Sharon Zhou",
+   "Ji Liu",
+   "Yue Liu",
+   "Yuchen Yang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2605.16819",
+   "code": ""
+  },
+  "arxiv": "2605.16819",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "GPU kernel optimization is increasingly critical for efficient deep learning systems, but writing high-performance kernels still requires substantial low-level expertise. Recent AI coding agents can iteratively read code, invoke compilers and profilers, and refine implementations, yet existing kernel benchmarks evaluate single LLM calls rather than full agent workflows, and none include both kernel-to-kernel optimization and unseen-configuration generalization testing. We present AgentKernelArena, an open-source benchmark for measuring AI coding agents on GPU kernel optimization. The benchmark contains 196 tasks spanning HIP-to-HIP optimization, Triton-to-Triton optimization, and PyTorch-to-HIP translation, and evaluates complete agent workflows in isolated workspaces using gated compilation, correctness, and performance checks, centralized scoring and an unseen-configuration generalization protocol that tests whether optimizations transfer to input configurations the agent never observed. Across production agents including Cursor Agent, Claude Code, and Codex Agent, we find near-perfect compilation and high correctness rates on most task categories, with the strongest configurations achieving mean speedups of up to 6.89x on PyTorch-to-HIP, 6.69x on HIP-to-HIP, and 2.13x on Triton-to-Triton tasks. Our unseen-configuration evaluation shows that HIP-to-HIP and Triton-to-Triton optimizations largely transfer to unseen input shapes, while PyTorch-to-HIP exhibits substantial correctness drops, indicating that agents generating kernels from scratch frequently hardcode shape-specific assumptions. AgentKernelArena is designed as a modular, extensible framework for rigorous evaluation of agentic GPU kernel optimization across agents, tasks, and hardware targets.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2605-23215",
+  "title": "FastKernels: Benchmarking GPU Kernel Generation in Production",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Gabriele Oliaro",
+   "Jaeseong Lee",
+   "Yichao Fu",
+   "Zhaoyuan Su",
+   "Owen Lu",
+   "Sreeram Vennam",
+   "May Jiang",
+   "Junli Wang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2605.23215",
+   "code": ""
+  },
+  "arxiv": "2605.23215",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "LLM-based agents for GPU kernel generation are advancing rapidly, but the benchmarks they optimize against evaluate kernels in isolation, with synthetic inputs and weak baselines, rewarding sandbox speedups that break or vanish in real inference systems. We introduce FastKernels, a benchmark of 384 tasks drawn from 47 representative architectures across 8 categories, whose kernels suffice to reimplement 94.6% (472/499) of HuggingFace Transformers architectures with outputs matching the native implementations. Each task mirrors the interface of the corresponding production module and is scored against the kernels production frameworks ship, and tasks form a compositional hierarchy, from primitives to full models, in which higher-level modules import lower-level ones. Candidates are scored at the kernel level and end to end inside the models they come from, on the production execution path, and MacroEval aggregates calibrated correctness, coverage, and speedup into a leaderboard. Seeding it with five representative agents (6,900 agent-hours), we find that kernel-level speedups of $1.6$-$6.6\\times$ shrink to at most $1.25\\times$ end to end, only 20% of winning kernel sets run correctly as-is, and kernel-level scores mis-rank agents: Claude Code matches or beats KDA at every level in isolation, yet KDA scores $3\\times$ higher end to end. Code is available at https://github.com/Snowflake-AI-Research/fastkernels.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2607-24762",
+  "title": "Kernel Forge: An Agent Harness for LLM-based Generation and Optimization of CUDA Kernels",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Joshua Brodsky",
+   "Dhravid Kumar",
+   "Savini Kashmira",
+   "Jayanaka Danatanarayana",
+   "Jason Mars",
+   "Krisztian Flautner",
+   "Lingjia Tang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2607.24762",
+   "code": ""
+  },
+  "arxiv": "2607.24762",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Machine learning models are increasingly embedded in everyday software, and most of their runtime is spent in a small set of compute kernels such as matrix multiplication, convolution, and normalization. Optimizing these kernels is one of the most direct ways to reduce latency and cost, but it has traditionally required expert engineers to hand-write low-level GPU code. Agentic systems built on large language models (LLMs) can now generate and optimize kernels with far less human effort, yet existing tools are largely evaluated on randomly generated tensors and isolated kernels, emit standalone CUDA code that developers must manually reintegrate, mostly target only LLM PyTorch models, and offer limited support for inspecting and debugging results. We present Kernel Forge, an open-source, end-to-end agentic harness that accepts any unmodified PyTorch model in place. Kernel Forge supports vision, diffusion, and LLM workloads, uses Monte Carlo Tree Search (MCTS) to explore multiple optimization paths rather than a single linear refinement chain, and ships with a graphical user interface for monitoring progress, inspecting candidate kernels, and debugging failures. We evaluate Kernel Forge on four PyTorch models spanning vision, diffusion, and LLM workloads on an NVIDIA DGX Spark with GB10 GPU. With only 50 optimization iterations per kernel, it optimizes 14 kernels to outperform PyTorch eager mode, reaching $1.52\\times$ on adaptive\\_avgpool2d in ResNet-50, $1.70\\times$ on group\\_norm in Stable Diffusion 3.5 Medium, $2.83\\times$ on softmax in Gemma 4 E2B, and $1.54\\times$ on softmax in Qwen 3.5 35B-A3B.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2606-20128",
+  "title": "The Correctness Illusion in LLM-Generated GPU Kernels",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Dipankar Sarkar"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2606.20128",
+   "code": ""
+  },
+  "arxiv": "2606.20128",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Benchmarks for LLM-generated GPU kernels (KernelBench, TritonBench, GEAK) score correctness through fixed-shape, small-sample allclose-style checks. The number of inputs varies between benchmarks. The shape, dtype, and tolerance are fixed for each kernel. We test that oracle empirically. We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors) and re-evaluate it under op-schema-aware seeded fuzzing with a high-precision (fp64) CPU reference and per-(op, dtype) absolute tolerances. The seeded oracle flags 9 of 9 buggy kernels and passes 15 of 15 correct controls, at zero precision cost on controls. We extend the corpus to 26 ops (adding a flash-attention pair) and re-run the same protocol on five GPU classes (RTX 3060, A10, L40S, A100 SXM4, H100 NVL). The verdicts are identical across all five GPUs: 10 of 10 illusions caught and 16 of 16 controls clean. The corpus result is about LLM-style transcription bugs that the allclose-on-one-shape oracle certifies as correct, not about the bug rate of any specific deployed LLM. Every flagged failure replays byte-for-byte from a stored seed.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2606-26453",
+  "title": "Optimizing CUDA like a Human: Micro-Profiling Tools as Expert Surrogates for LLM-Based GPU Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Jiading Gai",
+   "Shuai Zhang",
+   "Kaj Bostrom",
+   "Jin Huang",
+   "Vihang Patil",
+   "Haoyang Fang",
+   "Bernie Wang",
+   "Huzefa Rangwala"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2606.26453",
+   "code": ""
+  },
+  "arxiv": "2606.26453",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "We present KernelPro, a closed-loop multi-agent system that automatically generates, profiles, and iteratively optimizes GPU kernel code by integrating large language model (LLM) code generation with hardware profiler feedback and pluggable bottleneck detection tools. KernelPro introduces four contributions: (1) a semantic feedback operator that encodes expert heuristics as pluggable micro-profiling tools, transforming raw hardware metrics into actionable natural language guidance; (2) a two-stage tool invocation architecture where roofline-based bottleneck classification filters which specialized analysis tools execute, combining kernel-level (ncu), instruction-level (SASS), and system-level (nsys) profiling; (3) a domain-adapted MCTS with progressive widening, asymmetric branching, log-reward calibration, dead-end pruning, and search memory for cross-iteration learning; and (4) direct CuTe source-level code generation via autonomous code search over the CUTLASS/CuTe codebase. On KernelBench, KernelPro achieves geometric mean speedups of 2.42x/4.69x/5.30x on Levels 1/2/3, establishing state-of-the-art performance across all difficulty levels. On VeOmni's expert-optimized MoE training kernels, KernelPro achieves 1.23x over hand-tuned Triton by generating a from-scratch raw-CUDA+CuTe Hopper WGMMA kernel. Ablation studies demonstrate that each design component independently and significantly improves optimization quality: micro-profiling tools (p < 0.0001 vs raw metrics), MCTS search (26% higher geometric mean vs greedy, p = 0.004), and proactive tool orchestration (23% improvement, p = 0.035). Finally, KernelPro is the first CUDA kernel coding agent to optimize energy efficiency beyond the speed-only focus of prior systems, demonstrating an 11.6% measured energy reduction at matched speed.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2607-16241",
+  "title": "KernelBench-Verified: Do LLM-Generated Kernels Actually Beat PyTorch?",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Yunxiang Zhang",
+   "Ping Yu",
+   "Jianyu Wang",
+   " Max",
+   " Fan",
+   "Julian Reed",
+   "Azalia Mirhoseini",
+   "Will Su"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2607.16241",
+   "code": ""
+  },
+  "arxiv": "2607.16241",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Recent large language models (LLMs) can generate custom CUDA kernels that appear to outperform PyTorch on benchmarks such as KernelBench. Building upon this foundational framework, we demonstrate that frontier models frequently engage in reward hacking to artificially inflate reported performance. In this work, we identify two areas where evaluation frameworks must co-evolve with model capabilities. First, to accurately measure true speedup, we examine the baseline timing mechanism, noting that enabling Tensor Core acceleration with TF32 provides a more realistic estimation of execution on modern GPUs. Second, concerning algorithmic correctness, models often exploit the narrow test distribution by hardcoding bypasses for specific tensor values. By skipping required computations, these kernels artificially accelerate execution rather than implementing actual CUDA kernels. We introduce KernelBench-Verified, an extended evaluation framework that incorporates a TF32-enabled baseline and a four-distribution hidden test suite. We additionally introduce memory efficiency metrics that capture the often-overlooked speed-memory tradeoff in kernel optimization. Under verified single-turn evaluation with seven frontier LLMs, we find that the best-performing model (GPT-5.5) achieves a 0.88x geometric mean speedup, significantly lower than the 1.43x speedup observed under the standard evaluation protocol. No model consistently outperforms PyTorch when evaluated against realistic baselines. On the memory front, 28% of GPU kernels generated by the best model increase peak GPU memory usage. Our findings demonstrate the necessity of continually adapting robust evaluation protocols as LLM kernel generation capabilities advance.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2607-14541",
+  "title": "Are LLM-Generated GPU Kernels Production-Ready? A Trace-Driven Benchmark and Optimization Agent",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Lingyun Yang",
+   "Yuxiao Wang",
+   "Shenghao Liang",
+   "Linfeng Yang",
+   "Daocheng Ying",
+   "Chunbo You",
+   "Rui Zhang",
+   "Luping Wang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2607.14541",
+   "code": ""
+  },
+  "arxiv": "2607.14541",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Existing GPU kernel generation benchmarks draw problems from synthetic or curated sources that diverge from deployed workloads. We present Atrex-Bench, a benchmark whose 30 operators and 440 shapes are sampled directly from full-cluster production inference traces of compute-limited, memory-rich GPUs. Each problem carries an importance weight derived from its share of observed GPU time, weighted by application card-hours and computed separately for the serving phases in which it runs, together with a per-problem roofline ceiling, so the aggregate score emphasizes the kernels that consume the most serving time. Evaluating six frontier coding agents on Atrex-Bench shows that even the best vanilla model reaches only ${\\sim}10\\%$ of the hardware roofline on production operators; and correctness alone overstates capability, since much of the apparent pass rate comes from PyTorch fallbacks rather than kernels the model wrote. To close this gap, we co-release Atrex-Kernel-Agent (AKA), a profile-driven kernel-optimization agent that combines iterative measure-revise search, optimization dropout for escaping stalled search contexts, and a layered GPU-optimization knowledge base (298 reference-kernel files and 244 optimization-knowledge documents, plus external upstream reference projects for API/ISA lookup). In a controlled case study, the agent converts zero-FlyDSL fallbacks into real kernels that match or exceed hand-tuned production baselines.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2609-22220",
+  "title": "Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Mingzhe Du",
+   "Anh Tuan Luu",
+   "Dong Huang",
+   "See-Kiong Ng"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2609.22220",
+   "code": ""
+  },
+  "arxiv": "2609.22220",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-point tolerance, and their verdicts now feed leaderboards and reinforcement-learning rewards. Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recipes, tighter tolerances---with no way to \\emph{measure} whether any patch suffices. We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject 10{,}303 compilable faults into verified CUDA implementations of 188 KernelBench problems, 7{,}384 of them with an independent kill witness; any test protocol is scored by the fraction it detects. The official check misses \\textbf{one in six} witnessed faults (16.9%), deterministically, and the misses are skewed by family: 8.7% of arithmetic faults escape, but 78.6% of precision faults do. The metric explains why (a tolerance blind band growing with reduction size; a measured ceiling on input aggressiveness set by legitimate floating-point variance), audits the strongest existing patch (KernelBench-Verified's gain splits into $+4.0$ points from hidden inputs and $+4.5$ from tighter tolerance, a split its authors could not compute), and exposes a published fuzzing recipe that rejects \\emph{correct} kernels 107 times. Optimizing suites over the kill matrix reaches 98.0% detection with two inputs per problem (94.8% held-out), and the measurement's fault taxonomy teaches a test generator more than the raw faults themselves. Across 48 whole architectures, the blindness grows with scale, concentrating in deep homogeneous pipelines, and two problems prove unrefereeable: their official references violate the benchmark's own tolerance against fp64. We release everything as \\href{https://huggingface.co/datasets/Elfsong/KernelBench-M}{KernelBench-M}.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2609-21058",
+  "title": "How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Gaurav Agarwal",
+   "Ashish Garg",
+   "Isha Singhal"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2609.21058",
+   "code": ""
+  },
+  "arxiv": "2609.21058",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Language models can now write GPU kernels that outperform PyTorch. We evaluate five model configurations on KernelBench level 1 and find that a frontier model produces correct kernels for 91.1% of problems and independently verified speedups on 22 of 56, including three convolutions, with a median of 1.235x. Open-weights models are far behind: the best reaches 30.4% correct with three verified speedups and solves zero convolutions. We then ask a question the literature does not: what fraction of a real model's wall clock do such kernels govern? Profiling seven workloads across three domains, we find the addressable fraction ranges from 8.9% to 58.2%. On transformers, 80-86% of runtime is spent in cuBLAS GEMM and FlashAttention, bounding realistic end-to-end improvement at roughly 1%, and the fraction shrinks with model scale. On recommenders it is 58.2%, concentrated in a single embedding kernel. We introduce DLRM-Bench, 12 recommender kernel problems in KernelBench format, and measure a 41.7% win rate at a 1.552x median there, projecting 8.63% end-to-end. Separately, we show that KernelBench's correctness check (torch.allclose with an absolute tolerance) is satisfied by a tensor of zeros on 4 of 60 level-1 problems. Two kernels in our own results exploited this before we detected them, including one scored at 283x that wrote 0.3% of its output buffer. We propose scale-invariant replacements and release all 879 evaluations.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2609-30059",
+  "title": "KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Aheli Poddar",
+   "Sanskar Prasad",
+   "Arindam Samanta",
+   "Subha Chakraborty",
+   "Vishal Goyal",
+   "Rohit Singh Rathaur"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2609.30059",
+   "code": ""
+  },
+  "arxiv": "2609.30059",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Deep learning inference and training performance depends critically on GPU kernel efficiency. Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but frequently underperform expert-written implementations by wide margins. Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet translating isolated kernel improvements into model-level gains remains a challenge. We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization. It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and refinement, then assembles and evaluates the resulting model. Four stages of validation combine execution checks, multi-seed numerical comparison, model-level checking with a float64 fallback and end-to-end performance gating ($γ{=}1.03$). The system supports PyTorch nn.Modules, standalone Triton kernels, and Helion kernels. It is evaluated on all 250 KernelBench problems on NVIDIA H200 which includes 100 single-operator problems (Level1), 100 composite operators (Level2), and 50 model architectures (Level3). KernelOPT achieves geometric mean speedups over torch.compile of 1.40$\\times$, 1.15$\\times$ and 1.07$\\times$ respectively across L1, L2 and L3. Among problems exceeding 1.03$\\times$ speedup, the geomeans are 2.54$\\times$ (36 L1), 1.84$\\times$ (23 L2), and 1.37$\\times$ (11 L3). These gains include arithmetic-precision changes and task-specific algebraic simplifications under the evaluated numerical tolerances. The evaluation also reveals discrepancies between isolated kernel improvements and end-to-end performance, motivating model-level measurement alongside kernel-level optimization. Code is available at https://github.com/TorchedHat/KernelOPT.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2610-36623",
+  "title": "God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Youwei Bao",
+   "Chengpeng Wang",
+   "Simin Chen"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2610.36623",
+   "code": ""
+  },
+  "arxiv": "2610.36623",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Large language model (LLM) serving systems dynamically batch user requests for GPU execution, so the same request may be processed alongside different requests across runs. If the GPU kernels lack batch invariance (BI), this changing batch context can alter the numerical output for an unchanged input, undermining reproducibility. Existing kernel generation agents focus on correctness and efficiency but \\emph{overlook BI}. We find 19 confirmed BI violations among 83 batch-applicable released artifacts. To address this limitation, we propose \\tool, which combines contract-guided static dependency analysis with dynamic validation of bitwise consistency across batch contexts. \\tool is designed as a plug-in component for general kernel agents, allowing their original optimization capabilities to be reused while adding BI enforcement. We integrate it as successive acceptance gates in the optimization loop, rejecting structurally risky or dynamically non-invariant candidates before performance benchmarking and returning feedback to the agent. Experiments across three agent frameworks under baseline and BI-aware generation on real world LLM serving tasks show that \\tool improves the BI pass rate from 67.6\\% to 91.9\\% while retaining 91.8\\% of the baseline geometric mean speedup. These results demonstrate that \\tool can be incorporated into kernel optimization by agents as an additional reliability objective alongside correctness and speed.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2610-36434",
+  "title": "JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Yaojian Chen",
+   "Dazhi Peng",
+   "Zhui Zhu",
+   "Leshan Li",
+   "Haojun Sun",
+   "Yiyun Zheng",
+   "Qingfeng He",
+   "Shangzhan Li"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2610.36434",
+   "code": ""
+  },
+  "arxiv": "2610.36434",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "A small number of GPU kernels often determines the efficiency of large language model training and inference. High-performance kernel development typically relies on expert knowledge through manual implementation, collaboration with general-purpose models, or specialized agents equipped with domain knowledge, evaluation methods, and search workflows. We investigate how much value this knowledge provides as foundation models become stronger. We introduce JustGoal, a goal-only baseline in which a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined workflows, and builds its own evaluation loop. On NVIDIA B200 GPUs, JustGoal outperforms open-source libraries on 8 of 10 operators, achieving per-operator geometric mean speedups of 1.14x to 2.34x. It also surpasses the fastest publicly released specialized-agent kernel on 5 of 9 operators with available comparisons. In a controlled same-model comparison using Fable 5.1 on single shapes, the KDA-0.5 harness reaches 0.95x of JustGoal's performance, while single-mechanism ablations show no consistent benefit from domain knowledge or predefined workflows. These results indicate that specialized machinery should be justified by clear gains over a same-model, same-scope goal-only baseline and reevaluated whenever the foundation model changes.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2611-04331",
+  "title": "Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Junyu Yin",
+   "Vinod Grover",
+   "Keren Zhou"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2611.04331",
+   "code": ""
+  },
+  "arxiv": "2611.04331",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes. Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can show it, but only with hand-placed probes and a recompilation that alters the very kernel being measured. We present Warpline, which gives agents this view automatically while leaving the kernel essentially unchanged. Warpline analyzes the binary to decide which events to record and inserts probes into the binary itself without recompilation or any manual step. It then aligns the trace with hardware profiling data on one unified timeline. Because it needs only the binary, it can regenerate this evidence for every new version of the kernel at whatever level the agent edits it (source, IR, or PTX), closing the optimization loop without human intervention. On NVIDIA B200, across 35 kernels in Triton, CuTe DSL, and CUDA C++, Warpline adds a median overhead of 1.2% and leaves a median 99.9% of executed instructions unchanged, whereas existing tracers have median overheads of 1.6% to 13.2% and leave only 4.6% to 32.7% unchanged. Warpline also traces closed-source kernels, which these tracers cannot. On 10 SOL-ExecBench problems, agents using Warpline spend less time and fewer model requests than a bare coding agent and NVIDIA's Kernel Design Agents (KDA), yet lead both after every round in geometric mean and reach a 7.69$\\times$ geometric-mean speedup, against 6.94$\\times$ and 6.13$\\times$. Two case studies further demonstrate that Warpline reveals hidden bottlenecks and provides actionable optimization insights.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2611-15506",
+  "title": "KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Ziyuan Li",
+   "Zihe Song",
+   "Xiaofang Qi",
+   "Wei Yang",
+   "Tao Xie"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2611.15506",
+   "code": ""
+  },
+  "arxiv": "2611.15506",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or reject a generated kernel candidate against the contracts of the given kernel-generation task), whose results inform reward assignment, candidate selection, and speedup claims during kernel generation. However, an existing validator suffers from various limitations, e.g., wrongly accepting a candidate due to missing its forbidden library use or wrongly rejecting a candidate due to determining its permitted library use as forbidden (constraints on library uses are stated in the task contracts). To assess the quality of a validator against the given task contracts, we propose an independent-audit approach for the validator by (1) construction of audit oracle: labeling a candidate as PASS or FAIL based on three separate dimensions in our proposed contract model (i.e., semantic correctness, implementation integrity, and measurement integrity) and (2) auditing of the validator against the audit oracle: comparing the labels of the candidate against the validation results produced by the validator. For semantic correctness, reference-calibrated stress tests check output correctness on valid inputs for a candidate. For implementation integrity, reference and candidate execution traces are used to determine specific library uses. For measurement integrity, timing checks assess whether the reported runtime reflects the full time needed to complete the candidate's computation. We apply our approach to assess the quality of six validators and 716 candidates from seven corpora, including constructed controls. The evaluation results show that our approach helps assess the existing six validators to have nontrivial false-reject rates. There is high-degree agreement between the candidate labels produced by our audit oracle and human judgments.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-02611",
+  "title": "KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Shuai Che",
+   "Gang Peng"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.02611",
+   "code": ""
+  },
+  "arxiv": "2608.02611",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and search often stalls early. We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, policy-gated evaluation, and profiler-informed diagnosis. The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promising survivors to optimize and evolve GPU kernels. On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, reaching 0.88x-6.72x speedup over PyTorch and up to 1.4x speedup over the state-of-the-art kernel agent, with up to 48% lower optimization time.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2611-03517",
+  "title": "Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Gabriele Oliaro",
+   "Jaeseong Lee",
+   "Zhaoyuan Su",
+   "Sreeram Vennam",
+   "Zhihao Jia",
+   "Samyam Rajbhandari"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2611.03517",
+   "code": ""
+  },
+  "arxiv": "2611.03517",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "LLM agents for GPU kernel optimization sit at two ends of a structure-freedom tradeoff. Scripted agents fix what the model does at each step, via a learned policy, an optimization menu, or fixed roles, and are sample-efficient where the recipe applies and stall where it does not. Open-ended agents let a self-directed model mutate a population of kernels and pay for the freedom in trials: thousands of evaluations, repeated edits, and wrong candidates. Both respond to hard targets by equipping the agent with more: parsed profiler output, disassembly analysis, retrieval over documentation and libraries, and stores of lessons. We argue that both lack direction, a hypothesis about where the remaining gap is, and that a short question asked at the right moment supplies it without narrowing what the agent may do next. We present KernelSeek, a question-driven agent that makes an existing CUDA kernel faster with no operator-specific knowledge and no faster implementation to imitate: a general-purpose coding agent, a minimal harness that enforces a verifiable goal, and questions at decision points, first from a human, then from a bank the agent applies to itself. On the same task, evaluator, hardware, and week, a tool-rich autonomous agent built in the prevailing style plateaued at 0.50x FlashAttention-3 after 133 model-driven steps; KernelSeek reached 1.13x. It then produced dependency-free FlashAttention forward kernels for Hopper and Blackwell, single CUDA files with no CUTLASS, CuTe, cuBLAS, or cuDNN, correct on all 182 scenarios per architecture and 1.16x FlashAttention-3 and 1.46x FlashAttention-4 (geometric mean). Across 162 human messages and 11.5K agent tool calls, every large gain followed a question that moved the agent to a different layer of the system or rejected a claimed limit, never one that supplied information. We release the kernels, harness, question bank, and all traces.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2510-03760",
+  "title": "EvoEngineer: Mastering Automated CUDA Kernel Code Evolution with Large Language Models",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Ping Guo",
+   "Chenyu Zhu",
+   "Siyuan Chen",
+   "Fei Liu",
+   "Xi Lin",
+   "Zhichao Lu",
+   "Qingfu Zhang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2510.03760",
+   "code": ""
+  },
+  "arxiv": "2510.03760",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "CUDA kernel optimization has become a critical bottleneck for AI performance, as deep learning training and inference efficiency directly depends on highly optimized GPU kernels. Despite the promise of Large Language Models (LLMs) for automating kernel optimization, this field suffers from a fragmented ecosystem of isolated and incomparable approaches with unclear problem formulations. Furthermore, general-purpose LLM code evolution methods cannot meet strict correctness requirements of CUDA kernel optimization. We address these fundamental challenges by first formalizing CUDA kernel optimization as a code optimization task with a clear objective, constraints, and evaluation metrics. We then establish the first systematic LLM-based code evolution framework, EvoEngineer, that provides guidance for designing and adapting optimization strategies to achieve a balance between performance and correctness. Finally, we implement a kernel optimization system based on this framework and conduct extensive experiments on 91 real-world CUDA kernels. Our results demonstrate that EvoEngineer achieves a principled balance between performance and correctness, with the highest averaged median speedup of \\textbf{2.72}$\\times$ over baseline CUDA kernels and a code validity rate of \\textbf{69.8}\\%, outperforming existing methods on both dimensions. Our method achieves a maximum speedup of \\textbf{36.75}$\\times$ among all operations over PyTorch kernels and delivers the highest speedup on \\textbf{28} (\\textbf{56.0\\%}) of 50 operations that achieve over \\textbf{2$\\times$} acceleration.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2512-16465",
+  "title": "cuPilot: A Strategy-Coordinated Multi-agent Framework for CUDA Kernel Evolution",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Jinwu Chen",
+   "Qidie Wu",
+   "Bin Li",
+   "Lin Ma",
+   "Xin Si",
+   "Yang Hu",
+   "Shouyi Yin",
+   "Jun Yang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2512.16465",
+   "code": ""
+  },
+  "arxiv": "2512.16465",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Optimizing CUDA kernels is a challenging and labor-intensive task, given the need for hardware-software co-design expertise and the proprietary nature of high-performance kernel libraries. While recent large language models (LLMs) combined with evolutionary algorithms show promise in automatic kernel optimization, existing approaches often fall short in performance due to their suboptimal agent designs and mismatched evolution representations. This work identifies these mismatches and proposes cuPilot, a strategy-coordinated multi-agent framework that introduces strategy as an intermediate semantic representation for kernel evolution. Key contributions include a strategy-coordinated evolution algorithm, roofline-guided prompting, and strategy-level population initialization. Experimental results show that the generated kernels by cuPilot achieve an average speed up of 3.09$\\times$ over PyTorch on a benchmark of 100 kernels. On the GEMM tasks, cuPilot showcases sophisticated optimizations and achieves high utilization of critical hardware units. The generated kernels are open-sourced at https://github.com/champloo2878/cuPilot-Kernels.git.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-19173",
+  "title": "SOL-ExecBench: Speed-of-Light Benchmarking for Real-World GPU Kernels Against Hardware Limits",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Edward Lin",
+   "Sahil Modi",
+   "Siva Kumar Sastry Hari",
+   "Qijing Huang",
+   "Zhifan Ye",
+   "Nestor Qin",
+   "Fengzhe Zhou",
+   "Yuan Zhang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.19173",
+   "code": ""
+  },
+  "arxiv": "2603.19173",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "As agentic AI systems become increasingly capable of generating and optimizing GPU kernels, progress is constrained by benchmarks that reward speedup over software baselines rather than proximity to hardware-efficient execution. We present SOL-ExecBench, a benchmark of 235 CUDA kernel optimization problems extracted from 124 production and emerging AI models spanning language, diffusion, vision, audio, video, and hybrid architectures, targeting NVIDIA Blackwell GPUs. The benchmark covers forward and backward workloads across BF16, FP8, and NVFP4, including kernels whose best performance is expected to rely on Blackwell-specific capabilities. Unlike prior benchmarks that evaluate kernels primarily relative to software implementations, SOL-ExecBench measures performance against analytically derived Speed-of-Light (SOL) bounds computed by SOLAR, our pipeline for deriving hardware-grounded SOL bounds, yielding a fixed target for hardware-efficient optimization. We report a SOL Score that quantifies how much of the gap between a release-defined scoring baseline and the hardware SOL bound a candidate kernel closes. To support robust evaluation of agentic optimizers, we additionally provide a sandboxed harness with GPU clock locking, L2 cache clearing, isolated subprocess execution, and static analysis based checks against common reward-hacking strategies. SOL-ExecBench reframes GPU kernel benchmarking from beating a mutable software baseline to closing the remaining gap to hardware Speed-of-Light.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2602-11000",
+  "title": "Fine-Tuning GPT-5 for GPU Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Ali Tehrani",
+   "Yahya Emara",
+   "Essam Wissam",
+   "Wojciech Paluch",
+   "Waleed Atallah",
+   "Łukasz Dudziak",
+   "Mohamed S. Abdelfattah"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2602.11000",
+   "code": ""
+  },
+  "arxiv": "2602.11000",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Developing efficient GPU kernels is essential for scaling modern AI systems, yet it remains a complex task due to intricate hardware architectures and the need for specialized optimization expertise. Although Large Language Models (LLMs) demonstrate strong capabilities in general sequential code generation, they face significant challenges in GPU code generation because of the scarcity of high-quality labeled training data, compiler biases when generating synthetic solutions, and limited generalization across hardware generations. This precludes supervised fine-tuning (SFT) as a scalable methodology for improving current LLMs. In contrast, reinforcement learning (RL) offers a data-efficient and adaptive alternative but requires access to relevant tools, careful selection of training problems, and a robust evaluation environment. We present Makora's environment and tools for reinforcement learning finetuning of frontier models and report our results from fine-tuning GPT-5 for Triton code generation. In the single-attempt setting, our fine-tuned model improves kernel correctness from 43.7% to 77.0% (+33.3 percentage points) and increases the fraction of problems outperforming TorchInductor from 14.8% to 21.8% (+7 percentage points) compared to baseline GPT-5, while exceeding prior state-of-the-art models on KernelBench. When integrated into a full coding agent, it is able to solve up to 97.4% of problems in an expanded KernelBench suite, outperforming the PyTorch TorchInductor compiler on 72.9% of problems with a geometric mean speedup of 2.12x. Our work demonstrates that targeted post-training with reinforcement learning can unlock LLM capabilities in highly specialized technical domains where traditional supervised learning is limited by data availability, opening new pathways for AI-assisted accelerator programming.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2506-09092",
+  "title": "CUDA-LLM: LLMs Can Write Efficient CUDA Kernels",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Wentao Chen",
+   "Jiace Zhu",
+   "Qi Fan",
+   "Yehan Ma",
+   "An Zou"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2506.09092",
+   "code": ""
+  },
+  "arxiv": "2506.09092",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Large Language Models (LLMs) have demonstrated strong capabilities in general-purpose code generation. However, generating the code which is deeply hardware-specific, architecture-aware, and performance-critical, especially for massively parallel GPUs, remains a complex challenge. In this work, we explore the use of LLMs for the automated generation and optimization of CUDA programs, with the goal of producing high-performance GPU kernels that fully exploit the underlying hardware. To address this challenge, we propose a novel framework called \\textbf{Feature Search and Reinforcement (FSR)}. FSR jointly optimizes compilation and functional correctness, as well as the runtime performance, which are validated through extensive and diverse test cases, and measured by actual kernel execution latency on the target GPU, respectively. This approach enables LLMs not only to generate syntactically and semantically correct CUDA code but also to iteratively refine it for efficiency, tailored to the characteristics of the GPU architecture. We evaluate FSR on representative CUDA kernels, covering AI workloads and computational intensive algorithms. Our results show that LLMs augmented with FSR consistently guarantee correctness rates. Meanwhile, the automatically generated kernels can outperform general human-written code by a factor of up to 179$\\times$ in execution speeds. These findings highlight the potential of combining LLMs with performance reinforcement to automate GPU programming for hardware-specific, architecture-sensitive, and performance-critical applications.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2509-07506",
+  "title": "Astra: A Multi-Agent System for GPU Kernel Performance Optimization",
+  "title_zh": "",
+  "year": 2025,
+  "venue": "",
+  "authors": [
+   "Anjiang Wei",
+   "Tianran Sun",
+   "Yogesh Seenichamy",
+   "Hang Song",
+   "Anne Ouyang",
+   "Azalia Mirhoseini",
+   "Ke Wang",
+   "Alex Aiken"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2509.07506",
+   "code": ""
+  },
+  "arxiv": "2509.07506",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "GPU kernel optimization has long been a central challenge at the intersection of high-performance computing and machine learning. Efficient kernels are crucial for accelerating large language model (LLM) training and serving, yet attaining high performance typically requires extensive manual tuning. Compiler-based systems reduce some of this burden, but still demand substantial manual design and engineering effort. Recently, researchers have explored using LLMs for GPU kernel generation, though prior work has largely focused on translating high-level PyTorch modules into CUDA code. In this work, we introduce Astra, the first LLM-based multi-agent system for GPU kernel optimization. Unlike previous approaches, Astra starts from existing CUDA implementations extracted from SGLang, a widely deployed framework for serving LLMs, rather than treating PyTorch modules as the specification. Within Astra, specialized LLM agents collaborate through iterative code generation, testing, profiling, and planning to produce kernels that are both correct and high-performance. On kernels from SGLang, Astra achieves an average speedup of 1.32x using zero-shot prompting with OpenAI o4-mini. A detailed case study further demonstrates that LLMs can autonomously apply loop transformations, optimize memory access patterns, exploit CUDA intrinsics, and leverage fast math operations to yield substantial performance gains. Our work highlights multi-agent LLM systems as a promising new paradigm for GPU kernel optimization. Our code is publicly available at https://github.com/Anjiang-Wei/Astra.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-07169",
+  "title": "Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Yuxuan Han",
+   "Meng-Hao Guo",
+   "Zhengning Liu",
+   "Wenguang Chen",
+   "Shi-Min Hu"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.07169",
+   "code": ""
+  },
+  "arxiv": "2603.07169",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Optimizing GPU kernels manually is a challenging and time-consuming task. With the rapid development of LLMs, automated GPU kernel optimization is gradually becoming a tangible reality. However, current LLM-driven automated optimization methods narrowly focus on machine learning applications, such as PyTorch operator optimization, while overlooking broader domains like sparse matrix operations in scientific computing. Extending to these broader applications brings new challenges for the benchmark and algorithm. Therefore, developing a general-purpose automated kernel optimization method becomes our primary focus. In this paper, we address the absence of systematic evaluation for multi-scenario settings by introducing MSKernelBench, which spans multiple scenarios, including fundamental algebraic operations, common LLM kernels, sparse matrix operators, and scientific computing routines, each supporting both FP32 and BF16 precision. Building on this benchmark, we introduce CUDAMaster, a multi-agent, hardware-aware system for kernel optimization that leverages profiling information and automatically constructs the full compilation and execution toolchain. Experimental results demonstrate that CUDAMaster achieves significant speedups across most operators, outperforming Astra by about 35%. In several cases, its performance matches or surpasses that of highly optimized, closed-source libraries such as cuBLAS. A demo showcasing the original and optimized code for each operator is available at https://hanyx2021.github.io/MSKernelBenchDemo/.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-10085",
+  "title": "KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Qitong Sun",
+   "Jun Han",
+   "Tianlin Li",
+   "Zhe Tang",
+   "Sheng Chen",
+   "Fei Yang",
+   "Aishan Liu",
+   "Xianglong Liu"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.10085",
+   "code": ""
+  },
+  "arxiv": "2603.10085",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Improving GPU kernel efficiency is crucial for efficient AI systems. Recent work has explored leveraging large language models (LLMs) for GPU kernel generation and optimization. However, existing LLM-based kernel optimization pipelines typically rely on opaque, implicitly learned heuristics within the LLMs to determine optimization strategies. This leads to inefficient trial-and-error and weakly interpretable optimizations. Our key insight is to replace implicit heuristics with expert optimization knowledge that is aware of task trajectories. Specifically, we present KernelClaw, a multi-agent framework with a dual-level memory architecture. KernelClaw operates by coordinating agents with long-term memory of reusable expert knowledge and short-term memory to prevent repetitive backtracking. On KernelBench Levels 1-3, KernelClaw achieves a 100% success rate and average speedups of 6.98x, 7.89x, and 1.94x over Torch Eager on Levels 1, 2, and 3, respectively, outperforming prior baselines. Code is available at https://github.com/0satan0/KernelMem/.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2603-12440",
+  "title": "KernelFoundry: Hardware-aware evolutionary GPU kernel optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Nina Wiedemann",
+   "Quentin Leboutet",
+   "Michael Paulitsch",
+   "Diana Wofk",
+   "Benjamin Ummenhofer"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2603.12440",
+   "code": ""
+  },
+  "arxiv": "2603.12440",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "GPU kernel optimization challenges LLMs beyond standard coding tasks, as it requires an understanding of hardware architecture, parallel computing optimization strategies, and profiling outputs. However, most existing approaches leveraging LLMs for kernel generation apply standard prompting and feedback loops, considering hardware only through profiling feedback. We introduce KernelFoundry, an evolutionary framework that efficiently explores the space of GPU kernels through (1) MAP-Elites quality diversity search with kernel-specific behavioral dimensions to sustain exploration; (2) meta-prompt evolution that co-evolves prompts with kernels to uncover task-specific optimization strategies, and (3) a template-based parameter optimization approach to tune kernels to inputs and hardware. We evaluate this framework on Kernel-Bench, robust-kbench and custom tasks, generating SYCL kernels as a cross-platform GPU programming paradigm, and CUDA kernels for comparison to prior work. Our approach consistently outperforms the baseline methods and achieves an average speedup of 2.3 on KernelBench for SYCL. Moreover, KernelFoundry is implemented as a distributed framework with remote access to diverse hardware, allowing quick benchmarking and featuring a flexible user input layer to support kernel generation for a wide range of real use cases beyond benchmarking.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-14560",
+  "title": "Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Mao Luo",
+   "Hongbin Li",
+   "Feng Lin",
+   "Hanling Yi",
+   "Zhe Huang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.14560",
+   "code": ""
+  },
+  "arxiv": "2608.14560",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "We study whether general-purpose code agents can produce state-of-the-art GPU kernels without any manually written CUDA code. We investigate this question using representative workloads from FlashInfer-Bench, focusing on the Fused MoE, DSA TopK Indexer, and DSA Sparse Attention, and evaluate all generated kernels under the correctness-gated FlashInfer-Bench protocol on NVIDIA B200 GPUs. Starting from the PyTorch implementations, workload definitions, benchmark commands, and a compact set of CUDA optimization skills, we build a kernel optimization workflow in Houmao, a multi-agent orchestration framework for heterogeneous coding agents, to generate, debug, profile, and optimize the kernels. Humans remain strictly in an orchestration role: defining the workflow, enforcing correctness and anti-hacking constraints, supplying key references, and redirecting the search when progress stalls, without reviewing or editing the kernel code itself. Across roughly 1.9 billion agent tokens, the resulting kernels achieve speedups of 92.68x on Fused MoE, 1101.02x on DSA TopK Indexer, and 181.35x on DSA Sparse Attention relative to the PyTorch reference implementations, while also significantly outperforming the corresponding FlashInfer baselines. In the official evaluation of the MLSys 2026 FlashInfer AI Kernel Generation Contest, our generated Fused MoE kernel achieves a 1.71x speedup over the FlashInfer baseline, exceeding the top result of the Fused MoE agent-assisted track, which reports a 1.68x speedup. These results suggest that, under a disciplined correctness-first workflow, code agents can serve as effective autonomous optimizers for modern GPU kernel development.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-01804",
+  "title": "LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Tankun Li",
+   "Zhi Chen",
+   "Yaohua Tang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.01804",
+   "code": ""
+  },
+  "arxiv": "2608.01804",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Post-training large language models (LLMs) via reinforcement learning (RL) has significantly advanced code generation capabilities. To bypass the heavy memory footprint of critic networks, current state-of-the-art frameworks leverage critic-free paradigms like Group Relative Policy Optimization (GRPO) tied to rule-based verification sandboxes. However, applying these frameworks to low-level systems programming, such as CUDA kernel generation-presents severe challenges: binary pass/fail rewards introduce severe signal sparsity, while multi-turn environmental feedback loops suffer from prohibitive compilation latencies and reward dilution across trajectories. In this work, we introduce LEAP (Lean Environment-Feedback via Adaptive Pruning), a scalable and computationally efficient multi-turn RL framework optimized for low-level hardware accelerator alignment. LEAP features Difficulty-Conditioned Pruning (DCP), a dynamic gating mechanism that adaptively cuts off simple and overly catastrophic tasks from multi-turn expansion, focusing resource-heavy compilation and hardware exploration exclusively on high-value, complex tasks. To fully operationalize these paths without manual hyperparameter engineering, we propose a Rank-Based Reward formulation. By deriving scale-free relative advantages from pairwise tournament outcomes within the GRPO rollout group, our method inherently penalizes token inefficiency on simple prompts while maximizing learning gradients on challenging distributions. Empirical evaluations show that LEAP achieves superior first-turn proficiency and robust multi-turn debugging resilience while converging faster than unpruned multi-turn baselines, establishing a practical paradigm for low-level code RL.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-12004",
+  "title": "RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Jinjun Huang",
+   "Zhongzhen Wen",
+   "Tongtong Xu",
+   "Meng Yan",
+   "Xin Xia",
+   "Zhongxin Liu"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.12004",
+   "code": ""
+  },
+  "arxiv": "2608.12004",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "In modern AI frameworks, GPU kernels are key to overall system performance. Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels. Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert kernel developers. Several benchmarks evaluate LLM-generated Triton kernels. However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real-world Triton tasks; (2) they evaluate only individual-kernel performance rather than end-to-end performance, the core criterion for real-world deployment in AI frameworks; and (3) they rely on manually written evaluation scripts for individual kernels, which may contain flaws that models can exploit to bypass correctness checks and obtain inflated scores. To address these limitations, we introduce RealisticTritonBench, the first benchmark to derive Triton kernel generation tasks from real-world pull requests in popular AI frameworks, enabling realistic, production-like evaluation. RealisticTritonBench systematically extracts PRs that modify Triton kernels from popular open-source AI frameworks and transforms them into generation tasks with concrete engineering contexts. Each task takes a natural language requirement as input and requires a corresponding Triton kernel implementation, with a complete and reproducible evaluation environment. Unlike prior benchmarks focused on isolated kernel performance, RealisticTritonBench integrates generated kernels into their original frameworks and evaluates them using end-to-end tests, enabling a more faithful assessment. We evaluate leading LLMs on RealisticTritonBench and find that they still struggle with real-world Triton kernel generation tasks.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-17071",
+  "title": "KernelArc: A Multi-Agent Framework for GPU Kernel Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Joyjit Kundu",
+   "Ben Stoffelen",
+   "Kaili Wang",
+   "Peter Vrancx",
+   "Ludovic Denoyer"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.17071",
+   "code": ""
+  },
+  "arxiv": "2608.17071",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "We present KernelArc, a multi-agent framework for autonomous GPU kernel optimization across heterogeneous workloads. Strategy-specialized agents run in parallel and coordinate through conclusions-only shared memory, a deterministic benchmark guard, and read-only cross-agent state with plateau-triggered drafting. We evaluate KernelArc on NVIDIA H100 and B200 GPUs using category-representative SOL-ExecBench workloads. The resulting implementations span custom BF16 GEMM, static cuBLASLt Expert-API configuration tables, fused mixture-of-experts backward, shape-gated decoder-layer fusion, native NVFP4 grouped-query attention, and paged prefill attention. In the public SOL-ExecBench leaderboard snapshot recorded on August~20, 2026, KernelArc ranked first on every representative L1, L2, Quantization, and FlashInfer task evaluated. The trajectories support the paper's central motivation: shared multi-agent search can broaden exploration and reach stronger incumbents within a fixed candidate budget, while the value of individual coordination features depends on the kernel and optimization stage.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-17379",
+  "title": "PTXBench: Benchmarking and Adapting LLMs for GPU Kernel Optimization with Architecture-specific PTX",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Genghan Zhang",
+   "Yixin Dong",
+   "Chengze Fan",
+   "Zhichen Zeng",
+   "Yueming Yuan",
+   "Shaowei Zhu",
+   "Kunle Olukotun"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.17379",
+   "code": ""
+  },
+  "arxiv": "2608.17379",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "We introduce PTXBench, a benchmark for evaluating and adapting large language models (LLMs) to use architecture-specific PTX for GPU kernel optimization. PTXBench measures functional correctness, whether selected target instructions execute at runtime, and speedup over frontier libraries across GEMM and attention workloads on H100 and B200 GPUs. Our evaluation shows that architecture-specific PTX capability remains uneven: success rates fall substantially on complex attention backward workloads, and executing the target instructions does not necessarily translate into competitive performance. No evaluated model consistently matches frontier libraries across the suite. We further adapt Qwen3.6-27B using supervised fine-tuning. Repair-conditioned training improves several tasks, but generalization remains uneven; data coverage, balance, and the quality of the reasoning teacher matter in addition to dataset size. PTXBench provides an auditable testbed for measuring and improving LLMs' ability to exploit evolving GPU architectures.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2608-21836",
+  "title": "LLM4LLM: Bridging Kernel Benchmarks and Real Deployment via Closed-Loop Agentic Optimization",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Hui Zeng",
+   "Pengfei Yang",
+   "Yanxin Chen",
+   "Fusong Ju",
+   "Xinran Wei"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2608.21836",
+   "code": ""
+  },
+  "arxiv": "2608.21836",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Large language models have become increasingly capable agents for low-level code and kernel optimization, but isolated kernel benchmarks provide only a proxy for the deployment behavior that matters in language-model inference. We identify a benchmark-to-deployment gap: candidate kernels that appear correct and fast in standalone harnesses can exhibit different performance, safety, or phase behavior after integration into a real inference workload. We introduce LLM4LLM, a deployment-aware closed-loop optimization framework that starts from a target inference script, extracts phase-aware optimization tasks, searches with an experience-guided episodic agent, and accepts patches through in-model validation. Across ten language-model inference workloads on A100 and H100 GPUs, LLM4LLM improves end-to-end latency for every evaluated model, achieving 3.91$\\times$/6.98$\\times$ geometric-mean speedups on A100/H100; as supporting kernel-level evidence, it also attains up to 2.745$\\times$ GeoMean speedup on KernelBench Level 2.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2609-29067",
+  "title": "TileBench: A Controlled Benchmark for Performance Evaluation and Bottleneck Diagnosis of Tile-Based Programming Models",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Bowen Cui",
+   "Zhongchun Zhou",
+   "Hao Wu",
+   "Tejas Ramesh",
+   "Junyu Yin",
+   "Jialiang Gu",
+   "Keren Zhou"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2609.29067",
+   "code": ""
+  },
+  "arxiv": "2609.29067",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Tile-based programming models, such as Triton and cuTile, aim to simplify high-performance kernel development, but their practical performance, tuning behavior, and usability remain difficult to compare systematically. We present TileBench, a controlled benchmark for evaluating Triton and cuTile on NVIDIA B200 GPUs under matched operator semantics and comparable implementation structures. TileBench contains 45 operators covering diverse AI-kernel patterns and memory/computation behaviors. Each task provides a PyTorch reference, verified Triton and cuTile implementations, standardized data-types (dtype) and input-size sweeps, default and autotuned configurations, roofline-based metrics, and profiling-guided diagnosis. Our evaluation shows that performance gaps are workload-dependent: cuTile excels on a small cluster of Tensor-Core/TMA-friendly kernels, while Triton is stronger on many irregular, streaming, and bandwidth-bound operators. We further evaluate LLM-generated cuTile and Triton kernels and find that Triton is consistently more token-efficient than cuTile under the same iterative refinement protocol. TileBench is publicly available at https://github.com/Deep-Learning-Profiling-Tools/Tilebench.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2609-33074",
+  "title": "KernelZero: Co-Evolving Proposer and Coder for Continuously Improved GPU Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Changxin Ke",
+   "Rui Zhang",
+   "Zixiang Fang",
+   "Zhenghong Li",
+   "Yuanbo Wen",
+   "Jiaming Guo",
+   "Ling Li",
+   "Qi Guo"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2609.33074",
+   "code": ""
+  },
+  "arxiv": "2609.33074",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "High-performance GPU kernels are essential to modern machine learning systems, yet automatically generating kernels that are both correct and efficient remains challenging. Existing LLM-based approaches face two major limitations: the scarcity of high-quality training data aligned with the model's current capabilities, and the inherent trade-off between kernel correctness and performance. To address these challenges, we propose KernelZero, a co-evolution framework that continuously improves GPU kernel generation through two specialized models: a Proposer that generates Torch modules from API sets and a Coder that translates them into CUDA or Triton kernels. KernelZero uses a frontier-driven module generation mechanism to continuously produce capability-aligned training modules based on the Coder's current weaknesses. It further introduces Correctness-Aware Group Relative Policy Optimization (CA-GRPO), which optimizes performance only after correctness becomes sufficiently reliable. By alternating the optimization of the Proposer and Coder, KernelZero forms an automatic curriculum that enables targeted and training-efficient capability improvement. Empirically, KernelZero-7B surpasses Claude-4.5-Sonnet on CUDA and DeepSeek-V4-Pro on Triton. On KernelBench Level 1 and 2, it achieves CUDA pass@1 scores of 75.8% and 69.6%, respectively, with pass@10 reaching 100% and 97%. On Triton, it achieves pass@1 scores of 77.2% and 72.5%, respectively.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2610-03226",
+  "title": "D2K-Bench: Can LLM Agents Turn Expert Designs into Efficient GPU Kernels?",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Daifeng Li",
+   "Huiqiang Jiang",
+   "Chengruidong Zhang",
+   "Wei Wu",
+   "Xudong Guo",
+   "Jianhong Tu",
+   "Jianwei Zhang",
+   "Binhang Yuan"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2610.03226",
+   "code": ""
+  },
+  "arxiv": "2610.03226",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "GPU kernels generated by large language model (LLM) agents can remain less efficient than expert implementations, but runtime alone does not reveal how the gap relates to design discovery and implementation. We introduce D2K-Bench, a diagnostic benchmark of 26 tasks and 85 workloads that measures how effectively agents translate expert design guidance into efficient GPU kernels. The guidance covers L1: high-level algorithmic insights, L2: dataflow design, and L3: low-level optimization tricks, including dependencies among these levels. Pairwise runs with and without guidance share task descriptions, workloads, tools, hardware, and a 350-turn budget. Complementary assessments examine independently proposed designs and the design properties implemented in generated code. Across five models on NVIDIA B200 GPUs, guidance raises correctness over 130 model-task pairs from 93.1% to 98.5% and increases the Performance Score over all 26 tasks from 1.46 to 1.95. For the three frontier models with correct submissions on all 26 tasks in both runs (GPT-6-Astra, Claude-Opus-4.8, and GPT-5.6-Sol), geometric mean speedup increases from $1.69\\times$ to $2.49\\times$. Across all five models, the mean combined implementation score increases from 57 to 70 out of 100. These results show the value of expert design guidance while identifying design properties that remain unimplemented.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2610-05014",
+  "title": "MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Xueyi Chen",
+   "Shiyu Liu",
+   "Xin Jin",
+   "Yuhua Zheng",
+   "Xin Li",
+   "Haolei Bai",
+   "Junhan Zhu",
+   "Huan Wang"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2610.05014",
+   "code": ""
+  },
+  "arxiv": "2610.05014",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills. Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of retained experience unmeasured. We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain-specific language (DSL) improves a fresh attempt at the same problem in another. Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that differ only in the DSL. The agent first attempts each variant solo and is instructed to distill what it learns into a natural-language skill, which is transferred whether or not the source attempt passes verification. The skill is the only extra input to a skill-conditioned attempt by the same model in the other DSL. We compare each skill-conditioned attempt with the solo attempt on the same variant under matched per-attempt budgets, scoring correctness and end-to-end runtime. Across six models and both directions, paired lift over solo attempts ranges from -19% to +29%. Four models gain in both directions, yet regressions occur on 16% to 45% of problems in every model and direction. Outcomes follow the source attempt's result relative to the target's solo attempt rather than source success alone, improving in 71% of comparisons when the source stands above and regressing in 54% when it stands below. MetaKernelBench complements implementation-quality metrics by measuring same-problem cross-DSL kernel knowledge transfer.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2607-20908",
+  "title": "Multi-turn RL with Structural and Performance Aware Rewards for CUDA Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Quazi Ishtiaque Mahmud",
+   "Nesreen K. Ahmed",
+   "Ali Jannesari"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2607.20908",
+   "code": ""
+  },
+  "arxiv": "2607.20908",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Reinforcement Learning with Verifiable Rewards (RLVR) has emerged as a powerful technique to enhance the reasoning capacity of LLMs for optimized code generation. However, existing RLVR approaches primarily rely on outcome-based signals such as correctness and speedup, overlooking performance-critical structural properties of programs that are essential for generating optimized code. In this work, we propose CudaPerf, a reflective RL framework that incorporates both verifiable execution rewards and structural code-aware rewards derived from parallelization features (e.g., memory coalescing, occupancy, Arithmatic Intensity, and synchronization patterns). CudaPerf operates in two stages: (1) an offline pairwise ranking module that learns to distinguish strong and weak program candidates via contrastive comparisons, and (2) an online RL training phase that jointly optimizes for correctness, performance, and structural efficiency through a unified reward signal. To further enhance learning, CudaPerf utilizes iterative refinement using execution feedback enabling progressive improvement of generated candidates. We also introduce a dataset comprising 2.9k C to CUDA and 1k PyTorch to CUDA programs, each paired with diverse input configurations and multiple CUDA implementations encompassing diverse optimization strategies. CudaPerf is evaluated across multiple benchmarks comprising both C to CUDA and PyTorch to CUDA transformations. Empirical findings suggest that CudaPerf significantly outperforms strong baselines, including Qwen-3-32B (for C to CUDA) and CUDA Agent (for PyTorch to CUDA) by achieving up to 5X & 3.32X improvements in speedup, and 17% & 7% improvements in correctness, respectively.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2611-14604",
+  "title": "KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Ningyuan Xi",
+   "Yuhang Lai",
+   "Ning Miao"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2611.14604",
+   "code": ""
+  },
+  "arxiv": "2611.14604",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Training large language models to generate efficient CUDA kernels requires supervision spanning diverse computational requirements and iterative code optimization. Constructing this supervision is challenging because of heterogeneous specifications, and useful implementations emerge through iterative complicated testing and refinement. We introduce KernelMosaic, an open dataset pairing diverse CUDA tasks with verified solutions and trajectories. Human-guided review and diversity-aware selection curate tasks expressed as natural-language descriptions, reference programs, mathematical specifications, and their intersections. To build the solutions and trajectories, our agentic framework guides a strong LLM through implementation, correctness repair, and performance optimization with reusable CUDA guidance and execution feedback. Supervised fine-tuning of a small open-source model on KernelMosaic raises correctness from 4%, 0%, and 0% to 88%, 82%, and 16% on KernelBench L1, L2, and L3, respectively, while increasing the fraction of tasks with kernels faster than PyTorch eager at every level. Further training experiments show that supervision from the curated trajectories substantially outperforms direct responses and promotes sustained testing and revision. These results demonstrate that KernelMosaic enables a general-purpose model to achieve substantial gains in CUDA kernel generation.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ },
+ {
+  "id": "paper-2605-26720",
+  "title": "Towards Feedback-to-Plan Decisions for Self-Evolving LLM Agents in CUDA Kernel Generation",
+  "title_zh": "",
+  "year": 2026,
+  "venue": "",
+  "authors": [
+   "Yee Hin Chong",
+   "Jiaming Wu",
+   "Youhui Zhang",
+   "Peng Qu"
+  ],
+  "links": {
+   "paper": "https://arxiv.org/abs/2605.26720",
+   "code": ""
+  },
+  "arxiv": "2605.26720",
+  "domains": [
+   "cuda"
+  ],
+  "summary": "Large language models (LLMs) have shown strong empirical gains as self-evolving agents for CUDA kernel generation, driven by feedback-conditioned planning across generations. However, how planning decisions attribute and combine heterogeneous feedback signals remains opaque. Standard end-to-end ablations fail to resolve this question, as iterative planning amplifies early perturbations and conflates feedback effects with trajectory-dependent drift. We introduce \\texttt{CUDAnalyst}, a unified analysis layer for controlled, generation-level attribution of planning decisions to feedback components via trajectory freezing and selective feedback injection. \\texttt{CUDAnalyst} enables stable generation-level evaluation and principled coalitional-style attribution of feedback effects and interactions. Our results show that explicit planning is beneficial only when feedback is aligned, that effective planning emerges from structured multi-feedback interactions, and that high-level plans from stronger reasoning models can partially transfer to weaker ones. These trends hold across reference backbones, representative workloads, and reference induction regimes, indicating that the identified feedback-to-plan structure is robust within the controlled axes studied.",
+  "problem": "",
+  "core_idea": "",
+  "training": "",
+  "experiments": "",
+  "formula": "",
+  "read_level": "abstract_only",
+  "source": "survey:arxiv"
+ }
+]

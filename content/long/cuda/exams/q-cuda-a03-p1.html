@@ -1,0 +1,54 @@
+<h3>一 · 题干里的四个隐藏变量：把「一次 kernel 生成/优化/验证」拆成可计分的流</h3>
+<p>「Roofline/SOL 归一评分」这个题干表面是一个评分函数，实际是一个流水线契约：它要求把一次完整的 kernel 生命周期切成若干可独立计量的阶段，每个阶段都要有明确的输入张量/源码、输出产物、以及可归因的代价。读题第一步不是想评分公式，而是识别题干中四个隐藏变量：<strong>阶段边界</strong>（哪一步算「生成」、哪一步算「优化」、哪一步算「验证」）、<strong>计量对象</strong>（是墙钟时延、是 kernel 自身的 device time、还是编译时间）、<strong>归一基准</strong>（SOL 用哪条 roofline 上限，是带宽界还是算力界）、<strong>失败语义</strong>（编译失败、数值错误、超时分别记零还是记惩罚）。这四个变量不显式拆开，后面所有公式都会在分母上打架。</p>
+<p>具体机制上，把一次 kernel 任务建模为状态机：<em>spec → candidate source → compiled artifact → profiled trace → verdict</em>。每个箭头是一次状态转移，每次转移都有独立的代价项。设第 <em>i</em> 次尝试的状态转移代价为 <em>c<sub>i</sub></em>，则一次任务的总代价是</p>
+<div class="formula">$$C_{\text{task}}=\sum_{i=1}^{N}\left(t^{\text{gen}}_{i}+t^{\text{compile}}_{i}+t^{\text{exec}}_{i}+t^{\text{verify}}_{i}\right)+t^{\text{harness}}$$</div>
+<p>这里 <em>N</em> 是允许的尝试轮数（生成—优化—验证的循环次数），<em>t<sup>harness</sup></em> 是评测框架自身的固定开销。考点在于：题干问的是「按一次 kernel」评分，那么 <em>N</em> 是否计入分母、<em>t<sup>harness</sup></em> 是否摊销，直接决定同一份候选源码在不同评分口径下得分不同。一个具体例子：同一段 Triton 实现，若把编译时间计入优化代价，则首次 JIT 编译的冷启动会显著拉低得分；若只计 device time，则编译开销被隐藏，评分偏向「编译一次、跑很多次」的部署形态。这不是细节，而是评分口径的定义性问题。</p>
+<p>代价面：把阶段拆得越细，计量越准，但 harness 需要插入更多同步点（cudaDeviceSynchronize 或 CUDA event），每次同步引入的时延在微秒级 kernel 上会淹没真实信号；拆得越粗，归因越模糊，优化阶段的收益无法与生成阶段的随机性分离。工程判断是：以「一次候选源码的完整生命周期」为最小计分单元，而不是以单次 kernel launch 为单元，否则生成与优化的成本被结构性忽略。</p>
+
+<h3>二 · 考点定位：SOL 归一的分母到底取哪条界</h3>
+<p>Roofline 模型给出一条性能上限：给定算法的访存字节数 <em>B</em> 与浮点运算数 <em>F</em>，算术强度 <em>I = F/B</em>，则可达性能上限为</p>
+<div class="formula">$$\text{SOL}=\min\left(\text{Peak}_{\text{FLOPs}},\ \text{Peak}_{\text{BW}}\times I\right)$$</div>
+<p>归一评分即 <em>score = achieved / SOL</em>。考点不在公式本身，而在三个选择：<strong>Peak 取理论峰值还是实测峰值</strong>（后者通常由 STREAM 或 cuBLAS 微基准测得，低于规格书数字）；<strong>I 按算法名义值还是按实际生成的访存模式计算</strong>（融合 kernel 的实际字节数常与名义值不符）；<strong>分母是否按 kernel 类型切换</strong>（memory-bound 用带宽界，compute-bound 用算力界，混合型取 min）。一个具体例子：一个 elementwise 的 GELU 近似 kernel，名义 <em>I</em> 极低，SOL 由带宽界主导；若候选实现把中间结果写回 global memory 再读回，实际 <em>B</em> 翻倍，按名义 <em>I</em> 算出的 SOL 会高估上限，导致「看起来接近 SOL」的实现其实离真实上限很远。因此读题时必须追问：归一化的分母是用题目给定的 <em>B</em>、<em>F</em>，还是用 profile 实测的字节数与指令数反推。</p>
+<p>代价面：用实测 <em>B</em> 反推 SOL 需要 NCU 采集 dram__bytes 与 sm__inst_executed 类指标，采集本身带来 replay 开销，单 kernel 采集时延可达毫秒级，且对短 kernel 的扰动不可忽略；用名义值则零采集成本但系统性偏差。工程上常见折中是分层：先用名义值做粗筛，仅对进入候选池的实现做一次 NCU 采集校正分母。这一步的 token 代价体现在：若把 profile 文本回灌给模型做下一轮优化，NCU 报告的长文本会占用可观的上下文预算，需要在采集粒度上做取舍（只取关键 metric 而非全量 section）。</p>
+
+<h3>三 · 解题路径：从题干到可执行评分脚本的五步</h3>
+<p>读题的产出不应是一段散文，而应是一张可执行的评分脚本骨架。路径如下：</p>
+<ul>
+<li><strong>步骤 1：抽取契约</strong>。从题干提取函数签名、输入形状/ dtype、容差（atol/rtol）、允许的尝试轮数、是否允许调用库函数（cuBLAS/cuDNN 是否算作弊）。输出是一份 spec 结构体。</li>
+<li><strong>步骤 2：确定正确性 oracle</strong>。是逐元素全精度比对、是相对误差阈值、还是统计量比对（如 attention 输出只比对 top-k 分布）。oracle 的严格度直接决定验证阶段的拒绝率，从而影响有效尝试轮数 <em>N</em>。</li>
+<li><strong>步骤 3：确定分母</strong>。按上一节选择名义或实测 SOL，并写明切换规则。</li>
+<li><strong>步骤 4：确定代价归因</strong>。生成 token 数、编译墙钟、device time、验证开销分别记入哪个桶。</li>
+<li><strong>步骤 5：确定失败语义</strong>。编译失败记零并计入 <em>N</em>，数值错误记零但允许重试，超时截断。</li>
+</ul>
+<p>伪代码层面，评分主循环可写成：</p>
+<div class="formula">$$\text{for } i \text{ in } 1..N:\ \ \text{src}\leftarrow\text{gen}(spec, hist);\ \ \text{bin}\leftarrow\text{compile}(src);\ \ \text{ok}\leftarrow\text{verify}(bin);\ \ \text{if ok}:\ \text{score}\leftarrow\max(\text{score},\ \text{achieved}/\text{SOL})$$</div>
+<p>注意 <em>hist</em> 是历史反馈（上一轮的 profile 摘要或错误信息），它决定了优化阶段是否真的「有信息」而非盲目重采样。考点在于：若 <em>hist</em> 为空，所谓「优化」退化为独立采样，评分衡量的只是生成分布的质量，而非优化能力。一个具体例子：某候选在验证阶段因 fp16 累加溢出而失败，若错误信息不回灌，下一轮大概率重复同类错误；回灌后模型倾向改用 fp32 累加，这是可观测的优化信号。代价面：回灌 profile 与错误栈会推高每轮 token 消耗，<em>N</em> 轮总 token 随轮数线性增长，而 device time 收益未必线性，存在边际收益递减点，评分脚本应记录每轮的 token 与收益以便事后判断该点位置。</p>
+
+<h3>四 · 需要调用的公式清单与各自的失效条件</h3>
+<p>读题时应把公式当作「有适用域的算子」，而非恒等式。至少需要准备四组：</p>
+<table class="mini"><thead><tr><th>公式</th><th>用途</th><th>失效条件</th></tr></thead><tbody>
+<tr><td>SOL = min(Peak<sub>FLOPs</sub>, Peak<sub>BW</sub>·I)</td><td>归一化分母</td><td>I 用名义值而实现访存模式偏离时高估上限</td></tr>
+<tr><td>score = achieved / SOL</td><td>单次评分</td><td>achieved 含 launch 开销时对短 kernel 系统性偏低</td></tr>
+<tr><td>C<sub>task</sub> = Σ(t<sup>gen</sup>+t<sup>compile</sup>+t<sup>exec</sup>+t<sup>verify</sup>)</td><td>代价归因</td><td>异步执行未同步时 t<sup>exec</sup> 被低估</td></tr>
+<tr><td>有效轮数 N<sub>eff</sub> = N·(1−p<sub>reject</sub>)</td><td>验证拒绝率折算</td><td>拒绝相关而非独立时线性折算失真</td></tr>
+</tbody></table>
+<p>其中 <em>p<sub>reject</sub></em> 是验证阶段拒绝比例，<em>N<sub>eff</sub></em> 用于判断「多轮」是否真的发生了。一个具体例子：若 oracle 极严（逐位比对），<em>p<sub>reject</sub></em> 接近 1，<em>N<sub>eff</sub></em> 趋近 0，此时评分实际只反映首轮生成质量，优化环节形同虚设；反之 oracle 过松，错误实现被放行，score 虚高。考点是让读者意识到：oracle 的严格度与 <em>N</em> 是一对耦合参数，不能独立设定。</p>
+<p>代价面：公式清单越多，评分脚本的配置面越大，配置错误本身成为噪声源。工程判断是把公式固化为少量具名函数（如 <code>sol_bound(kind, B, F)</code>、<code>normalize(achieved, sol)</code>），并在 spec 中显式声明每个参数的来源（名义/实测），使评分可复现。</p>
+
+<h3>五 · 一个具体拆题演练：把题干映射到评分骨架</h3>
+<p>设题干为「实现一个 fused softmax 并达到 roofline 归一评分 0.8 以上」。拆解动作：先识别 <em>B</em> 由输入输出张量决定（读一次、写一次），<em>F</em> 为 exp 与归约的浮点操作数，<em>I</em> 落在 memory-bound 区间，故 SOL 取带宽界；再识别正确性 oracle 为逐元素 atol/rtol 比对，容差需与题干一致；再识别允许轮数 <em>N</em> 与是否允许调用库。评分骨架因此确定为：分母 = Peak<sub>BW</sub> × 名义 <em>B</em>（或经一次 NCU 校正），分子 = 实测 device time 折算的有效带宽，验证 = 逐元素比对，代价桶 = 生成 token、编译墙钟、device time、验证时延。</p>
+<p>此处必须指出一个易错点：softmax 的数值稳定性要求减最大值，若候选实现省略该步，在 fp16 下大值输入会溢出，验证阶段被拒，<em>N<sub>eff</sub></em> 下降；这不是性能问题而是正确性问题，却会通过轮数机制间接影响评分。读题时要能预判这类「正确性—轮数—评分」的传导链，并在评分脚本中把正确性失败与性能不足分开记录，否则无法区分「模型不会写」与「模型写得慢」。</p>
+<p>代价面：该演练中若把 NCU 校正纳入每轮，采集开销会显著拉长单轮墙钟，使 <em>N</em> 轮总时延成为瓶颈；若只在最终候选上采集一次，则优化阶段的反馈缺少实测带宽信号，模型只能依赖名义值猜测。两种口径对应不同的评分语义，题干若不写明，读题者应在解题路径中显式声明所选口径，这是本部分要求读者带走的核心动作：<strong>先定口径，再写公式，最后才谈分数</strong>。</p>
+
+<h3>读题即建模：把题干拆成可计价的算子与可证伪的考点</h3>
+<p>面对一道 kernel 生成题，第一动作不是写代码，而是把题干转译成一张“算子—访存—约束”三元表：输入张量的形状与 dtype 决定字节数，算子语义决定必须发生的浮点运算次数与归约结构，而题干里的“不许用原子”“必须支持任意 batch”“单次 launch”这类措辞则是硬约束，直接排除掉一批候选实现路径。以 LayerNorm 为例，题干若给出 (B, N) 与 eps，考点就落在两趟访存还是单趟 Welford 在线归约的选择上；若题干额外要求“输出必须与参考实现逐元素一致到 1e-5”，考点立刻从性能转向数值稳定性——此时单趟在线归约的误差累积会成为失效条件，而两趟方案虽然多读一遍输入，却把方差计算的数值路径固定下来。读题阶段要显式写下每个张量的元素数与字节数，因为后续所有 SOL 归一评分都以此为分母。</p>
+<p>考点拆解的核心是把“性能”换算成一个可计算的上界。对给定 kernel，先算算术强度 $I = \frac{FLOPs}{Bytes}$，再与机器平衡点 $I^* = \frac{P_{peak}}{BW}$ 比较：$I &lt; I^*$ 时该 kernel 属访存受限，SOL 时间下界为 $T_{mem} = \frac{Bytes}{BW}$；反之属计算受限，下界为 $T_{compute} = \frac{FLOPs}{P_{peak}}$。归一评分即 $\text{score} = \frac{T_{SOL}}{T_{measured}}$，所以读题时必须判断题目落在哪一侧，否则优化方向会整体跑偏——访存受限的 kernel 去堆 ILP 或改指令序列收益极小，而计算受限的 kernel 去优化合并访存同样徒劳。这一步的代价是纸面推演的时间，但它决定了后面 profile 时该盯 DRAM throughput 还是 SM 的 pipe utilization，省下的是整轮 NCU 采集与重编译的机时。</p>
+<p>解题路径要在读题阶段就写成“生成—验证—优化”的闭环草图，并标注每步的失败判据。生成阶段输出候选 kernel 与一份自检清单：形状假设、对齐假设、边界处理方式；验证阶段的 oracle 不是“跑通即可”，而是与参考实现做多组随机形状与极端形状（N=1、N 非 2 的幂、含 NaN/Inf 输入）的比对，正确性代价体现在测试用例数量与每次比对所需的显存拷贝上。优化阶段才进入 profile：用 NCU 采集 DRAM 吞吐、L2 命中、warp stall 原因，把实测时间与 $T_{SOL}$ 对齐，若差距集中在访存则回到向量化与合并访问，若集中在计算则看指令混合与寄存器压力。需要强调的是，这套闭环的边界在于题干若未给出参考实现或数值容差，验证环节就退化为“形状与 dtype 合法性检查”，此时 SOL 评分只能反映性能不能反映正确性，工程上必须显式声明这一缺口而不是默认通过。</p>
+<table class="mini"><thead><tr><th>读题产出</th><th>输入</th><th>输出</th><th>主要代价</th></tr></thead><tbody><tr><td>算子—访存表</td><td>形状、dtype、语义</td><td>Bytes、FLOPs、$I$</td><td>纸面推演时间</td></tr><tr><td>受限类型判定</td><td>$I$ 与 $I^*$</td><td>$T_{SOL}$ 与优化方向</td><td>误判导致整轮 profile 浪费</td></tr><tr><td>闭环草图</td><td>题干约束、容差</td><td>候选路径与失败判据</td><td>验证用例的显存与机时</td></tr></tbody></table>
+<p>一个具体的失效条件是：题干要求“单次 kernel launch 完成整个 batch 的归约”，而候选实现依赖跨 block 的全局同步，此时要么引入 cooperative groups 的 grid sync（代价是占用全部 SM 且限制 occupancy），要么退化为两阶段 kernel（违反题干约束）。读题阶段若没识别出这条约束，生成阶段产出的代码在验证时才会暴露，浪费的是整轮生成 token 与编译时间。因此读题的工程判断应落在“哪些约束会否决整条路径”上，而不是罗列所有可能的优化技巧。</p>
+
+<h3>读题即拆账：把一次 kernel 生命周期压成可计价的五段流水</h3>
+<p>把「Roofline/SOL 归一评分」拆成一次 kernel 的生成—优化—验证流水，本质是拆成五段可独立计价的账：读题（题干→约束集）、生成（约束集→候选源码）、编译与初测（源码→可执行+基线时延）、优化（基线→调优版本）、验证与评分（调优版本→正确性判定+归一化 SOL 分）。每段的输入输出必须显式绑定代价字段，否则评分会把「生成便宜、验证昂贵」的结构性偏差掩盖掉。读题段的输出不是自然语言摘要，而是一个结构化约束元组 <span class="formula">$$C=(dtype, shape, tol, budget_{t}, budget_{mem}, target_{arch})$$</span>，其中 tol 决定验证段的 oracle 强度，budget 决定优化段允许的搜索轮数——读题错一个字段，后面四段全部计错账。</p>
+<p>该拆法的边界在于：它假设每段代价可加且段间无反馈环。真实流水里优化段会回写读题段（发现题干给的 shape 不是瓶颈维度），验证段会否决生成段（tol 过紧导致候选全灭），此时「一次 kernel」不再是线性流水而是带回路的状态机，线性拆账会低估 token 与时延。失效条件是题干含隐式约束（如必须用某种精度语义、必须单 kernel 不拆分），这类约束不进元组就无法被评分器感知，归一化分会系统性偏高。</p>
+<p>系统代价集中在两处：读题段若用 LLM 抽取约束，每次调用消耗 token 且抽取错误率随题干长度上升；验证段若对每个候选跑全量 oracle，时延随候选数线性增长，而 SOL 归一化要求基线时延在同一 arch 上测得，跨 arch 复用基线会引入不可比的归一化偏差。具体例子：题干给出固定 shape 与 tol，读题段若漏掉 tol，验证段只能用默认宽松阈值，候选通过率虚高，SOL 分虚高——这正是读题段必须产出可机读元组而非摘要的工程理由。</p>
+<p class="paper-line">对应：exams/q-cuda-a03 · 第 1/2 部分</p>

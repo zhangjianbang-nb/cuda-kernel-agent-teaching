@@ -1,0 +1,56 @@
+<h3>一 · 论文要回答的问题：异构负载下的自主优化，而不是单算子刷榜</h3>
+<p>KernelArc 的定位可以从它的第一句话读出来：<em>a multi-agent framework for autonomous GPU kernel optimization across heterogeneous workloads</em>。这句话里真正有分量的词是 heterogeneous workloads。KernelBench 系基准的经典形态是给定一个算子（GEMM、softmax、LayerNorm、卷积），要求 agent 写出一个能编译、能对、能跑得比基线快的 kernel。这类任务的可验证性极强：一个算子、一组 shape、一个基线，正确性 oracle 与加速比都能干净地定义。但它也带来一个结构性偏差——agent 可以把全部预算砸在一个算子的一个 shape 上，做极端的 shape 特化与手写展开，而这类特化在生产里往往因为输入分布漂移而失效。</p>
+<p>KernelArc 把问题换成另一副样子：负载是异构的，既有可以直接写 CUDA/Triton 的自定义算子（custom BF16 GEMM），也有根本不该手写、而应该通过库的 Expert-API 去配置的场景（static cuBLASLt Expert-API configuration tables），还有融合的复合结构（fused mixture-of-experts backward、shape-gated decoder-layer fusion）、低精度注意力（native NVFP4 grouped-query attention）以及分页 prefill 注意力（paged prefill attention）。这六类实现形态并列出现在摘要里，本身就是论文的核心主张：<strong>一个 kernel agent 的价值不在于把某个算子写到极限，而在于面对一个它事先不知道属于哪一类的问题时，能选对策略</strong>。手写 GEMM、生成一张 cuBLASLt 配置表、把 MoE backward 的三个阶段融成一个 kernel、按 shape 门控选择不同的 decoder 层实现——这四种动作的搜索空间、验证方式、失败模式完全不同。把它们塞进同一个单 agent 的循环里，agent 会退化成“用自己最熟的那一招打所有问题”。</p>
+<p>因此论文的问题陈述可以精确化为：在固定候选预算下，如何让搜索覆盖到策略维度的多样性，而不是在单一策略内部做深度挖掘。这是一个关于<em>探索广度</em>的问题，而不是关于<em>单点生成质量</em>的问题。理解这一点，才能理解后面所有机制为什么长成那个样子。</p>
+
+<h3>二 · 核心思想：策略专精 + 只共享结论的并行协作</h3>
+<p>KernelArc 的方法骨架由三个部件组成，摘要里一句话讲完了：<em>Strategy-specialized agents run in parallel and coordinate through conclusions-only shared memory, a deterministic benchmark guard, and read-only cross-agent state with plateau-triggered drafting</em>。拆开来是四件事，每一件都对应一个具体的工程取舍。</p>
+<p><strong>第一，策略专精的 agent 并行运行。</strong>不是让一个 agent 依次尝试“手写 CUDA → 调库 → 融合”，而是让不同 agent 各自带着一套策略先验同时开工。并行带来的直接收益是墙钟时间：假设单条轨迹的生成-编译-测量周期为 <span>T<sub>cycle</sub></span>，N 个 agent 并行时，在理想情况下拿到 N 条独立轨迹的时间约等于一条轨迹的时间。代价是显存与编译资源——每个 agent 的候选都要编译、都要在 GPU 上跑基准，编译时间和 GPU 占用随并行度线性上升。这是这套方法最实在的成本项：<strong>并行度不是免费的，它换来的是探索广度，付出的是编译队列长度和 GPU 时分</strong>。</p>
+<p><strong>第二，只共享结论的共享内存（conclusions-only shared memory）。</strong>这是整个设计里最关键的一条约束。多 agent 系统最常见的失败是上下文污染：agent A 把自己的一长串试错过程贴进共享区，agent B 读到后被带偏，开始复现 A 的错误路径，整个系统的多样性塌缩。KernelArc 的做法是把共享内容裁剪到“结论”粒度——某个策略在这个任务上是否可行、得到的加速比量级、失败的原因类别——而不共享完整的推理轨迹与代码草稿。这样每个 agent 保留自己的策略先验，只从别人那里拿到“这条路通不通”的信息。代价是信息损失：结论粒度会丢掉中间步骤里可能有用的技巧细节，一个 agent 无法直接复用另一个 agent 写出的高效内层循环。收益是多样性得以维持，而这正是多 agent 相对单 agent 的唯一结构性优势。</p>
+<p><strong>第三，确定性基准守卫（deterministic benchmark guard）。</strong>所有候选在进入比较之前必须通过同一个守卫：编译成功、在给定输入上正确、在统一基线下测得时延。守卫的“确定性”意味着同一份代码在同一环境下得到同一个判定，不允许 agent 用随机种子、非确定性内核或未同步的计时来蒙混。这一步是后面所有协作信息可信的前提——如果共享的结论本身来自不可靠的测量，那么共享就是在传播噪声。</p>
+<p><strong>第四，只读的跨 agent 状态与平台期触发的起草（read-only cross-agent state with plateau-triggered drafting）。</strong>跨 agent 状态是只读的，任何 agent 不能改写别人的状态，避免了写冲突与相互覆盖；而“平台期触发”是一个调度机制：当某个 agent 在自己的策略方向上连续若干轮没有提升，系统判定它进入平台期，触发一次 drafting——从跨 agent 状态里汲取其他策略方向的结论，起草一个新的方向，而不是继续在原地做微小的参数扰动。这个机制直接对抗的是单 agent 循环里最常见的退化行为：在局部最优附近反复改写，把预算烧在噪声上。</p>
+<p>把这四点合起来看，KernelArc 的核心思想可以概括为：<strong>用并行换取策略维度的覆盖，用结论级共享保住多样性，用确定性守卫保证共享信息可信，用平台期检测把预算从局部挖掘转移到方向切换</strong>。这四个部件是耦合的，去掉任何一个都会让系统退化——没有守卫的共享是噪声传播，没有平台期检测的并行是 N 份相同的局部搜索。</p>
+
+<h3>三 · 方法机制：一轮循环里到底发生了什么</h3>
+<p>把上面四个部件放进一次完整的迭代，流程大致如下（伪代码层面）：</p>
+<div class="formula">$$\text{for each agent } a \in \mathcal{A}:\quad c_a \leftarrow \text{propose}(a,\ \text{task},\ \text{read}(S)),\quad r_a \leftarrow \text{guard}(c_a),\quad S \leftarrow S \cup \text{conclude}(r_a)$$</div>
+<p>其中 <span>S</span> 是只读的跨 agent 结论状态，<span>guard</span> 是确定性基准守卫，<span>conclude</span> 把测量结果压缩成结论条目写回 <span>S</span>。注意 <span>propose</span> 读取 <span>S</span> 但不写入，写入只发生在 <span>conclude</span>，且写入的是压缩后的结论而非原始轨迹。这个读写分离是并发安全的基础，也是上下文预算控制的基础——如果把每条轨迹的完整文本都塞进共享区，上下文长度会随 agent 数与轮数乘积增长，token 成本迅速失控；结论级共享把增长压到与“策略方向数 × 任务数”同阶。</p>
+<p>守卫内部的判定可以用论文给出的两个量来刻画：</p>
+<div class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}},\qquad \text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</div>
+<p>这里 <span>T<sub>base</sub></span> 是统一基线（PyTorch eager、torch.compile 与论文指定库实现）的时延，<span>T<sub>agent</sub></span> 是候选 kernel 的时延，<span>pass</span> 是正确性检查的结果。accept 的定义把正确性与性能合成一个布尔量：只有既通过正确性又在基线上不退化的候选才算数。这个定义看似平凡，但它挡住了两类常见的虚高：一是正确性检查过松导致错误 kernel 被计入加速比，二是基线未开到最强（例如未启用 TF32、未用最强库实现）导致加速比被系统性高估。后者是这类论文最容易被质疑的地方，而“确定性守卫 + 统一基线”正是论文对此的回应口径。</p>
+<p>平台期触发的 drafting 需要一个判据。设 agent <span>a</span> 最近 <span>k</span> 轮的接受候选集合为空，或最优加速比在 <span>k</span> 轮内的改进小于阈值 <span>ε</span>，则判定进入平台期，触发一次方向切换。这里的 <span>k</span> 与 <span>ε</span> 是调度超参，直接决定预算分配：<span>k</span> 太小会让 agent 在还没挖透一个方向时就跳走，<span>k</span> 太大会让预算烧在噪声上。这个权衡没有普适解，它取决于任务的搜索空间粗糙程度——GEMM 的 tile 配置空间是相对光滑的，而融合算子的实现形态空间是离散且崎岖的，两者需要的 <span>k</span> 不同。</p>
+<p>一个具体的例子可以把机制落到实处：面对 fused mixture-of-experts backward，一个专精“融合”策略的 agent 会尝试把 gate 的梯度、专家权重的梯度与输入的梯度融进少数几个 kernel，减少中间张量的显存往返；一个专精“库配置”的 agent 则可能判定这个形状不适合手写，转而生成 cuBLASLt 的配置表并调用库。两者的结论都会以“可行/不可行 + 加速比量级 + 失败类别”的形式进入共享区。如果融合方向在若干轮后停在平台期，drafting 会让它读到“库配置方向在这个 shape 上拿到了更好的结果”这条结论，从而切换方向。这就是“共享结论而非共享轨迹”在工程上的具体价值：它传递的是方向性的可行性信号，而不是可复制的代码。</p>
+
+<h3>四 · 基准口径：SOL-ExecBench 与排行榜快照</h3>
+<p>论文的评测口径是 <em>category-representative SOL-ExecBench workloads</em>，硬件是 NVIDIA H100 与 B200。这里有两个需要拆开讲的点。</p>
+<p>“category-representative”意味着题目是按类别抽样的代表题，而不是随机堆砌。从摘要列出的实现形态可以反推类别划分：L1、L2、Quantization、FlashInfer 这几类在排行榜快照里被明确点名。L1/L2 大致对应单算子与稍复杂的算子组合，Quantization 对应低精度路径（NVFP4 grouped-query attention 属于这一类），FlashInfer 对应注意力与推理侧的分页、prefill 场景。这个分类法的意义在于它把“异构”制度化了：一个 agent 不能只在 L1 上刷分，因为榜单按类别分别记录，而类别之间的最优策略并不相同。</p>
+<p>“SOL”指 speed-of-light，即该 workload 在给定硬件上的理论上界（通常由 roofline 模型给出：计算受限时是峰值算力，带宽受限时是峰值带宽）。用 SOL 归一化的好处是跨硬件可比：H100 与 B200 的绝对时延不可比，但相对 SOL 的达成率可比。代价是 SOL 本身依赖对 workload 的计算强度与访存量的建模，建模偏差会直接变成达成率的偏差；对于融合算子与低精度路径，roofline 的建模尤其容易失真，因为融合改变了实际的访存次数，NVFP4 改变了有效位宽。这一点在读数时需要保留：<strong>SOL 达成率是一个建模量，不是一个绝对物理量</strong>。</p>
+<p>论文给出的结果口径是排行榜快照：<em>In the public SOL-ExecBench leaderboard snapshot recorded on August 20, 2026, KernelArc ranked first on every representative L1, L2, Quantization, and FlashInfer task evaluated</em>。这句话的强度需要精确理解：它说的是“在被评测的每一道代表题上排名第一”，而不是“在所有题上排名第一”，也不是“在所有硬件上排名第一”。快照日期意味着这是一个时间点上的截面，榜单会随其他系统提交而变化。论文同时给出了对轨迹的分析结论：<em>shared multi-agent search can broaden exploration and reach stronger incumbents within a fixed candidate budget</em>——在固定候选预算下，共享的多 agent 搜索能拓宽探索并触达更强的已有实现。这句话是论文的中心动机，也是它相对单 agent 方法的可证伪主张：如果固定预算下多 agent 并不比单 agent 覆盖更多策略方向，这个主张就不成立。</p>
+<p>需要明确标注的口径局限：摘要未给出完整的消融实验，因此“结论级共享”“平台期触发”这些部件各自的贡献度无法从摘要层面量化；具体实验细节与数字为论文声称，未独立复现；结论只在论文给定的硬件（H100/B200）、基线与输入分布上成立，跨硬件、跨 dtype、跨框架的迁移未经验证。这些不是苛责，而是读这类论文时必须带着的坐标系——一个在 H100 上按类别代表题排名第一的系统，迁移到另一代硬件或另一套输入分布时，其策略先验的有效性需要重新检验。</p>
+
+<h3>五 · 在 CUDA kernel agent 版图上的位置</h3>
+<p>把 KernelArc 放进这批工作里，它的坐标可以用两个轴来定位：<strong>横轴是“单算子深度”到“异构负载广度”，纵轴是“单 agent 循环”到“多 agent 协作”</strong>。</p>
+<table class="mini">
+<thead><tr><th>系统</th><th>协作形态</th><th>负载口径</th><th>核心机制侧重</th></tr></thead>
+<tbody>
+<tr><td>KernelBench / CUDA-LLM 系</td><td>单 agent、单轮或多轮生成</td><td>单算子基准题</td><td>生成质量与正确性 oracle</td></tr>
+<tr><td>Kevin / CUDA-L1 / CUDA-L2 / Dr. Kernel</td><td>单 agent、多轮 RL</td><td>单算子或矩阵乘</td><td>可验证奖励驱动的策略改进</td></tr>
+<tr><td>Astra / cuPilot / CudaForge</td><td>多 agent 或硬件反馈闭环</td><td>算子级优化</td><td>分工、硬件反馈回灌</td></tr>
+<tr><td>EvoEngineer</td><td>进化式搜索</td><td>CUDA kernel 演化</td><td>变异与选择</td></tr>
+<tr><td>KernelArc</td><td>策略专精 agent 并行 + 结论级共享</td><td>类别代表的异构负载</td><td>探索广度、平台期切换、确定性守卫</td></tr>
+</tbody>
+</table>
+<p>这张表里 KernelArc 的独特处不在“多 agent”这个标签本身——Astra、cuPilot 都做多 agent——而在两点。第一，它的多 agent 是按<em>策略</em>切分的，而不是按<em>角色</em>切分（规划者、编码者、评审者）。角色切分优化的是单条轨迹的内部质量，策略切分优化的是轨迹集合的覆盖范围。第二，它的共享是结论级的、只读的，这与其他多 agent 系统里常见的“共享完整对话历史”形成对照：后者在 token 成本上随轮数平方增长，且在多样性上会塌缩。KernelArc 用信息损失换多样性保持，这是一个明确的工程判断。</p>
+<p>与 RL 路线（Kevin、CUDA-L1/L2、Dr. Kernel）的关系也值得点一句：RL 路线优化的是模型权重里的策略先验，KernelArc 优化的是推理时的搜索调度。两者不冲突，但成本结构不同——RL 的代价在训练侧的采样与奖励计算，KernelArc 的代价在推理侧的并行编译与 GPU 时分。在一个固定候选预算的框架下，KernelArc 的主张是：预算的边际收益在“换方向”上比在“同方向深挖”上更高，至少对异构负载是这样。</p>
+<p>还有一条隐含的定位：KernelArc 的实现形态里包含 static cuBLASLt Expert-API configuration tables。这意味着系统承认有一类问题的最优解不是手写 kernel，而是生成一张配置表去驱动库。这个姿态在 kernel agent 版图里是少见的——多数工作默认“agent 的产出必须是 kernel 源码”。承认“产出可以是一张表”，实际上是把 agent 的搜索空间从“代码”扩展到了“配置 + 代码”的混合空间，也让基线比较变得更诚实：当 agent 选择调库时，它是在与库本身竞争，而不是与一个被削弱的 eager 基线竞争。</p>
+
+<h3>六 · 代价结构与工程判断</h3>
+<p>这套方法的代价可以按四个维度列清楚，每一条都对应一个具体的工程约束。</p>
+<ul>
+<li><strong>编译时间</strong>：N 个 agent 并行意味着 N 条候选同时进入编译队列。CUDA 编译（尤其是带模板展开与 CuTe 布局的代码）是秒级到分钟级的，编译队列会成为墙钟瓶颈，并行度超过编译吞吐后就只是在排队。这是并行度收益递减的第一个来源。</li>
+<li><strong>GPU 时分</strong>：每条候选都要在 H100/B200 上实测时延，而基准测量需要独占或准独占 GPU 才能稳定。多 agent 并行测量会引入互相干扰，确定性守卫必须处理这种干扰（例如串行化测量、固定时钟、多次取中位数），这又进一步拉长了墙钟。</li>
+<li><strong>Token 成本</strong>：结论级共享把上下文增长从“轨迹长度 × 轮数”压到“结论条数”，但 drafting 触发时需要读取跨 agent 状态，这是一次额外的上下文注入。平台期检测越敏感，drafting 越频繁，token 成本越高；越迟钝，预算越容易烧在局部挖掘上。</li>
+<li><strong>正确性风险</strong>：确定性守卫挡住的是测量噪声与非确定性内核，但挡不住 shape 特化带来的分布外失效。一个在代表题 shape 上排名第一的实现，换一组隐藏 shape 可能直接崩掉；而 reward hacking 与 fallback 机制会让离线正确率虚高——例如候选在正确性检查失败时回退到基线实现，于是“正确率”看起来是满的，但加速比来自回退而非 agent 的产出。</li>
+</ul>
+<p>把这些代价放在一起，KernelArc 的工程判断就清楚了：它押注的是<strong>在异构负载上，探索广度的边际收益高于单点深度的边际收益</strong>，并愿意为此付出并行编译与 GPU 时分的成本。这个押注成立的前提是负载确实异构——如果所有题都是同一个 GEMM 的不同 shape，策略专精的并行就是浪费，单 agent 深挖更划算。反过来，如果负载跨越手写 kernel、库配置、融合、低精度、分页注意力这几个形态，那么“选对策略”本身就是主要矛盾，并行覆盖策略维度就是正确的资源分配。论文用类别代表的 SOL-ExecBench 构造了后一种场景，并在该场景下给出了排行榜快照的排名结果；但这个结果的可迁移性，取决于生产负载是否真的像基准那样跨越多个形态——这是读这篇论文时最应该带走的判断，而不是那个排名本身。</p>
+<p class="paper-line">对应：papers/paper-2608-17071 · 第 1/2 部分</p>

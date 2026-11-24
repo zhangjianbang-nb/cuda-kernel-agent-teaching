@@ -1,0 +1,55 @@
+<h3>一 · 题干的三层结构：从「生成」到「评测」的链路拆解</h3>
+<p>这道题的问法本身就是一个考点：它要求按「一次 kernel 生成—编译—运行—评测」的顺序回答，并且对每一步同时给出输入、输出、失败模式。这意味着答案不能停留在「CuTeGen 是一个 agentic framework」这种定位描述上，而必须把 pipeline 展开成一条可审计的数据流。读题时先做三件事：第一，识别题干中的动词序列（生成、编译、运行、评测），这四个动词对应四个阶段边界，任何跨阶段的合并都会导致失败模式归属不清；第二，识别题干要求的三元组（输入、输出、失败模式），这是评分时的结构化锚点，缺一项即失分；第三，识别隐含约束——题目问的是「一次」kernel 的完整生命周期，因此不涉及多轮迭代与 RL 训练循环，那是另一条链路。</p>
+<p>把题干拆成三层：<strong>表层</strong>是流程复述；<strong>中层</strong>是阶段契约，即每个阶段的输入必须由上一阶段的输出提供，输出必须是下一阶段可消费的形式；<strong>深层</strong>是失败模式的可归因性——一个 kernel 最终评测不通过，究竟是生成阶段的语义错误、编译阶段的 CuTe 模板实例化失败、运行阶段的资源越界，还是评测阶段的 oracle 判定过严。CuTeGen 这类框架的工程价值恰恰在于把这条链路的每一段都做成可观测的边界，而不是一个端到端的黑箱。答题路径因此应当是：先画阶段图，再逐段填三元组，最后用一条具体的 kernel 例子把四段串起来验证自洽性。</p>
+<p>需要调用的公式在这一层是<strong>链路吞吐</strong>的粗算：若单次生成耗时 <em>T</em><sub>gen</sub>、编译耗时 <em>T</em><sub>compile</sub>、运行与 profile 耗时 <em>T</em><sub>run</sub>、评测判定耗时 <em>T</em><sub>eval</sub>，则一次完整尝试的墙钟时间为四者之和，而 agent 的有效吞吐受最慢环节支配。编译阶段在 CuTe 场景下往往是隐藏的长尾——模板展开与 NVCC 前端实例化会显著拉长 <em>T</em><sub>compile</sub>，这一点在答题时必须显式指出，否则会把「编译慢」误判为「生成质量差」。</p>
+<div class="formula">$$T_{\text{attempt}} = T_{\text{gen}} + T_{\text{compile}} + T_{\text{run}} + T_{\text{eval}},\qquad \text{throughput} \propto \frac{1}{\max_i T_i}$$</div>
+<p>具体例子：给定一个「带 mask 的 softmax 归约」kernel 需求，生成阶段输出的是 CuTe 的 layout 与 tiled copy 组合，编译阶段要把它实例化成具体的 MMA 或 copy atom，运行阶段在固定 shape 上测时并采 NCU，评测阶段比对参考实现的数值容差。四段任何一段断裂，最终结论都不能写成「模型不会写 kernel」。</p>
+
+<h3>二 · 生成阶段：输入是规格，输出是 CuTe 表达式树</h3>
+<p>生成阶段的输入不是一句自然语言，而是<strong>规格三元组</strong>：算子语义（数学定义与边界条件）、shape/dtype/layout 约束、以及性能目标（例如相对某个 baseline 的加速比或是否达到 roofline 的某一比例）。CuTeGen 的关键设计在于把 CuTe 的抽象层次作为生成的目标语言：模型不是直接吐出一段 CUDA C++ 的 for 循环，而是要产出 layout、tile、atom、copy/MMA 的组合，这些组合在 CuTe 中是可类型检查的结构，而不是自由文本。</p>
+<p>输出形态因此是一个<strong>表达式树</strong>而非扁平代码：根是 kernel 的 launch 配置，中间层是 tiled 的 copy 与 MMA 划分，叶层是具体的 atom 与迭代器。这个形态带来一个直接后果——生成阶段的失败模式主要不是语法错误，而是<strong>语义与约束的不匹配</strong>：layout 的 stride 与 shape 不自洽导致后续无法 coalesce；tile 大小与共享内存容量冲突；dtype 组合在目标架构上没有对应的 MMA atom。这类错误在纯文本 CUDA 中往往要等到运行期才暴露，而在 CuTe 表达式树上可以在编译期被模板实例化拦住，代价是编译时间的上升。</p>
+<p>生成阶段的成本要按 token 计：CuTe 的模板嵌套写法比等价的手写 CUDA 更长，因为 layout 与 atom 的类型参数需要显式拼写，token 消耗随 tile 层次数增长。若把生成拆成「先出骨架、再填 atom」的两段式，token 总量上升但单次失败率下降，这是一条需要在本阶段就明确的取舍。伪代码思路如下：</p>
+<ul>
+<li>解析规格，抽出 (M, N, K)、dtype、目标架构、性能阈值；</li>
+<li>选择 tile 层次与 atom 类型，构造 layout 的 stride 元组；</li>
+<li>生成 CuTe 表达式树，做静态自洽检查（stride 与 shape 的乘积、smem 占用）；</li>
+<li>输出候选 kernel 源文件与一份声明式的「预期行为」描述，供评测阶段做 oracle 对齐。</li>
+</ul>
+<p>具体例子：一个 GEMM 的生成若把 tile 定为 128×128 而 smem 预算只够单缓冲，生成阶段就应拒绝该候选而不是交给编译器去报错——把失败前移是降低 <em>T</em><sub>compile</sub> 长尾的直接手段。</p>
+
+<h3>三 · 编译阶段：CuTe 模板实例化是主要成本与主要失败源</h3>
+<p>编译阶段的输入是生成阶段产出的源文件与声明式预期，输出是可执行的 cubin 以及一份编译期的静态资源报告（寄存器用量、smem 占用、是否触发 spill）。在 CuTe 语境下，编译不是一个「通过/不通过」的二元门，而是一个<strong>带诊断信息的过滤器</strong>：模板实例化失败会给出具体的 atom 不匹配位置，这比运行期越界更有归因价值。</p>
+<p>失败模式在这一段有三类，必须分开写：其一是<strong>类型层失败</strong>，即 layout 与 atom 的组合在 CuTe 的类型系统中不可满足；其二是<strong>资源层失败</strong>，即寄存器或 smem 超限，编译器通过 spill 或直接拒绝来体现；其三是<strong>时间层失败</strong>，即编译本身超时，这在深层模板嵌套下是真实存在的工程约束，必须计入 agent 的预算。把三者混为一谈会让后续的优化方向失焦——类型层失败要改生成，资源层失败要改 tile，时间层失败要改生成的分层策略。</p>
+<p>代价的量化在这一段是编译时间与编译产物质量的双目标：编译时间随模板层次近似超线性增长，而寄存器用量直接决定 occupancy。可以用一个粗粒度的判据把两者挂钩：</p>
+<div class="formula">$$\text{occupancy} \approx \frac{\text{regs per SM}}{\text{regs per thread}\times \text{threads per block}},\qquad \text{spill} > 0 \Rightarrow \text{带宽代价上升}$$</div>
+<p>具体例子：一个使用多层 tiled copy 的 kernel 在编译期报告寄存器接近上限，此时即便编译通过，运行阶段的 occupancy 也会被压低，评测阶段的加速比目标就难以达成。答题时应把这条因果链写出来：编译期报告不是附属信息，而是评测结论的前置解释变量。</p>
+
+<h3>四 · 运行阶段：输入是 cubin 与测例，输出是时延与 profile</h3>
+<p>运行阶段的输入是编译产物、一组固定 shape 的测例、以及参考实现（用于正确性初筛）。输出是两路数据：<strong>正确性信号</strong>（与参考实现的数值偏差是否在容差内）与<strong>性能信号</strong>（时延、以及 NCU 采集的带宽、occupancy、指令吞吐等计数器）。这两路必须同时产出，因为一个快而不对的 kernel 与一个对而不快的 kernel 在后续优化中的处理路径完全不同。</p>
+<p>失败模式在这一段最丰富：越界访问与未定义行为、race condition 导致的非确定性数值偏差、共享内存 bank conflict 造成的带宽塌陷、以及 launch 配置与 shape 不匹配导致的空转。CuTe 生成的 kernel 还有一个特有失败模式——layout 的 stride 假设与实际传入的 tensor 布局不一致，这在编译期不可见，只在运行期表现为数值错乱。因此运行阶段必须包含一次<strong>布局一致性检查</strong>，而不是直接进入计时。</p>
+<p>性能代价的判据用 roofline 的简化形式：实际达到的吞吐与硬件上限的比值决定了这个 kernel 是「受带宽约束」还是「受计算约束」，这直接指导下一轮优化是改数据搬运还是改 MMA 划分。</p>
+<div class="formula">$$\text{SOL} = \min\left(\frac{\text{peak FLOPs}}{\text{achieved FLOPs}},\ \frac{\text{peak BW}}{\text{achieved BW}}\right)^{-1}$$</div>
+<p>具体例子：一个 softmax kernel 在运行阶段被 NCU 报告为带宽受限且 bank conflict 计数偏高，那么优化路径就落在 smem 的 padding 与 copy atom 的重排上，而不是去动归约的数学表达式。答题时给出这条「profile 读数 → 优化动作」的映射，比罗列计数器名称更有区分度。</p>
+
+<h3>五 · 评测阶段：oracle、容差与「通过」的定义</h3>
+<p>评测阶段的输入是运行阶段的两路信号，加上生成阶段留下的声明式预期，输出是一个结构化的判定：正确性是否通过、性能是否达标、以及若不通过则归因到哪一阶段。这里的核心机制是<strong>正确性 oracle</strong>：它不是一个简单的 allclose，而是按 dtype 与算子语义设定容差策略——归约类算子需要相对误差与绝对误差的组合判据，而 GEMM 类需要按 K 维累积误差缩放容差。容差设得过紧会把正确的低精度实现判死，设得过松则放过真实的数值缺陷。</p>
+<p>失败模式在这一段是<strong>判定本身的失败</strong>，而非 kernel 的失败：测例覆盖不足导致漏判、参考实现本身有 bug 导致误判、以及性能基线的选择不当导致加速比失真。CuTeGen 这类框架要可信，就必须把评测阶段做成可复现的：固定测例集合、固定基线、固定容差公式，任何一项漂移都会让跨轮次的比较失去意义。</p>
+<p>代价在这一段是评测本身的时延与显存：全量测例的运行时间会随 shape 数量线性增长，而大 shape 的参考实现可能占用显著显存，形成评测侧的瓶颈。若把评测做成多轮 RL 的奖励信号，这个时延就直接进入训练回路，成为 token 之外的第二类预算。</p>
+<div class="formula">$$\text{pass} = \big[\ \forall i:\ |y_i - \hat{y}_i| \le a + r\,|y_i|\ \big] \wedge \big[\ \text{speedup} \ge \tau\ \big]$$</div>
+<p>具体例子：一个 fp16 的 layernorm 实现，若容差只设绝对误差，深层的方差累积会让正确实现被判失败；若同时设相对项并随元素数量缩放，判定才稳定。答题时把容差公式写出来，比说「用 allclose 检查」高一个层次。</p>
+
+<h3>六 · 把四段串起来：一条可自洽的解题路径</h3>
+<p>回到题干要求的「按顺序回答」，正确的组织方式不是四段并列的描述，而是让每一段的输出成为下一段的输入并显式标注交接物：生成输出源文件与预期声明 → 编译输出 cubin 与静态资源报告 → 运行输出时延与 profile → 评测输出结构化判定与归因标签。这条链上任何一处交接物缺失，都会让失败模式无法归因，从而让 agent 的下一轮优化变成盲改。</p>
+<p>解题路径可以固化为三步：第一步画阶段图并标注四个交接物；第二步对每段填「输入—输出—失败模式」三元组，失败模式必须写到可操作的程度（例如「layout stride 与 tensor 布局不一致」而非「运行错误」）；第三步用一个具体 kernel 走完全程，检查归因标签是否唯一。若一个失败同时能被两个阶段解释，说明阶段契约定义得不严，这本身就是答案中应当指出的工程判断。</p>
+<p>需要调用的公式在此汇总为一条<strong>端到端收益</strong>判据：单次尝试的收益不只是加速比，还要扣除编译与评测的固定开销；当 <em>T</em><sub>compile</sub> 与 <em>T</em><sub>eval</sub> 相对于 <em>T</em><sub>run</sub> 不可忽略时，agent 的搜索效率由固定开销主导，此时减少候选数量、提高单次生成质量比扩大搜索宽度更有效。</p>
+<div class="formula">$$\text{net gain} = \frac{T_{\text{baseline}} - T_{\text{kernel}}}{T_{\text{baseline}}} - \lambda\cdot\frac{T_{\text{compile}} + T_{\text{eval}}}{T_{\text{baseline}}}$$</div>
+<p>具体例子：在一个小 shape 的 elementwise kernel 上，编译与评测开销可能超过 kernel 本身的运行时间，此时即便加速比数字好看，端到端收益也为负——这条判断必须写进评测阶段的结论里，而不是留给读者去猜。把「通过」的定义从单点加速比扩展为带固定开销扣除的净收益，是这道题在评测维度上的真正考点。</p>
+
+<h3>流水线断点：从题干到可评测产物的失效面</h3>
+<p>CuTeGen 的 pipeline 在“读题”阶段并不产出代码，而是产出一份可被后续阶段消费的<strong>约束清单</strong>：算子语义、dtype 与布局、形状范围、精度容差、目标硬件与性能口径。这一步的失败模式是<em>过度承诺</em>——把题干中未给定的自由度（如是否允许 split-K、是否允许改变累加顺序）自行补全为确定选择，导致后续编译与评测阶段无法回溯。代价体现在 token 与编译时间上：一次读题若展开成多份候选约束，后续每个分支都要独立走一遍编译—运行，编译时间随分支数线性增长，而 GPU 上的运行验证又受显存与队列深度限制，分支过多会挤占同一张卡上的并发评测槽位。</p>
+<p>把约束清单映射到 CuTe 的 layout/atom 选择时，需要一个可判定的准入条件。设题干给出的形状集合为 $S$，候选 tile 配置为 $c$，则可行性可写成</p>
+<div class="formula">$$\mathrm{feasible}(c)=\bigwedge_{s\in S}\left[\mathrm{smem}(c,s)\le M_{\mathrm{smem}}\ \wedge\ \mathrm{regs}(c,s)\le R_{\max}\right]$$</div>
+<p>该式只做静态筛查，不保证数值正确；它把显存与寄存器压力前置到读题阶段，避免把明显越界的配置送进编译。失效条件是动态共享内存与运行时形状相关，静态估计偏乐观时，编译通过但运行期 launch 失败，此时失败模式从“编译错误”退化为“运行时资源不足”，排查成本更高。</p>
+<p>解题路径的拆解应显式标注<strong>不可判定项</strong>：题干未给出容差时，正确性 oracle 无法闭合，agent 只能选择保守的逐元素比对，代价是评测时延与显存占用上升（需要保存中间张量）。下表给出读题产物与下游阶段的对应关系，任一列缺失即视为该分支不可评测。</p>
+<table class="mini"><thead><tr><th>读题产物</th><th>下游消费者</th><th>缺失时的失效模式</th></tr></thead><tbody><tr><td>dtype/布局</td><td>CuTe atom 选择</td><td>编译通过但访存模式错位</td></tr><tr><td>容差与 oracle</td><td>正确性评测</td><td>无法判定通过，只能人工介入</td></tr><tr><td>形状范围</td><td>tile 与 smem 估计</td><td>静态筛查失效，运行期 launch 失败</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-p11 · 第 1/2 部分</p>

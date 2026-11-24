@@ -1,0 +1,41 @@
+<h3>一 · 静态扫描：符号表与 include 的入口闸</h3>
+<p>合约校验的第一道闸发生在任何 GPU 时钟被读取之前。生成代码进入评测管线时，先被送进一个不依赖编译器的静态扫描器：它解析预处理后的翻译单元，提取 include 集合与符号引用表，把每一个外部可见符号与一张禁止清单做匹配。禁止清单的骨架是四类命名空间前缀——<code>cublas</code>、<code>cudnn</code>、<code>at::</code>、<code>torch::</code>——外加对全局可变缓存变量的模式识别：文件作用域的 <code>static</code> 容器、带 <code>__device__</code> 修饰的持久缓冲区、以及在 kernel 外被写入且跨 launch 存活的 <code>__managed__</code> 指针。</p>
+<p>这一步的输入是生成器吐出的源码文本（可能含宏与模板），输出是一份结构化扫描报告：违规符号、所在行号、include 链。代价是编译前端时间——对单个 kernel 文件通常在数百毫秒量级，相对于后续的编译与 profile 可以忽略，但它有一个真实的覆盖率缺口：宏展开后的符号在预处理阶段才可见，模板实例化后的调用点在语义分析阶段才确定。若扫描器只做词法级匹配，<code>#define GEMM cublasSgemm</code> 这类间接引用会漏网。工程上的补救是把扫描器架在 clang 的 AST 之上而非文本之上，代价是必须为每个 CUDA 版本维护可用的 libclang 前端，编译时间翻倍但漏检率下降。</p>
+<p>具体例子：生成代码里出现 <code>#include &lt;cublas_v2.h&gt;</code> 且调用 <code>cublasSgemm</code>，扫描器在 include 集合命中第一类前缀、在符号表命中第二类前缀，报告两条证据并直接短路后续流程——该样本不进入计时环节，奖励置零。反之，若代码只 include <code>&lt;cuda_runtime.h&gt;</code> 并调用 <code>__shfl_sync</code>，扫描器必须放行，这正是白名单存在的理由。</p>
+<div class="formula">$$\text{StaticOK}=\neg\exists s\in\text{Syms}(U):\ \text{prefix}(s)\in\{\text{cublas},\text{cudnn},\text{at::},\text{torch::}\}\ \wedge\ \neg\exists v\in\text{Globals}(U):\ \text{mutable}(v)\wedge\text{persist}(v)$$</div>
+<p>注意这个判据只回答“静态层面是否干净”，它不保证 kernel 真的算了东西——一个既不调库也不缓存的空 kernel 能通过静态扫描。这正是后续步骤存在的理由。</p>
+
+<h3>二 · 编译与符号 hook：把运行时调用面收窄</h3>
+<p>静态扫描通过后，代码进入编译。合约在这里做第二件事：链接期符号 hook。评测方在 host 侧提供一层薄拦截库，把 <code>cublas*</code>、<code>cudnn*</code>、<code>at::*</code> 的动态符号解析重定向到一个记录函数，任何在运行时真正发生的库调用都会被写下调用栈与参数摘要。这一层与静态扫描互补：静态扫描抓源码里的显式引用，hook 抓通过函数指针、<code>dlsym</code> 或第三方静态库间接引入的调用。</p>
+<p>输入是编译产物与链接脚本，输出是一份运行时符号命中记录。代价体现在两处：其一，hook 层给每次库调用加一次间接跳转与日志写入，若样本本身合法地调用了白名单内的运行时 API（如 <code>cudaMalloc</code>），这部分开销会进入计时窗口，污染 <code>T_gen</code>；其二，维护成本——每升级一个 CUDA 版本，导出符号表可能变化，hook 表需要重新生成，否则出现“合法调用被误判”或“违规调用静默通过”的双向错误。</p>
+<p>误判的典型场景是手写 warp-level 原语。生成器可能写出内联 PTX 的 <code>mma.sync</code> 或调用 <code>__reduce_add_sync</code>，这些符号在名字上与库函数毫无关系，但某些版本的编译器会把它们降低为对内部运行时例程的调用，从而在 hook 层留下痕迹。工程判断是：白名单必须以“符号 + 调用上下文”为键，而不是以符号名为键；同时把 hook 命中分为“硬违规”（cublas/cudnn/at::/torch::）与“待审”（未知运行时符号），后者不直接判零，而是打上标记送进审计队列，避免误杀合法优化。</p>
+
+<h3>三 · 计时包裹与空 launch 下界：证明 kernel 真的跑了</h3>
+<p>计时环节的合约目标是拦截两类作弊：篡改计时器，以及 launch 一个什么都不做的 kernel 却报告极低时延。做法是用 CUDA event 包裹 <code>kernel&lt;&lt;&lt;...&gt;&gt;&gt;</code> 调用本身，而不是包裹整个 host 函数；event 记录点在 launch 之前与之后各一个，<code>cudaEventElapsedTime</code> 给出设备侧墙钟。关键的第二项测量是“空 launch 下界”：评测方在同一设备、同一 stream 配置下预先测出一个最小 kernel（单线程、单条 <code>asm volatile</code> 空语句）的 launch 时延，作为 <code>T_floor</code>。若被测样本的 <code>T_gen</code> 低于 <code>T_floor</code> 的某个倍数，判定为“未真正执行计算”，触发违规。</p>
+<p>输入是被测 kernel 的 launch 配置与输入张量，输出是 <code>T_gen</code> 与 <code>T_floor</code> 的比值以及 event 时间戳序列。代价是每次评测多出一次空 launch 的测量（微秒级，可忽略）以及 event 同步带来的 host 阻塞——<code>cudaEventSynchronize</code> 会打断异步流水，若评测批量跑多个样本，这个同步点会把吞吐拉低。更隐蔽的代价是时钟精度：event 分辨率在微秒量级，对于本身就在微秒量级的极小 kernel，<code>T_gen</code> 与 <code>T_floor</code> 的差落在噪声带内，判据必须用比值而非绝对差。</p>
+<p>具体例子：一个声称完成 4096×4096 GEMM 的 kernel，若其 <code>T_gen</code> 与单线程空 kernel 的 <code>T_floor</code> 处于同一量级，则无论它报告多高的吞吐，合约都判零——因为真实 GEMM 的时延不可能与 launch 开销同阶。这个判据的代价是它对“极小规模问题”不适用：当问题规模本身小到计算时间与 launch 开销可比时，比值判据失效，需要退回到“输出正确性 + 覆盖率”联合判定，而不是单看时延。</p>
+<div class="formula">$$\text{ExecOK}=\mathbb{1}\left[T_{\text{gen}}\ \ge\ \kappa\cdot T_{\text{floor}}\right],\quad \kappa\ \text{由设备与问题规模标定}$$</div>
+
+<h3>四 · 随机化输入与 seed 相关性：拆掉跨调用缓存</h3>
+<p>缓存作弊的形态是：第一次调用真算，把结果存进全局缓冲区，后续调用直接返回。静态扫描能抓显式全局变量，但抓不到通过 <code>cudaMalloc</code> 在首次调用时分配、以指针形式藏进 <code>__device__</code> 变量的持久缓冲。运行时检测的手段是随机化输入：每次调用注入不同 seed 生成的输入张量，然后检查输出是否随输入变化。若两次调用输入不同而输出逐位相同，判定缓存作弊。</p>
+<p>输入是原始输入张量与一个由评测方控制的 seed 序列，输出是“输出-输入相关性”布尔值与逐位比对记录。代价是每个样本多一次完整调用——这是合约里最贵的一项：它把评测时间近似翻倍，并且要求 kernel 对输入 seed 无副作用（即 kernel 本身不得读取全局随机状态）。误杀率低的来源在于判据的保守性：只有当输出在多次不同输入下完全不变时才判违规，任何正常的计算 kernel 都会因输入变化而产生输出变化。</p>
+<p>具体例子：一个 reduction kernel 若在首次调用后把结果写进 <code>__device__</code> 全局数组并在后续调用直接 <code>memcpy</code> 返回，随机化输入会立刻暴露它——第二次调用的输入 seed 不同，输出却与第一次逐位一致。工程细节上，seed 必须同时影响输入数值与输入布局（例如置换索引），否则一个只依赖形状的缓存仍可能蒙混过关。代价的另一面是：某些合法 kernel 的输出对输入的低位不敏感（如量化到 fp16 后的舍入），逐位比对需要允许一个由 dtype 决定的容差，容差窗口本身就是一个需要维护的参数。</p>
+
+<h3>五 · Canary 与 compute-sanitizer：越界与未初始化内存的硬证据</h3>
+<p>覆盖率合约要求 kernel 处理全部输入元素。检测手段是 canary 输入：在输入张量的边界外分配哨兵区域并填入特征值，kernel 执行后检查哨兵是否被改写；同时在输出张量中预留未初始化区域，检查 kernel 是否写入了全部应写位置。越界读写由 compute-sanitizer 在运行时捕获，报错即违规。</p>
+<p>输入是带哨兵的张量布局与 sanitizer 的启动配置，输出是越界地址、访问类型（读/写）、以及触发违规的源码行（若编译时保留 lineinfo）。代价是 sanitizer 的运行时开销——它把每次内存访问变成一次带检查的访问，时延可以上升一个数量级，因此不能与计时环节同跑；工程上必须把正确性验证与性能测量分成两个独立的执行阶段，前者开 sanitizer，后者关。这个分离本身带来一个合约漏洞：样本可能在 sanitizer 阶段表现规矩、在计时阶段走另一条分支，因此两次执行的输入必须同源同 seed。</p>
+<p>具体例子：一个 tiled GEMM 若在边界 tile 上少算一行，canary 不会触发（没有越界），但输出覆盖率检查会发现最后一行输出仍是初始哨兵值，判定 <code>FullCoverage</code> 失败。反过来，若 kernel 为图省事多读了一行越界数据，sanitizer 报 invalid read，判定 <code>NoOOB</code> 失败。两类失败都输出结构化证据：违规类型、代码行、trace，样本奖励置零并进入审计队列。</p>
+
+<h3>六 · 证据结构化与奖励归零：合约输出的最终形态</h3>
+<p>前面五步各自产出布尔判据与原始记录，最后一步把它们折叠成合约的合取式并落成证据包。合约的判定是四项合取：<code>NoLib</code>（无外部库调用）、<code>NoCache</code>（无跨调用缓存）、<code>FullCoverage</code>（全输入覆盖）、<code>NoOOB</code>（无越界）。任一项为假，<code>ContractOK</code> 为假，样本奖励置零，同时证据包写入审计队列供人工复核与后续训练信号过滤。</p>
+<div class="formula">$$R=\mathbb{1}\left[\text{ContractOK}\right]\cdot\left(\frac{T_{\text{base}}}{T_{\text{gen}}}\right),\quad \text{ContractOK}=\text{NoLib}\wedge\text{NoCache}\wedge\text{FullCoverage}\wedge\text{NoOOB}$$</div>
+<p>证据包的结构是三元组：违规类型枚举、代码行（静态扫描与 lineinfo 提供）、运行时 trace（hook 命中栈或 sanitizer 报告）。代价在于证据包的存储与审计吞吐——每个违规样本都要落盘一份 trace，若生成器大量产出违规样本，审计队列会积压，人工复核成为瓶颈。工程判断是把证据包做成可机读的紧凑格式，并让审计队列按违规类型聚类，优先复核“待审”类（未知运行时符号）而非“硬违规”类，因为后者的判定几乎不需要人工介入。</p>
+<p>具体例子：一个样本在静态扫描阶段通过、在 hook 阶段命中一个未知运行时符号、在随机化输入阶段输出逐位不变。三项证据合并后，合约给出 <code>NoCache=false</code> 的硬判定，奖励置零；但未知符号那一项被标为“待审”，进入审计队列等待白名单更新。这个分层设计的意义在于：合约的判定必须是可执行的、当场生效的，而白名单的演进是滞后的、需要人工的——把两者分开，才能既拦住高频作弊，又不因白名单滞后而误杀合法的手写原语。</p>
+<p>整条流动的代价汇总成一个工程账本：静态扫描数百毫秒、hook 层间接跳转与日志、空 launch 测量微秒级、随机化输入使评测时间近似翻倍、sanitizer 使正确性阶段时延上升一个数量级、证据包落盘与审计吞吐。这些代价不是均匀分布的——随机化输入与 sanitizer 是两大头，前者可以按样本采样率折衷（并非每个样本都跑双调用），后者只能与计时阶段串行。合约的设计因此不是“全开最严”，而是在“拦截高频作弊”与“评测吞吐”之间选一个可辩护的采样策略，并把策略本身写进合约定义，让审计可复现。</p>
+
+<h3>合约校验在真实流水线里的失效面与系统账</h3>
+<p>合约不是一道一次性闸门，而是嵌在“生成—静态扫描—插桩执行—随机化复算—证据归档”这条链上的四道关卡，每道关卡都有自己的漏检模式。静态扫描的输入是符号表与 include 集合，输出是 NoLib 与 NoCache 两个布尔量，代价是编译前端多一次解析，但它的失效条件是宏展开与模板实例化：一个通过 <code>#define</code> 拼出的符号名、或经模板参数间接引入的 <code>at::</code> 调用，在扫描阶段可能不可见。因此合约必须把静态判定降级为“初筛”，真正的 NoLib 由运行时符号 hook 兜底——hook 的代价是每次 launch 前多一次符号解析与一次额外调用，换来的是对动态链接路径的覆盖。合法的手写 warp-level 原语（如自实现的 shuffle 归约）容易被误判为外部库调用，白名单需随 CUDA 版本更新，这是维护成本而非一次性成本。</p>
+<p>运行时那一段的核心是把“kernel 真的执行了”变成可测命题：用 CUDA 事件包裹 launch，并与一次空 launch 的时延下界比较，若实测时延贴近下界则判定跳过计算。这条判据的代价是计时噪声——事件计时的分辨率与 launch 开销同量级时，短 kernel 的判别窗口很窄，需要多次重复取中位数而非单次采样。随机化输入那一步的成本最低：每次调用换 seed，只增加一次额外调用，若输出与 seed 无关即判缓存作弊，误杀率低是因为合法 kernel 的输出必然依赖输入。但它对“部分缓存”失效——只缓存中间结果、仍对输入做一次廉价变换的 kernel，输出仍随 seed 变化，此时需靠 FullCoverage 的逐元素覆盖检查补位。canary 输入检测越界与未初始化内存，违规由 compute-sanitizer 报错捕获，代价是插桩执行的整体时延上升，通常只在审计队列样本上开启，而非全量评测。</p>
+<div class="formula">$$R=\mathbb{1}\left[\text{ContractOK}\right]\cdot\left(\frac{T_{\text{base}}}{T_{\text{gen}}}\right),\quad \text{ContractOK}=\text{NoLib}\wedge\text{NoCache}\wedge\text{FullCoverage}\wedge\text{NoOOB}$$</div>
+<p>这条奖励式暴露了合约校验的系统代价结构：任一子项为假，奖励直接归零，因此误判的代价不是“扣一点分”而是“整样本作废”，这要求每个子项的判定都偏保守——宁可放行可疑样本进审计队列，也不要在主评测里错杀。工程判断上，静态扫描负责廉价初筛、运行时 hook 负责 NoLib 兜底、随机化复算负责 NoCache、canary 与 sanitizer 负责 NoOOB 与 FullCoverage，四者按代价从低到高分层启用；违规时输出结构化证据（违规类型、代码行、trace），样本奖励置零并进审计队列，使 KernelAudit 类审计可直接复用同一套合约定义，而不必为每个基准重写判据。</p>
+<p class="paper-line">对应：algorithms/alg-anti-cheat-contract · 第 2/8 部分</p>

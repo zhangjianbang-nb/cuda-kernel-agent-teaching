@@ -1,0 +1,1261 @@
+{
+ "exams": [
+  {
+   "id": "q-cuda-p01",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2502-10517",
+   "question": "《KernelBench: Can LLMs Write Efficient GPU Kernels?》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "按难度级别采样一道任务，读取其算子语义说明与规定的输入 shape、数据类型分布。",
+    "调用被测模型生成 CUDA 内核代码，允许附带解释与调用封装，形成可编译的候选实现。",
+    "在指定 GPU 与编译环境下编译候选代码，记录编译失败与错误类型，失败样本不进入性能统计。",
+    "用与参考实现相同的输入张量运行候选内核，与 PyTorch 基线做数值比对，判定语义是否正确。",
+    "对通过正确性检查的样本计时，计算相对 PyTorch 基线的加速比，并按级别汇总成功率与加速分布。",
+    "汇总编译成功率、正确率、加速比中位数与分布，形成可跨方法比较的评测报告。"
+   ]
+  },
+  {
+   "id": "q-cuda-p02",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2507-11948",
+   "question": "《Kevin: Multi-Turn RL for Generating CUDA Kernels》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 论文给出的口径 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$R(\\tau)=\\sum_{t=1}^{T} r_t,\\quad r_t=f(\\text{compile}_t,\\text{correct}_t,\\text{perf}_t)$$",
+    "方法定位为多轮强化学习生成CUDA内核，回合间反馈包含编译与运行结果，但材料未给出轮数上限与每轮反馈字段的具体设计。",
+    "奖励被描述为可验证信号驱动，材料未披露奖励函数构成、正确性判定阈值与性能口径，因此无法判断是否存在可被投机的奖励漏洞。",
+    "材料未给出任何基准题量、基线名称与通过率数字，所有评测规模与对比结论均需以全文补齐，不能据摘要推断。",
+    "训练数据来源未给出，材料未说明是否使用合成任务、真实仓库内核或轨迹SFT，数据配方与采样规模均不可核验。",
+    "硬件与工具链信息缺失，材料未说明目标GPU架构、CUDA版本与是否接入NCU/SASS级profile，工程部署代价无法评估。"
+   ]
+  },
+  {
+   "id": "q-cuda-p03",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2507-14111",
+   "question": "要为《CUDA-L1: Improving CUDA Optimization via Contrastive Reinforcement Learning》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载为 CUDA 算子级任务，每题附参考实现与输入分布；",
+    "候选按同题多采样生成，形成正负对比对；",
+    "正确性以逐元素数值比对判定，容差标准未给出；",
+    "性能以相对基线实现的加速比为口径，计时方法未给出；",
+    "硬件平台与基线实现配置在摘要中未给出。",
+    "工具链为 nvcc 编译加 GPU 运行，编译错误结构化回灌；"
+   ]
+  },
+  {
+   "id": "q-cuda-p04",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2507-23194",
+   "question": "《Geak: Introducing Triton Kernel AI Agent & Evaluation Benchmarks》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "摘要级信息缺少基准规模、基线名称与具体指标数字。",
+    "未说明计时口径、输入分布与防作弊机制，复现与横向比较存在风险。",
+    "未披露多轮重试上限与 token 成本，工程代价不可估。",
+    "仅凭摘要引用加速比或正确率会失真，必须核对全文的基准规模与计时口径。",
+    "未固定软件栈版本时，Triton 编译差异会污染性能比较。",
+    "缺少防作弊说明时，基准分数可能被过拟合策略抬高。"
+   ]
+  },
+  {
+   "id": "q-cuda-p05",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2511-01884",
+   "question": "《CudaForge: An Agent Framework with Hardware Feedback for CUDA Kernel Optimization》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "CUDA内核优化长期依赖专家手工调优，需反复阅读SASS、分析NCU指标并改写代码；大模型虽能生成kernel，但缺乏编译、运行与硬件计数器反馈的闭环，生成结果常不可编译或性能不稳定。该工作提出带硬件反馈的智能体框架，试",
+    "仅凭单轮提示生成的CUDA kernel难以保证正确性与性能；缺少将编译错误、运行结果与硬件profile指标回灌给模型的机制，导致优化过程不可控、无法复现，也难以判断每次修改是否真正带来端到端收益。",
+    "算子级kernel优化任务集（具体规模未给出）",
+    "参考实现与输入shape分布（具体分布未给出）",
+    "未调优的基线CUDA实现（具体基线未给出）",
+    "单轮提示直接生成的kernel（具体设置未给出）"
+   ]
+  },
+  {
+   "id": "q-cuda-p06",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2512-02551",
+   "question": "《CUDA-L2: Surpassing cuBLAS Performance for Matrix Multiplication through Reinforcement Learning》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "策略模型依据矩阵乘任务描述与历史反馈生成CUDA kernel源码，包含tiling与线程块配置。",
+    "编译层编译源码，捕获语法错误、寄存器溢出与共享内存超限等失败并归类反馈。",
+    "运行层在真实GPU上执行kernel，与参考矩阵乘结果比对，判定数值正确性。",
+    "计时层多次测量kernel延迟，并以cuBLAS同shape结果为基线计算加速比。",
+    "奖励聚合层把正确性、加速比与失败类型合成标量奖励，写回多轮轨迹供策略更新。",
+    "训练侧按轮次筛选高奖励样本与诊断信息，更新策略后进入下一轮生成与评测。"
+   ]
+  },
+  {
+   "id": "q-cuda-p07",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2602-05885",
+   "question": "《Dr. Kernel: Reinforcement Learning Done Right for Triton Kernel Generations》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 论文给出的口径 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$r = \\begin{cases} 0, & \\text{编译失败或正确性未通过} \\\\ 1 + \\alpha \\cdot \\min\\left(\\frac{t_{\\text{base}}}{t_{\\text{kern",
+    "奖励设计以正确性为硬门槛：编译失败或数值不一致时奖励为零，只有通过正确性检查的 kernel 才能获得性能奖励，避免错误 kernel 靠速度投机。",
+    "性能奖励采用相对基线的加速比并设上限，控制奖励尺度，防止个别极端加速比主导策略更新；基线配置与上限取值在材料中未给出。",
+    "多轮 rollout 把编译错误、运行失败与测速结果作为下一轮生成的上下文，形成执行反馈闭环，替代单轮提示的一次性反馈。",
+    "论文强调强化学习配方要做对，指向奖励稀疏与奖励黑客两类失败模式；但具体 RL 算法、轮数与 token 预算未给出。",
+    "评测端依赖可验证正确性 oracle 做逐元素比对，容差与输入分布未说明，评测可信度取决于 oracle 设计。"
+   ]
+  },
+  {
+   "id": "q-cuda-p08",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2602-24286",
+   "question": "要为《CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Generation》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载以算子级CUDA内核任务为主，每题附规格与参考实现，题目规模未给出。",
+    "输入分布按shape采样，覆盖不同规模与边界情形，具体分布未给出。",
+    "硬件平台为GPU，具体型号与时钟设置未给出。",
+    "基线为厂商库（如cuBLAS/cuDNN）与单轮提示生成内核，版本与配置未给出。",
+    "正确性以逐元素比对参考实现判定，容差口径未给出。",
+    "工具链为nvcc编译加GPU执行沙箱，编译诊断回填给智能体。"
+   ]
+  },
+  {
+   "id": "q-cuda-p09",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2603-21331",
+   "question": "《AutoKernel: Autonomous GPU Kernel Optimization via Iterative Agent-Driven Search》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "仅摘要级材料，缺少基准、基线与指标口径的具体数字。",
+    "搜索轮数与token成本等工程代价未给出，难以评估部署经济性。",
+    "正确性判定与性能测量的防作弊机制未在材料中说明。",
+    "仅凭摘要级材料易把迭代搜索误读为已验证的高加速比方案，实际数字均未给出。",
+    "正确性比对若缺少容差与边界覆盖说明，可能掩盖数值误差导致的错误内核。",
+    "性能测量若未排除编译与数据传输开销，加速比口径可能被高估。"
+   ]
+  },
+  {
+   "id": "q-cuda-p10",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2603-29010",
+   "question": "《Improving Efficiency of GPU Kernel Optimization Agents using a Domain-Specific Language and Speed-of-Light Guidance》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "GPU kernel 生成智能体通常以自然语言提示驱动大模型反复改写 CUDA 源码，编译与运行反馈稀疏且噪声大，搜索空间随代码自由度爆炸，导致迭代轮数与 token 成本高企。该论文提出用领域特定语言约束 kernel",
+    "自由形式 CUDA 代码搜索空间过大，执行反馈只给出通过/失败或粗粒度耗时，智能体难以判断瓶颈所在，导致大量无效变异与冗长迭代；需要一种受限表达加硬件上限引导的机制来降低优化成本。",
+    "论文未在摘要中给出具体基准名称与题目数量，仅提及 GPU kernel 优化任务集合",
+    "未给出具体基线系统名称，摘要仅以自由形式代码生成的智能体作为对照方向",
+    "以 DSL 约束 kernel 表达空间，把变异限制在语义合法的参数组合内，降低无效编译与错误候选比例。",
+    "引入 speed-of-light 归一化差距作为每轮反馈信号，使优化目标与硬件上限对齐而非绝对耗时。"
+   ]
+  },
+  {
+   "id": "q-cuda-p11",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2604-01489",
+   "question": "《CuTeGen: An LLM-Based Agentic Framework for Generation and Optimization of High-Performance GPU Kernels using CuTe》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "输入算子语义、数据类型与目标 shape 分布，形成结构化任务规格与约束。",
+    "LLM 智能体依据 CuTe 布局与 MMA 原子范式生成内核代码及启动配置。",
+    "在 GPU 工具链上编译并运行，捕获编译诊断、运行时报错与数值结果。",
+    "以参考实现为 oracle 做正确性比对，筛除数值错误与越界访问。",
+    "测量延迟与吞吐并采集硬件 profile 信号，定位瓶颈与低效布局。",
+    "将错误与性能反馈回灌提示，进入下一轮修复或搜索候选评估。"
+   ]
+  },
+  {
+   "id": "q-cuda-p12",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2605-04956",
+   "question": "《KernelBenchX: A Comprehensive Benchmark for Evaluating LLM-Generated GPU Kernels》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 9.4、3.3、72、52.3、68.8、46.6 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{ca",
+    "LLM-based Triton kernel generation has attracted significant interest, yet a fundamental empirical question re",
+    "We present KernelBenchX, a benchmark designed to answer this question through category-aware evaluation of cor",
+    "Our systematic comparison of five representative methods yields three main findings.",
+    "First, task structure determines correctness more than method design.",
+    "Category explains nearly three times more variance in semantic correctness than method (9.4% vs 3.3% explained"
+   ]
+  },
+  {
+   "id": "q-cuda-p13",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2605-16819",
+   "question": "要为《AgentKernelArena: Generalization-Aware Benchmarking of GPU Kernel Optimization Agents》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "负载形态：算子与形状组合分为分布内与分布外两组，分布外用于考察迁移，具体算子集合与用例数量未给出。",
+    "硬件配置：材料未给出具体GPU型号与数量，评测需在固定硬件上取多次运行中位数以控制噪声。",
+    "基线口径：以参考实现或朴素实现作为加速比分母，基线名称与实现细节未给出。",
+    "输入分布：分布外形状的构造方式未说明，需保证其与分布内形状在维度、规模上有可测量的差异。",
+    "正确性口径：每个用例配参考实现作为oracle，编译失败与正确性失败单独计入，不进入计时。",
+    "工具链：统一编译环境与允许的DSL（CUDA/Triton等），材料未给出具体版本与编译flag。"
+   ]
+  },
+  {
+   "id": "q-cuda-p14",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2605-23215",
+   "question": "《FastKernels: Benchmarking GPU Kernel Generation in Production》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《FastKernels: Benchmarking GPU Kernel Generation in Production》的结论只在论文给定的硬件、基线与输入分布上成立",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《FastKernels: Benchmarking GPU Kernel Generation in Production》的基线若未开 TF32/未用最强库，加速比会被高估",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p15",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2607-24762",
+   "question": "《Kernel Forge: An Agent Harness for LLM-based Generation and Optimization of CUDA Kernels》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2607.24762），属于 基准与可信评测 方向。它要回答的问题是：Machine learning models are increasingly embedded in e",
+    "Machine learning models are increasingly embedded in everyday software, and most of their runtime is spent in ",
+    "《Kernel Forge: An Agent Harness for LLM-based Generation and Optimization of CUDA Kernels》使用的基准/算子集合（摘要级，详见论文）",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "Optimizing these kernels is one of the most direct ways to reduce latency and cost, but it has traditionally r",
+    "Agentic systems built on large language models (LLMs) can now generate and optimize kernels with far less huma"
+   ]
+  },
+  {
+   "id": "q-cuda-p16",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2606-20128",
+   "question": "《The Correctness Illusion in LLM-Generated GPU Kernels》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《The Correctness Illusion in LLM-Generated GPU Kernels》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（The number of inputs varies between benchmarks.）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《The Correctness Illusion in LLM-Generated GPU Kernels》的基线若未开 TF32/未用最强库，加速比会被高估"
+   ]
+  },
+  {
+   "id": "q-cuda-p17",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2606-26453",
+   "question": "《Optimizing CUDA like a Human: Micro-Profiling Tools as Expert Surrogates for LLM-Based GPU Kernel Optimization》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 2.42、4.69、5.30、1.23、26、23 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$P_{\\text{att}}(I)=\\min\\left(P_{\\text{peak}},\\;I\\cdot B_{\\text{eff}}\\right),\\qquad I=\\frac{\\text{FLOP}}{\\text",
+    "We present KernelPro, a closed-loop multi-agent system that automatically generates, profiles, and iteratively",
+    "KernelPro introduces four contributions: (1) a semantic feedback operator that encodes expert heuristics as pl",
+    "On KernelBench, KernelPro achieves geometric mean speedups of 2.42x/4.69x/5.30x on Levels 1/2/3, establishing ",
+    "On VeOmni's expert-optimized MoE training kernels, KernelPro achieves 1.23x over hand-tuned Triton by generati",
+    "Ablation studies demonstrate that each design component independently and significantly improves optimization "
+   ]
+  },
+  {
+   "id": "q-cuda-p18",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2607-16241",
+   "question": "要为《KernelBench-Verified: Do LLM-Generated Kernels Actually Beat PyTorch?》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《KernelBench-Verified: Do LLM-Generated Kernels Actually Beat PyTorch?》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p19",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2607-14541",
+   "question": "《Are LLM-Generated GPU Kernels Production-Ready? A Trace-Driven Benchmark and Optimization Agent》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《Are LLM-Generated GPU Kernels Production-Ready? A Trace-Driven Benchmark and Optimization Agent》的结论只在论文给定的硬件、",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《Are LLM-Generated GPU Kernels Production-Ready? A Trace-Driven Benchmark and Optimization Agent》的基线若未开 TF32/未",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p20",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2609-22220",
+   "question": "《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2609.22220），属于 基准与可信评测 方向。它要回答的问题是：Benchmarks for LLM-generated GPU kernels decide correc",
+    "Benchmarks for LLM-generated GPU kernels decide correctness with a few random inputs and a loose floating-poin",
+    "《Measuring the Checker: Mutation Analysis for GPU-Kernel Benchmark Oracles》使用的基准/算子集合（摘要级，详见论文）",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "Recent work agrees these checkers are weak and patches them by hand---extra input distributions, fuzzing recip",
+    "We introduce mutation analysis as an adequacy metric for kernel-benchmark oracles: deterministic rules inject "
+   ]
+  },
+  {
+   "id": "q-cuda-p21",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2609-21058",
+   "question": "《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（We evaluate five model configurations on KernelBench level 1）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《How Much of a Real Workload Can LLM-Generated GPU Kernels Actually Reach?》的基线若未开 TF32/未用最强库，加速比会被高估"
+   ]
+  },
+  {
+   "id": "q-cuda-p22",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2609-30059",
+   "question": "《KernelOPT: Dispatch-Aware Agentic Search for GPU Kernel Optimization》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 100 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{ca",
+    "Deep learning inference and training performance depends critically on GPU kernel efficiency.",
+    "Modern compilers such as PyTorch Inductor automatically generate GPU kernels from high-level model code, but f",
+    "Recent LLM-assisted optimizers explore these opportunities through kernel generation and refinement; yet trans",
+    "We present KernelOPT, a profiling-guided multi-agent system for GPU kernel optimization.",
+    "It inspects generated Triton kernels and external library calls in compiler artifacts to guide synthesis and r"
+   ]
+  },
+  {
+   "id": "q-cuda-p23",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2610-36623",
+   "question": "要为《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《God Does Not Play Dice: Enforcing Batch Invariance in Agentic Kernel Generation》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p24",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2610-36434",
+   "question": "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的结论只在论文给定的硬件、基线与输入分布上成立",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《JustGoal: With Only a Goal, the AI Baseline Is Above the Expert Kernels》的基线若未开 TF32/未用最强库，加速比会被高估",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p25",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2611-04331",
+   "question": "《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2611.04331），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：LLM agents are becoming GPU kernel engineers, b",
+    "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes. ",
+    "《Warpline: Binary-Level Tracing and Unified Evidence for Agentic GPU Kernel Optimization》使用的基准/算子集合（摘要级，详见论文）",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "LLM agents are becoming GPU kernel engineers, but they still tune kernels without seeing where the time goes.",
+    "Hardware profilers report how busy each unit was, not where each warp's time went; intra-kernel tracers can sh"
+   ]
+  },
+  {
+   "id": "q-cuda-p26",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2611-15506",
+   "question": "《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（However, an existing validator suffers from various limitati）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的基线若未开 TF32/未用最强库，加速比会被高估"
+   ]
+  },
+  {
+   "id": "q-cuda-p27",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2608-02611",
+   "question": "《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 0.88、6.72、1.4、48 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\g",
+    "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness c",
+    "We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, pol",
+    "The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promi",
+    "On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, r",
+    "论文《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的摘要未展开该点，需读全文核验。"
+   ]
+  },
+  {
+   "id": "q-cuda-p28",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2611-03517",
+   "question": "要为《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《Ask, Don't Equip: Question-Driven Coding Agents for Deep Kernel Optimization》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p29",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2510-03760",
+   "question": "《EvoEngineer: Mastering Automated CUDA Kernel Code Evolution with Large Language Models》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《EvoEngineer: Mastering Automated CUDA Kernel Code Evolution with Large Language Models》的结论只在论文给定的硬件、基线与输入分布上成",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《EvoEngineer: Mastering Automated CUDA Kernel Code Evolution with Large Language Models》的基线若未开 TF32/未用最强库，加速比会",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p30",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2512-16465",
+   "question": "《cuPilot: A Strategy-Coordinated Multi-agent Framework for CUDA Kernel Evolution》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2025 年（arXiv:2512.16465），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：Optimizing CUDA kernels is a challenging and la",
+    "Optimizing CUDA kernels is a challenging and labor-intensive task, given the need for hardware-software co-des",
+    "《cuPilot: A Strategy-Coordinated Multi-agent Framework for CUDA Kernel Evolution》使用的基准/算子集合（摘要级，详见论文）",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "While recent large language models (LLMs) combined with evolutionary algorithms show promise in automatic kern",
+    "This work identifies these mismatches and proposes cuPilot, a strategy-coordinated multi-agent framework that "
+   ]
+  },
+  {
+   "id": "q-cuda-p31",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2603-19173",
+   "question": "《SOL-ExecBench: Speed-of-Light Benchmarking for Real-World GPU Kernels Against Hardware Limits》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《SOL-ExecBench: Speed-of-Light Benchmarking for Real-World GPU Kernels Against Hardware Limits》定义的输入、参考实现与评测",
+    "按论文方法生成或搜索候选 kernel（We present SOL-ExecBench, a benchmark of 235 CUDA kernel opt）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《SOL-ExecBench: Speed-of-Light Benchmarking for Real-World GPU Kernels Against Hardware Limits》的基线若未开 TF32/未用最"
+   ]
+  },
+  {
+   "id": "q-cuda-p32",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2602-11000",
+   "question": "《Fine-Tuning GPT-5 for GPU Kernel Generation》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 43.7、77.0、14.8、21.8、97.4、72.9 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$R=\\sum_{t=0}^{T}\\gamma^{t}r_{t},\\qquad r_t=\\Delta\\text{speed}_t\\cdot\\mathbb{1}[\\text{pass}_t]$$",
+    "Developing efficient GPU kernels is essential for scaling modern AI systems, yet it remains a complex task due",
+    "Although Large Language Models (LLMs) demonstrate strong capabilities in general sequential code generation, t",
+    "This precludes supervised fine-tuning (SFT) as a scalable methodology for improving current LLMs.",
+    "In contrast, reinforcement learning (RL) offers a data-efficient and adaptive alternative but requires access ",
+    "We present Makora's environment and tools for reinforcement learning finetuning of frontier models and report "
+   ]
+  },
+  {
+   "id": "q-cuda-p33",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2506-09092",
+   "question": "要为《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《CUDA-LLM: LLMs Can Write Efficient CUDA Kernels》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p34",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2509-07506",
+   "question": "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《Astra: A Multi-Agent System for GPU Kernel Performance Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p35",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2603-07169",
+   "question": "《Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2603.07169），属于 基准与可信评测 方向。它要回答的问题是：Optimizing GPU kernels manually is a challenging and t",
+    "Optimizing GPU kernels manually is a challenging and time-consuming task. With the rapid development of LLMs, ",
+    "《Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts》使用的基准/算子集合（摘要级，详见论文）",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "Optimizing GPU kernels manually is a challenging and time-consuming task.",
+    "With the rapid development of LLMs, automated GPU kernel optimization is gradually becoming a tangible reality"
+   ]
+  },
+  {
+   "id": "q-cuda-p36",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2603-10085",
+   "question": "《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（Recent work has explored leveraging large language models (L）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《KernelClaw: A Multi-Agent Framework for GPU Kernel Optimization with Dual-Memory Mechanisms》的基线若未开 TF32/未用最强库"
+   ]
+  },
+  {
+   "id": "q-cuda-p37",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2603-12440",
+   "question": "《KernelFoundry: Hardware-aware evolutionary GPU kernel optimization》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 论文给出的口径 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{ca",
+    "GPU kernel optimization challenges LLMs beyond standard coding tasks, as it requires an understanding of hardw",
+    "However, most existing approaches leveraging LLMs for kernel generation apply standard prompting and feedback ",
+    "We introduce KernelFoundry, an evolutionary framework that efficiently explores the space of GPU kernels throu",
+    "We evaluate this framework on Kernel-Bench, robust-kbench and custom tasks, generating SYCL kernels as a cross",
+    "Our approach consistently outperforms the baseline methods and achieves an average speedup of 2.3 on KernelBen"
+   ]
+  },
+  {
+   "id": "q-cuda-p38",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2608-14560",
+   "question": "要为《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《Agentic Kernel Optimization: Generating State-of-the-Art GPU Kernels Without Hand-Written CUDA》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p39",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2608-01804",
+   "question": "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的结论只在论文给定的硬件、基线与输入分",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《LEAP: Lean Environment-Feedback via Adaptive Pruning for Code RL in GPU Kernel Generation》的基线若未开 TF32/未用最强库，加",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p40",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2608-12004",
+   "question": "《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2608.12004），属于 基准与可信评测 方向。它要回答的问题是：In modern AI frameworks, GPU kernels are key to overal",
+    "In modern AI frameworks, GPU kernels are key to overall system performance. Combining usability, portability, ",
+    "《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》使用的基准/算子集合（摘要级，详见论",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "In modern AI frameworks, GPU kernels are key to overall system performance.",
+    "Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implemen"
+   ]
+  },
+  {
+   "id": "q-cuda-p41",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2608-17071",
+   "question": "《KernelArc: A Multi-Agent Framework for GPU Kernel Optimization》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《KernelArc: A Multi-Agent Framework for GPU Kernel Optimization》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（Strategy-specialized agents run in parallel and coordinate t）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《KernelArc: A Multi-Agent Framework for GPU Kernel Optimization》的基线若未开 TF32/未用最强库，加速比会被高估"
+   ]
+  },
+  {
+   "id": "q-cuda-p42",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2608-17379",
+   "question": "《PTXBench: Benchmarking and Adapting LLMs for GPU Kernel Optimization with Architecture-specific PTX》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 论文给出的口径 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{ca",
+    "We introduce PTXBench, a benchmark for evaluating and adapting large language models (LLMs) to use architectur",
+    "PTXBench measures functional correctness, whether selected target instructions execute at runtime, and speedup",
+    "Our evaluation shows that architecture-specific PTX capability remains uneven: success rates fall substantiall",
+    "No evaluated model consistently matches frontier libraries across the suite.",
+    "We further adapt Qwen3.6-27B using supervised fine-tuning. Repair-conditioned training improves several tasks,"
+   ]
+  },
+  {
+   "id": "q-cuda-p43",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2608-21836",
+   "question": "要为《LLM4LLM: Bridging Kernel Benchmarks and Real Deployment via Closed-Loop Agentic Optimization》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《LLM4LLM: Bridging Kernel Benchmarks and Real Deployment via Closed-Loop Agentic Optimization》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p44",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2609-29067",
+   "question": "《TileBench: A Controlled Benchmark for Performance Evaluation and Bottleneck Diagnosis of Tile-Based Programming Models》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《TileBench: A Controlled Benchmark for Performance Evaluation and Bottleneck Diagnosis of Tile-Based Programmi",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高",
+    "Each task provides a PyTorch reference, verified Triton and cuTile implementations, standardized data-types (d"
+   ]
+  },
+  {
+   "id": "q-cuda-p45",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2609-33074",
+   "question": "《KernelZero: Co-Evolving Proposer and Coder for Continuously Improved GPU Kernel Generation》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2609.33074），属于 基准与可信评测 方向。它要回答的问题是：High-performance GPU kernels are essential to modern m",
+    "High-performance GPU kernels are essential to modern machine learning systems, yet automatically generating ke",
+    "《KernelZero: Co-Evolving Proposer and Coder for Continuously Improved GPU Kernel Generation》使用的基准/算子集合（摘要级，详见论",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "Existing LLM-based approaches face two major limitations: the scarcity of high-quality training data aligned w",
+    "To address these challenges, we propose KernelZero, a co-evolution framework that continuously improves GPU ke"
+   ]
+  },
+  {
+   "id": "q-cuda-p46",
+   "level": 2,
+   "module": "papers",
+   "ref": "paper-2610-03226",
+   "question": "《D2K-Bench: Can LLM Agents Turn Expert Designs into Efficient GPU Kernels?》的 pipeline 从输入到评测要经过哪几步？每一步的输入、输出和失败模式是什么？请按一次 kernel 生成—编译—运行—评测的顺序回答。",
+   "answer_outline": [
+    "读取《D2K-Bench: Can LLM Agents Turn Expert Designs into Efficient GPU Kernels?》定义的输入、参考实现与评测口径",
+    "按论文方法生成或搜索候选 kernel（We introduce D2K-Bench, a diagnostic benchmark of 26 tasks a）",
+    "编译候选并在论文给定的输入分布上做正确性检查",
+    "用统一基线测量时延、加速比与资源占用",
+    "按反馈筛选或改写候选，输出可复现的最优结果",
+    "《D2K-Bench: Can LLM Agents Turn Expert Designs into Efficient GPU Kernels?》的基线若未开 TF32/未用最强库，加速比会被高估"
+   ]
+  },
+  {
+   "id": "q-cuda-p47",
+   "level": 3,
+   "module": "papers",
+   "ref": "paper-2610-05014",
+   "question": "《MetaKernelBench: Measuring GPU Kernel Knowledge Transfer Beyond Code》报告的加速比如何计算？若基线时延为 T0、候选为 T1，写出 speedup 公式；并结合论文中的 19、29、16、45、71、54 说明这个数字在什么条件下不可比。",
+   "answer_outline": [
+    "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{ca",
+    "Recent GPU kernel optimization agents retain what they learn in knowledge bases or as distilled skills.",
+    "Kernel benchmarks score each attempt's implementation for correctness and speed but leave the reuse value of r",
+    "We introduce MetaKernelBench, which measures whether experience distilled from an attempt in one kernel domain",
+    "Its 74 problems are fused subgraphs in six families, each posed as a pair of CuTe DSL and TIRx variants that d",
+    "The agent first attempts each variant solo and is instructed to distill what it learns into a natural-language"
+   ]
+  },
+  {
+   "id": "q-cuda-p48",
+   "level": 4,
+   "module": "papers",
+   "ref": "paper-2607-20908",
+   "question": "要为《Multi-turn RL with Structural and Performance Aware Rewards for CUDA Kernel Generation》的方法搭一套可复现的评测 harness：基线、输入分布、正确性门、防作弊与上线门分别怎么定？给出可执行的配置与验收口径。",
+   "answer_outline": [
+    "评测负载：《Multi-turn RL with Structural and Performance Aware Rewards for CUDA Kernel Generation》的基准题/算子集合",
+    "基线：PyTorch eager、torch.compile 与论文指定库",
+    "输入分布：按论文口径（摘要未给出全部 shape）",
+    "指标：正确率、加速比、资源占用（按论文口径）",
+    "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+    "反馈：编译、运行与 profile 结果回灌"
+   ]
+  },
+  {
+   "id": "q-cuda-p49",
+   "level": 5,
+   "module": "papers",
+   "ref": "paper-2611-14604",
+   "question": "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的方法在跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效？给出你的判断、验证方案与回退条件，不要只复述摘要。",
+   "answer_outline": [
+    "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的结论只在论文给定的硬件、基线与输入分布上成立",
+    "仅摘要级，未读全文；数字为论文声称，未独立复现",
+    "跨硬件、跨 dtype、跨框架迁移未验证",
+    "《KernelMosaic: An Open Dataset and Agentic Framework for CUDA Kernel Generation》的基线若未开 TF32/未用最强库，加速比会被高估",
+    "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+    "reward hacking / fallback 会让正确率虚高"
+   ]
+  },
+  {
+   "id": "q-cuda-p50",
+   "level": 1,
+   "module": "papers",
+   "ref": "paper-2605-26720",
+   "question": "《Towards Feedback-to-Plan Decisions for Self-Evolving LLM Agents in CUDA Kernel Generation》把哪一类 GPU kernel 工程问题作为核心？它使用的基准、基线与指标口径分别是什么？请给出定义，并说明它和相邻工作的分工。",
+   "answer_outline": [
+    "这篇论文发表于 2026 年（arXiv:2605.26720），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：Large language models (LLMs) have shown strong ",
+    "Large language models (LLMs) have shown strong empirical gains as self-evolving agents for CUDA kernel generat",
+    "《Towards Feedback-to-Plan Decisions for Self-Evolving LLM Agents in CUDA Kernel Generation》使用的基准/算子集合（摘要级，详见论文",
+    "PyTorch eager / torch.compile / 论文指定的库实现",
+    "However, how planning decisions attribute and combine heterogeneous feedback signals remains opaque.",
+    "Standard end-to-end ablations fail to resolve this question, as iterative planning amplifies early perturbatio"
+   ]
+  },
+  {
+   "id": "q-cuda-d01",
+   "level": 4,
+   "module": "directions",
+   "ref": "dir-bench-trust",
+   "question": "方向「基准与可信评测」要解决的三个具体问题是什么？给出评测侧与部署侧各两条可执行做法，并说明它与相邻方向的分工。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-d02",
+   "level": 5,
+   "module": "directions",
+   "ref": "dir-agent-harness",
+   "question": "如果团队只有一张 GPU 和两周时间，方向「Agent 脚手架与执行反馈」应该先做什么、明确不做什么？给出取舍依据与验收口径。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-d03",
+   "level": 4,
+   "module": "directions",
+   "ref": "dir-rl-data",
+   "question": "方向「多轮 RL 与可验证奖励」要解决的三个具体问题是什么？给出评测侧与部署侧各两条可执行做法，并说明它与相邻方向的分工。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-d04",
+   "level": 5,
+   "module": "directions",
+   "ref": "dir-oracle-formal",
+   "question": "如果团队只有一张 GPU 和两周时间，方向「正确性 oracle 与形式验证」应该先做什么、明确不做什么？给出取舍依据与验收口径。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-d05",
+   "level": 4,
+   "module": "directions",
+   "ref": "dir-prod-e2e",
+   "question": "方向「生产端到端部署」要解决的三个具体问题是什么？给出评测侧与部署侧各两条可执行做法，并说明它与相邻方向的分工。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-d06",
+   "level": 5,
+   "module": "directions",
+   "ref": "dir-hw-dsl-profile",
+   "question": "如果团队只有一张 GPU 和两周时间，方向「硬件感知 DSL 与 profile」应该先做什么、明确不做什么？给出取舍依据与验收口径。",
+   "answer_outline": [
+    "先建可复核基线",
+    "再压搜索预算",
+    "最后设上线门"
+   ]
+  },
+  {
+   "id": "q-cuda-a01",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-tf32-compile-baseline",
+   "question": "算法「TF32/编译基线锚定」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "固定容器镜像：CUDA/cuBLAS/cuDNN/PyTorch 版本与 GPU 型号写入 manifest，禁止运行时升级",
+    "对每个 shape 跑 eager fp32、eager tf32、torch.compile(max-autotune)、cuBLAS 直调四条参考路径，各 warmup 20 次、计时 100 次取中位数",
+    "记录参考路径的数值误差（对 fp64 参考）与显存峰值，确认基线本身未溢出/未降精度",
+    "以四条基线的最快时延作为分母，生成 kernel 的时延为分子，输出 speedup 与置信区间",
+    "若生成 kernel 时延优于基线但误差超阈值，标记为“精度换速度”，不计入有效加速",
+    "LLM 生成的 kernel 常与 PyTorch 默认路径比较，但默认路径可能走 TF32、cuDNN 启发式或未编译融合，导致加速比虚高或虚低，需要固定数值口径与编译开关的锚定基线。"
+   ]
+  },
+  {
+   "id": "q-cuda-a02",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-hidden-shape-dist",
+   "question": "算法「隐藏 shape 分布抽样」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{Score}=\\sum_{s\\in\\mathcal{S}_{\\text{hid}}} w_s\\cdot\\frac{T_{\\text{base}}(s)}{T_{\\text{gen}}(s)},\\quad ",
+    "从真实负载 trace 拟合 shape 分布（维度、batch、seq_len 的联合分布），评测时按分布抽样隐藏 shape 集，并额外注入尾部 shape（极端小/大、非 2 的幂）检验泛化。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a03",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-roofline-sol-score",
+   "question": "算法「Roofline/SOL 归一评分」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "静态分析或 profiler 统计 kernel 的 FLOP 数与 DRAM 字节数，计算算术强度 I",
+    "查 GPU 规格得到 Peak_FLOPS（按 dtype 分 fp32/tf32/fp16）与 Peak_BW，构造 roofline 拐点 I*",
+    "计算 T_SOL = max(FLOP/Peak_FLOPS, Bytes/Peak_BW)，作为该 shape 的理论下界",
+    "实测 T_gen，计算 SOL 利用率 u=T_SOL/T_gen，并按 I 与 I* 的关系标注瓶颈类型",
+    "对 u>1 的异常（测量误差或缓存复用）做复核，剔除不可信样本",
+    "原始时延 speedup 依赖基线强弱，不同 kernel 间不可比；需要把时延折算到硬件理论上限（SOL），得到与基线无关的效率分数。"
+   ]
+  },
+  {
+   "id": "q-cuda-a04",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-anti-cheat-contract",
+   "question": "算法「防作弊合约校验」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$R=\\mathbb{1}\\left[\\text{ContractOK}\\right]\\cdot\\left(\\frac{T_{\\text{base}}}{T_{\\text{gen}}}\\right),\\quad \\te",
+    "把“禁止调用外部库、禁止跨调用缓存、禁止读计时器、必须处理全部输入元素”写成可静态检查+运行时插桩的合约，违规即判零分并记录证据。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a05",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-mutation-checker-audit",
+   "question": "算法「变异测试审计 checker」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "从参考 kernel 生成变异体集合：边界条件翻转、累加顺序打乱、dtype 截断、索引偏移 ±1",
+    "每个变异体跑 checker，记录是否被判定为错误（kill）",
+    "计算 kill rate = killed / total，并按变异类型分组报告漏检类别",
+    "对漏检变异体人工复核，修补 checker 的容差或覆盖范围",
+    "只有 kill rate ≥ 阈值（如 95%）的 checker 才允许进入 RL 奖励管线",
+    "benchmark 的正确性 checker 本身可能有漏洞（容差过松、只比对部分输出、未覆盖边界），导致错误 kernel 被判通过，需要量化 checker 的检错能力。"
+   ]
+  },
+  {
+   "id": "q-cuda-a06",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-fuzz-fp64-oracle",
+   "question": "算法「Fuzz+fp64 参考 oracle」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{err}=\\max_i\\frac{|y_{\\text{gen},i}-y_{\\text{fp64},i}|}{\\max(|y_{\\text{fp64},i}|,\\epsilon)},\\quad \\text",
+    "用随机 fuzz 生成覆盖边界（0、NaN、Inf、极端指数、非对齐长度）的输入，以 fp64 CPU/GPU 实现为参考，按相对误差与 ULP 距离双阈值判定正确性。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a07",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-formal-contract-verify",
+   "question": "算法「合约/形式化验证」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "从 kernel 签名与 PyTorch 语义提取前置条件（shape 约束、dtype、对齐）与后置条件（输出等式、无越界）",
+    "把循环与索引翻译为符号表达式，用 SMT 求解器检查是否存在违反后置条件的输入",
+    "对有界展开的循环做 BMC（bounded model checking），深度覆盖典型 tile 大小",
+    "验证失败时输出反例（具体 shape 与输入值），回灌给 agent 作为修复信号",
+    "验证通过但超出有界范围的路径标记为“未证明”，与 fuzz 结果合并报告置信度",
+    "fuzz 只能抽样，无法证明所有输入正确；对安全关键 kernel 需要“对所有合法输入成立”的保证，需要把前置/后置条件写成可验证合约。"
+   ]
+  },
+  {
+   "id": "q-cuda-a08",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-batch-invariance-gate",
+   "question": "算法「Batch 不变性门」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\Delta_{\\text{BI}}=\\max_i\\left|y_i^{(B=1)}-y_i^{(B)}\\right|,\\quad \\text{Invariant}=\\mathbb{1}\\left[\\Delta_{\\",
+    "对同一逻辑输入分别以 batch=1 与 batch=B 运行，要求逐元素输出在容差内一致（batch invariance），否则判定为不可部署，即使单 batch 正确性通过。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a09",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-ncu-metric-feedback",
+   "question": "算法「NCU 指标回灌」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "对生成 kernel 跑 ncu --set full 或自定义 metric 集，采集 10–20 个关键指标",
+    "计算派生量：DRAM 吞吐占 Peak_BW 比例、SM 利用率、achieved occupancy、L2 hit rate",
+    "按 roofline 分类：若 DRAM 吞吐 > 80% 判 memory-bound，若 SM 利用率 > 80% 判 compute-bound，否则判 latency-bound",
+    "把分类结果与 Top-3 stall 原因（如 long scoreboard、barrier）压缩成 ≤200 token 的反馈块",
+    "反馈块拼接到下一轮 prompt，agent 据此选择优化动作（增大 tile、改 swizzle、减少同步）",
+    "agent 只看到端到端时延，无法知道瓶颈在访存、计算还是 occupancy，导致优化方向盲目；需要把硬件计数器转成结构化反馈注入下一轮 prompt。"
+   ]
+  },
+  {
+   "id": "q-cuda-a10",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-sass-warp-stall-profile",
+   "question": "算法「SASS/warp stall 剖析」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{StallShare}_k=\\frac{\\sum_{pc}\\text{cycles}_k(pc)}{\\sum_{pc}\\sum_{k'}\\text{cycles}_{k'}(pc)},\\quad \\tex",
+    "反汇编 cubin 得到 SASS，结合 ncu 的 warp stall 采样，统计每类 stall 的周期占比与指令混合（LDG/FFMA/BAR），把 SASS 片段与 stall 热点对齐后回灌。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a11",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-binary-instr-tracing",
+   "question": "算法「二进制插桩 tracing」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "编译生成 kernel 后计算 cubin 哈希，记录 launch 参数（grid/block/shape/dtype）",
+    "通过 CUPTI 回调或 LD_PRELOAD 拦截 launch，记录起止时间戳与流 ID",
+    "关联 ncu 采集的计数器快照（可选，低频采样），写入统一 trace 文件",
+    "按代码版本（git diff 或 prompt 轮次）对齐 trace，计算每轮修改的指标 delta",
+    "基于 delta 做 keep/revert：指标改善则保留，退化则回滚并记录反例",
+    "agent 的优化过程缺乏统一证据链：源码、SASS、profile、时延分散在不同工具中，无法回溯“哪次修改导致哪个指标变化”，调试与审计成本高。"
+   ]
+  },
+  {
+   "id": "q-cuda-a12",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-mcts-evolution-search",
+   "question": "算法「MCTS/进化 keep-revert 搜索」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{UCT}(s,a)=Q(s,a)+c\\sqrt{\\frac{\\ln N(s)}{N(s,a)}},\\quad Q(s,a)=\\frac{1}{N(s,a)}\\sum_{i}R_i,\\quad R_i=\\f",
+    "把每次 kernel 修改视为树节点，用 MCTS 的 UCT 或进化算法的种群选择平衡“利用高 reward 分支”与“探索未访问修改”，keep/revert 作为边的剪枝。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a13",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-multi-agent-strategy-ir",
+   "question": "算法「多 agent 策略 IR 协同」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "分析 agent 读 profile 与源码，输出策略 IR：瓶颈分类、候选动作列表、约束（寄存器上限、共享内存上限）",
+    "编码 agent 按 IR 生成 Triton/CUDA 代码，IR 中的每个动作对应代码中的具体参数",
+    "评审 agent 检查代码是否实现 IR 声明的动作，未实现则打回并标注差异",
+    "执行 agent 跑正确性与计时，把结果写回 IR 的 reward 字段",
+    "调度器按 IR 的 reward 与冲突检测决定下一轮由哪个 agent 主导",
+    "单 agent 同时负责策略分析、代码生成与调优，上下文过载且角色冲突；多 agent 若无共享表示，会重复分析或给出矛盾建议。"
+   ]
+  },
+  {
+   "id": "q-cuda-a14",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-strategy-ir-dsl",
+   "question": "算法「策略IR与DSL约束生成」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{score}(d)=\\mathbb{1}[\\text{compile}(d)]\\cdot\\mathbb{1}[\\text{correct}(d)]\\cdot\\frac{T_{\\text{ref}}}{T_",
+    "把 kernel 设计抽象为带类型与约束的策略 IR（tile/thread/block/流水线/共享内存布局），LLM 只在 DSL 层做决策，再由确定性编译器 lowering 到 CUDA/Triton，从而把自由",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a15",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-cute-agent-gen",
+   "question": "算法「CuTe模板化生成与布局搜索」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "解析目标算子（GEMM/attention/conv）的 shape、dtype、目标架构（sm80/sm90），枚举合法 CuTe atom 组合。",
+    "LLM 生成 CuTe 代码骨架：选择 MMA atom、定义 tiled_mma、tiled_copy、shared memory layout 与 swizzle。",
+    "模板实例化 + 编译，失败则把 CuTe 静态断言错误回灌给 LLM 修正 layout 参数。",
+    "运行正确性 oracle（fp64 参考）与 NCU profile，采集 tensor core 利用率、共享内存 bank conflict、DRAM 吞吐。",
+    "以 SOL 利用率为目标做 layout/tile 参数的 keep-revert 搜索，输出最优 CuTe kernel。",
+    "手写 CuTe/CUTLASS 布局与 tiled copy 极其繁琐，LLM 直接写 CuTe 代码易错且难以覆盖最优 layout/swizzle 组合，导致生成的高性能 GEMM/attention kernel "
+   ]
+  },
+  {
+   "id": "q-cuda-a16",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-multi-agent-coord",
+   "question": "算法「策略协同多智能体进化」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{reward}_t=\\mathbb{1}[\\text{correct}]\\cdot\\left(\\frac{T_{\\text{best}}}{T_t}-1\\right)-\\lambda\\cdot\\text{",
+    "把 kernel 优化拆成 proposer（提策略）、coder（写实现）、profiler（读 NCU/SASS 给诊断）、critic（判正确性与收益）四个角色，用共享策略池与双记忆协调，每轮由 critic 决定",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a17",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-budget-aware-search",
+   "question": "算法「预算感知由粗到细搜索」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "生成候选池，用静态特征（访存模式、tile 尺寸、占用率估计）与历史成功率做廉价打分排序。",
+    "对 top-k 候选做快速编译 + 小规模正确性 + 单次时延测量，淘汰明显劣质者。",
+    "把剩余预算按潜力比例分配给存活候选，进入 NCU/SASS 细粒度调优循环。",
+    "每轮更新候选潜力后验（bandit），动态调整预算分配，低潜力候选提前终止。",
+    "预算耗尽时输出最优合法 kernel 及其 profile 证据链。",
+    "agentic kernel 搜索中每次编译+profile 都有真实 GPU 时间与 token 成本，均匀分配预算会在低价值候选上浪费大量轮次，导致高价值方向探索不足。"
+   ]
+  },
+  {
+   "id": "q-cuda-a18",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-goal-only-baseline",
+   "question": "算法「仅目标驱动基线生成」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{capability}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}\\left[\\text{correct}_i\\land \\text{SOL}_i\\ge \\theta\\righ",
+    "只给 agent 一个可验证目标（正确性 + 性能阈值）和最小工具集（编译/运行/profile），不提供任何优化提示或模板，让模型自主探索，以此作为衡量“纯模型能力”的基线。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a19",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-question-driven-agent",
+   "question": "算法「问题驱动诊断式优化」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "读取 NCU/SASS 指标，agent 生成 1–3 个关于瓶颈根因的可证伪问题。",
+    "为每个问题设计最小微实验（改 tile、改 swizzle、加 padding、换 pipeline 深度），只变一个变量。",
+    "运行实验并采集指标，回答该问题（是/否/部分），记录证据。",
+    "基于答案选择优化动作并修改 kernel，编译+正确性+性能验证。",
+    "保留有效修改，更新问题库，进入下一轮直到瓶颈消除或预算耗尽。",
+    "agent 拿到 profile 数据后常直接改代码，缺乏对瓶颈的显式提问与假设检验，导致修改与真实瓶颈不匹配，多轮后性能停滞。"
+   ]
+  },
+  {
+   "id": "q-cuda-a20",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-multi-turn-rl-kernel",
+   "question": "算法「多轮RL结构化奖励」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$R(\\tau)=\\sum_{t=1}^{T}\\gamma^{t-1}\\left(r_t^{\\text{compile}}+r_t^{\\text{correct}}+\\alpha\\cdot\\frac{T_{t-1}-T",
+    "把多轮交互建模为带结构化奖励的序列决策：每轮对编译成功、正确性通过、性能提升分别给分量奖励，最终奖励叠加，用多轮 RL 优化整条轨迹而非仅终态。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a21",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-robust-reward",
+   "question": "算法「抗噪鲁棒奖励塑形」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "每个候选 kernel 重复运行 k 次（含 warmup），记录时延分布。",
+    "用中位数与 MAD 估计稳健时延与置信区间，剔除异常值。",
+    "按置信下界计算加速比，只有下界超过阈值才给正奖励，否则给零或惩罚。",
+    "把稳健奖励送入 RL，配合 reward normalization 与 clipping。",
+    "定期校准测量环境（锁频、隔离），监控奖励方差是否收敛。",
+    "GPU 时延测量受频率抖动、噪声邻居、缓存状态影响，原始加速比作为 RL 奖励噪声大，导致策略在相近 kernel 间震荡，训练不稳定。"
+   ]
+  },
+  {
+   "id": "q-cuda-a22",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-trloo-estimator",
+   "question": "算法「TRLOO留一法优势估计」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$A_i=r_i-\\frac{1}{G-1}\\sum_{j\\ne i}r_j,\\quad \\nabla_\\theta J=\\mathbb{E}\\left[\\frac{1}{G}\\sum_{i=1}^{G}A_i\\nab",
+    "用留一法（leave-one-out）为每个样本构造无偏 baseline：以同组其他样本的奖励均值作为该样本的对照，得到低方差且无偏的优势估计，再用于策略梯度。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a23",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-pairwise-ranking",
+   "question": "算法「成对排序偏好奖励」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "对同一算子采样两个候选 kernel，编译、验证、测速。",
+    "构造偏好对：正确性优先，其次按稳健时延比较，标注胜者。",
+    "用 Bradley-Terry 模型或 pairwise ranking loss 训练奖励/偏好模型。",
+    "用偏好模型给新候选打分，驱动策略优化（如 DPO/PPO with ranking reward）。",
+    "定期用 held-out 对校验偏好模型与真实时延排序的一致性。",
+    "绝对时延奖励受测量噪声与硬件差异影响大，跨算子/跨架构不可比；且“好多少”难以标定，导致奖励尺度漂移，RL 难以稳定比较两个 kernel 的优劣。"
+   ]
+  },
+  {
+   "id": "q-cuda-a24",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-trajectory-sft",
+   "question": "算法「成功轨迹蒸馏SFT」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\mathcal{L}_{\\text{SFT}}=-\\sum_{(s,a)\\in\\mathcal{D}_{\\text{succ}}}\\log\\pi_\\theta(a\\mid s),\\quad \\mathcal{D}_",
+    "用强 agent/专家在大量算子上跑多轮优化，收集“问题→诊断→修改→验证通过”的完整成功轨迹，过滤后做监督微调，把长程优化行为蒸馏进模型作为 RL 冷启动。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-a25",
+   "level": 2,
+   "module": "algos",
+   "ref": "alg-synthetic-data-gen",
+   "question": "算法「合成算子数据扩增」按一次 kernel 生成/优化/验证的流动拆成哪几步？每一步的输入、输出与代价是什么？",
+   "answer_outline": [
+    "定义算子语法：逐元素、归约、矩阵乘、卷积、attention 及其融合组合，参数化 shape/dtype/stride/边界。",
+    "程序化采样生成算子实例，自动生成 PyTorch/fp64 参考实现作为正确性 oracle。",
+    "对合成算子跑基线（PyTorch/cuBLAS）得到参考时延，构造训练样本。",
+    "把合成数据混入 SFT/RL 训练集，按难度分层采样。",
+    "在真实基准（KernelBench/真实框架算子）上评估泛化，监控合成-真实分布差距。",
+    "真实 kernel 基准算子数量有限且分布偏斜，RL/SFT 训练容易过拟合到少数热门算子（GEMM/attention），泛化到冷门算子与真实框架调用时性能骤降。"
+   ]
+  },
+  {
+   "id": "q-cuda-a26",
+   "level": 3,
+   "module": "algos",
+   "ref": "alg-end2end-regression",
+   "question": "算法「生产端到端回归门」的核心公式逐项解释；给定一个具体算例，说明它如何影响搜索预算或上线判断。",
+   "answer_outline": [
+    "$$\\text{gain}_{\\text{e2e}}=\\frac{T_{\\text{base}}^{\\text{e2e}}-T_{\\text{gen}}^{\\text{e2e}}}{T_{\\text{base}}^{\\t",
+    "把生成的 kernel 插回真实模型/真实 trace，测量端到端时延、吞吐与显存，设置回归门：只有端到端收益超过阈值且不劣化正确性才允许合入，否则回退。",
+    "输入输出口径"
+   ]
+  },
+  {
+   "id": "q-cuda-t01",
+   "level": 3,
+   "module": "theory",
+   "ref": "th-roofline-attainable",
+   "question": "理论「Roofline 可达上界」的公式逐项含义是什么？推导的关键一步在哪？给出一个可手算的数值算例。",
+   "answer_outline": [
+    "一个 kernel 的实测吞吐不会超过两条斜线中的较小者：带宽受限时被 HBM 字节数卡住，算力受限时被峰值 FLOPS 卡住，二者交点决定算术强度门槛。",
+    "$$P_{\\text{att}}(I)=\\min\\left(P_{\\text{peak}},\\; I\\cdot B_{\\text{eff}}\\right),\\qquad I=\\frac{\\text{FLOP}}{\\tex",
+    "P_att：给定算术强度下的可达性能上界（FLOP/s 或 Byte/s）",
+    "I：算术强度，每字节 DRAM 流量对应的浮点运算数",
+    "B_eff：实测可持续 HBM 带宽（GB/s）",
+    "P_peak：该指令组合的实测峰值算力（TFLOP/s）"
+   ]
+  },
+  {
+   "id": "q-cuda-t02",
+   "level": 5,
+   "module": "theory",
+   "ref": "th-sol-normalized",
+   "question": "理论「SOL 归一化评分口径」在什么假设下失效？如果线上出现相反现象，你怎么判断是公式错了还是负载变了？",
+   "answer_outline": [
+    "Byte_min 与 FLOP_min 的计数规则（是否计中间张量、是否允许融合）必须固定，否则 SOL 分数不可跨论文比较",
+    "T_SOL 未计入不可消除的 launch 与同步开销，小 kernel 上 SOL 可超过 1",
+    "把实测时间除以硬件 Speed-of-Light 时间得到 SOL 分数，跨 kernel、跨形状可比；但 SOL 时间本身依赖一个“最优实现”假设，口径不同分数不可比。",
+    "$$\\text{SOL}=\\frac{T_{\\text{SOL}}}{T_{\\text{meas}}},\\qquad T_{\\text{SOL}}=\\max\\left(\\frac{\\text{Byte}_{\\text{m"
+   ]
+  },
+  {
+   "id": "q-cuda-t03",
+   "level": 3,
+   "module": "theory",
+   "ref": "th-launch-overhead",
+   "question": "理论「Launch 开销与批量摊销」的公式逐项含义是什么？推导的关键一步在哪？给出一个可手算的数值算例。",
+   "answer_outline": [
+    "单次 kernel launch 有固定 CPU/驱动侧开销，当单 kernel 计算时间接近该开销时，吞吐由 launch 频率而非计算决定；批量化或 CUDA Graph 才能摊薄。",
+    "$$T_{\\text{step}}=T_{\\text{launch}}+\\max\\left(T_{\\text{kernel}},\\;T_{\\text{queue}}\\right),\\qquad \\eta_{\\text{l",
+    "T_launch：单次 launch 的端到端固定开销（CPU 提交+驱动+启动）",
+    "T_kernel：kernel 在 GPU 上的实际执行时间",
+    "T_queue：前序工作造成的排队等待时间",
+    "eta_launch：launch 开销占比下的有效利用率"
+   ]
+  },
+  {
+   "id": "q-cuda-t04",
+   "level": 5,
+   "module": "theory",
+   "ref": "th-occupancy-latency",
+   "question": "理论「占用率与延迟隐藏」在什么假设下失效？如果线上出现相反现象，你怎么判断是公式错了还是负载变了？",
+   "answer_outline": [
+    "仅适用于延迟受限（latency-bound）kernel；带宽受限时增加占用率不提升吞吐",
+    "L_mem 依赖访问模式（合并度、L2 命中率），用标称延迟会误判",
+    "每个 SM 上驻留的 warp 数乘以每 warp 可重叠的访存延迟，必须覆盖一次全局访存的延迟，否则流水线出现气泡；占用率不是越高越好，受寄存器与共享内存约束。",
+    "$$N_{\\text{warp}}^{\\text{res}}=\\min\\left(\\left\\lfloor\\frac{R_{\\text{SM}}}{R_{\\text{thread}}\\cdot 32}\\right\\rfl"
+   ]
+  },
+  {
+   "id": "q-cuda-t05",
+   "level": 3,
+   "module": "theory",
+   "ref": "th-warp-stall-taxonomy",
+   "question": "理论「Warp Stall 归因分解」的公式逐项含义是什么？推导的关键一步在哪？给出一个可手算的数值算例。",
+   "answer_outline": [
+    "把 warp 未发射的周期按原因（访存依赖、执行依赖、屏障、指令取指、not-selected）分类，各类占比之和近似总 stall 周期，用于定位瓶颈而非猜测。",
+    "$$C_{\\text{stall}}=\\sum_{k\\in\\mathcal{K}}C_k,\\qquad \\mathcal{K}=\\{\\text{long\\_scoreboard},\\text{short\\_scorebo",
+    "C_stall：warp 未发射的总周期数",
+    "C_k：第 k 类 stall 原因的周期数",
+    "f_k：该类 stall 的占比",
+    "not_selected 高说明占用率充足而非真瓶颈，不能与访存 stall 同等归因"
+   ]
+  },
+  {
+   "id": "q-cuda-t06",
+   "level": 5,
+   "module": "theory",
+   "ref": "th-fp-error-bound",
+   "question": "理论「浮点误差累积界」在什么假设下失效？如果线上出现相反现象，你怎么判断是公式错了还是负载变了？",
+   "answer_outline": [
+    "仅对无溢出、无次正规数的情形成立；FP16/BF16 累加需改用混合精度误差模型",
+    "条件数大的输入（正负相消）使相对误差远超该界，需改用相对-绝对混合容差",
+    "n 项求和的舍入误差上界随 n 与单位舍入 u 线性增长（朴素求和）或对数增长（成对/树形求和），这决定 kernel 重排归约后能否通过容差 oracle。",
+    "$$\\left|\\hat{s}-s\\right|\\le \\gamma_{n}\\sum_{i=1}^{n}|x_i|,\\qquad \\gamma_n=\\frac{nu}{1-nu},\\qquad u=\\frac{\\epsi"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,45 @@
+<h3>一 · 基准构成：100 个 kernel 的题面与"PyTorch 参照"到底指什么</h3>
+<p>论文的评测口径以一句话为核心：在 100 个 kernel 的基准上，cuPilot 生成的 kernel 相对 PyTorch 平均加速 3.09×。这句话里每一个名词都需要拆开核查，否则它只是一个不可复现的宣称。首先是"100 个 kernel"的构成：论文摘要级信息没有给出算子清单、难度分层与来源（是否沿用 KernelBench 的三级划分、是否混入自定义算子），因此读者只能确认规模量级，无法确认题目分布。其次是"over PyTorch"——这是全篇最容易被误读的口径。PyTorch 参照至少存在三种形态：eager 模式逐算子下发、`torch.compile` 后的融合图、以及 cuBLAS/cuDNN 等厂商库路径。三者的时延可以相差数倍，同一份 agent 输出在三种参照下会得到三个不同的 speedup。cuPilot 的 3.09× 若以 eager 为分母，则其中相当一部分收益来自"消除框架调度开销与中间张量"，而非 kernel 本身的微架构优化；若以 `torch.compile` 为分母，则收益必须来自超越 Inductor 的代码生成，难度完全不同。论文没有在摘要中声明分母形态，这构成第一个不可比点。</p>
+<p>与之配套的是正确性门。给定公式 <span>accept = 1[pass ∧ s ≥ 1]</span>，其中 pass 是正确性检查、s 是加速比，意味着一个候选只有同时通过数值校验且不慢于基线才被接受。这个定义本身是干净的，但它把"正确性"压缩成一个布尔量，掩盖了容差选择：对 fp32 归约类算子，相对误差阈值取 1e-5 还是 1e-3，直接决定一个用 tf32 张量核加速的候选是被接受还是被拒绝。工程上必须把容差写进口径，否则 accept 的统计不可比。</p>
+<div class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}},\qquad \text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</div>
+<p>代价层面：把分母从 eager 换成 `torch.compile`，通常会让同一批候选的平均 speedup 显著缩水，因为编译器的融合已经吃掉了调度与访存冗余；这不是 agent 变差，而是分母变强。一个具体例子：逐元素加法的融合链在 eager 下由多次 kernel launch 与显存往返主导，agent 写一个融合 kernel 就能拿到数倍加速；但在 `torch.compile` 下 Inductor 已生成同类融合 kernel，此时 agent 的收益只剩向量化宽度与 launch 配置的边际差异。因此读 3.09× 时必须先问：分母是谁。</p>
+
+<h3>二 · 指标族：faster rate、geomean、fast-p 与 roofline 各自回答什么</h3>
+<p>单一平均加速比是最弱的指标，因为它会被少数极端样本拉偏，也无法表达"有多少题真的赢了"。一个可核查的评测应同时报告四类量。第一是 <strong>faster rate</strong>：在全部 N 道题中满足 s ≥ 1（或更严格的 s ≥ 1.1）的比例，它衡量 agent 的稳定性而非峰值能力。第二是 <strong>geomean</strong>：对每道题的 speedup 取几何平均，即 <span>exp(mean(ln s_i))</span>，它对数域对称，避免一道 20× 的题掩盖十道 0.8× 的题。第三是 <strong>fast-p</strong>：达到 p 倍加速的题目占比，例如 fast-2 表示"至少快一倍"的题比例，这是工业落地最关心的尾部指标。第四是 <strong>roofline 利用率</strong>：把实测时延换算成达到的带宽或算力，与硬件的 SOL（speed of light）比较，回答"这个 kernel 离物理上限还有多远"，而不是"比 PyTorch 快多少"。</p>
+<table class="mini"><thead><tr><th>指标</th><th>定义</th><th>回答的问题</th><th>典型失真来源</th></tr></thead><tbody><tr><td>faster rate</td><td>s ≥ 1 的题占比</td><td>稳定性</td><td>基线过弱导致虚高</td></tr><tr><td>geomean</td><td>exp(mean ln s)</td><td>整体水平</td><td>单题爆炸性加速被对数压缩</td></tr><tr><td>fast-p</td><td>s ≥ p 的题占比</td><td>尾部能力</td><td>p 的选取主观</td></tr><tr><td>roofline</td><td>实测吞吐 / SOL</td><td>离物理上限的距离</td><td>SOL 假设的峰值频率与实测不符</td></tr></tbody></table>
+<p>论文摘要只给出 3.09× 这一个数，未声明是否同时报告 faster rate、geomean 与 fast-p，也未声明 3.09× 是算术平均还是几何平均。这是第二个不可比点：算术平均对长尾极敏感，几何平均则对"少数题大幅领先、多数题小幅落后"给出更悲观的读数。工程判断是：看到单一平均值时，先假定它是算术平均，再要求补齐 faster rate 与 geomean，否则无法判断这个 3.09× 是"普遍小幅领先"还是"少数题暴击"。代价上，geomean 的计算需要每道题的完整 speedup 向量而非聚合值，这意味着评测管线必须保留逐题原始时延，存储与复算成本上升，但这是可核查性的最低要求。</p>
+
+<h3>三 · 硬件、dtype 与库基线：三个未声明变量如何决定可比性</h3>
+<p>论文声称在 GEMM 任务上"展示了精细优化并达到关键硬件单元的高利用率"，这句话隐含了硬件代际与 dtype 两个变量。GEMM 的 roofline 位置由 dtype 决定：fp32 走 CUDA core 的 FMA 路径，峰值算力受限于 SM 数量与频率；tf32 与 bf16 走张量核，峰值算力高出一个量级，且 tf32 的累加精度与 fp32 不同。同一个 agent 生成的 GEMM kernel，在 fp32 口径下可能只是把分块调优到接近 cuBLAS，在 tf32 口径下则必须显式调用张量核指令（`mma.sync` 系列）才能接近 SOL。若论文的基线 cuBLAS 默认开启了 tf32 而 agent 候选没有，或反之，加速比会系统性地偏向一方。这是第三个不可比点，也是最隐蔽的一个：它不改变代码，只改变一个环境变量。</p>
+<p>硬件维度同理。roofline 的 SOL 曲线随架构变化：HBM 带宽、L2 容量、SM 数量、张量核每周期吞吐都不同。一个在 A100 上达到 80% SOL 的 kernel，搬到 H100 上可能因为分块尺寸与新带宽不匹配而跌到 50%。论文未声明硬件型号与是否跨卡验证，因此 3.09× 只能绑定在论文所用卡上成立。工程上可核查的做法是：在口径中固定 <em>(GPU 型号, dtype, 基线实现版本, 是否开 tf32, 是否允许 cuBLASLt 启发式搜索)</em> 五元组，任何一项缺失都标记为"不可比"。</p>
+<p>代价层面：固定 dtype 会限制 agent 的搜索空间。若允许 agent 自行选择 tf32 以换取速度，则必须同步放宽正确性容差，否则 accept 会误杀；若锁定 fp32，则 GEMM 的加速上限被 CUDA core 峰值封死，roofline 利用率的天花板远低于张量核路径。这是一个正确性与性能之间的显式权衡，必须写进口径而不是留给读者猜。具体例子：一个把 fp32 GEMM 改写为 tf32 张量核路径的候选，在 1e-5 容差下大概率 fail，在 1e-3 容差下 pass 且 speedup 可观——同一个候选，两种口径，两种结论。</p>
+
+<h3>四 · 隐藏 shape 与输入分布：离线分数如何在生产上崩塌</h3>
+<p>kernel 优化的本质是 shape 特化。一个为 M=N=K=4096 调优的 GEMM，分块尺寸、共享内存占用、寄存器压力、流水级数全部围绕这个形状选定；换到 M=1 的瘦长矩阵或 K 很小的窄矩阵，同一份代码的 occupancy 与访存模式会急剧恶化，甚至不如朴素实现。cuPilot 的进化流程若在固定 shape 上做适应度评估，进化压力会天然地把种群推向"对该 shape 过拟合"的方向——这不是 bug，而是进化算法在有限评估集上的必然行为。因此评测口径必须区分两种模式：<strong>可见 shape</strong>（题面给出，agent 可针对优化）与<strong>隐藏 shape</strong>（评测时替换，agent 不可见）。</p>
+<p>隐藏分布的处理有三种可核查策略。其一，评测时对每道题采样一组 shape，覆盖典型与极端两端（大 batch 小通道、小 batch 大通道、非 2 的幂尺寸），报告最差 shape 的 speedup 而非最好 shape。其二，报告 speedup 的方差或分位数，把"在某个 shape 上 10×、在另一个上 0.5×"的情况显式暴露。其三，把 shape 作为进化适应度的一部分，即 <span>fitness = min over shapes of s</span>，用最差 shape 驱动选择，迫使 agent 生成形状鲁棒的代码。第三种代价最高：每次评估要跑多个 shape，评测时延成倍上升，且最差 shape 的梯度信号稀疏，进化收敛变慢。</p>
+<p>具体例子：一个 reduction kernel 在 N=1M 时通过向量化与多级归约拿到高带宽利用率，但当 N=1024 时线程块数量不足、GPU 未被填满，speedup 跌到 1 以下。若评测只报 N=1M 的结果，这个候选会被误判为成功。工程判断是：任何只报单一 shape 的加速比都不足以支撑部署决策，必须要求逐 shape 的时延表，或至少要求最差 shape 的读数。这也是论文"仅在给定输入分布上成立"这一局限的具体落点。</p>
+
+<h3>五 · 可核查的测量口径：一份可以照抄的清单</h3>
+<p>把上述讨论收敛成一份可执行的测量口径，是这一部分最实际的产出。一份合格的 kernel agent 评测报告应包含以下字段，缺一即标记为不可比。</p>
+<ul>
+<li><strong>题目清单</strong>：算子名、难度分层、来源基准、是否允许调用厂商库。</li>
+<li><strong>基线定义</strong>：eager / `torch.compile` / 指定库三选一并写明版本；是否开 tf32；是否允许 cuBLASLt 启发式。</li>
+<li><strong>硬件</strong>：GPU 型号、驱动与 CUDA 版本、是否锁频（锁频消除时钟抖动，是可复现的前提）。</li>
+<li><strong>dtype 与容差</strong>：输入/累加/输出 dtype，正确性检查的相对与绝对容差，NaN/Inf 处理。</li>
+<li><strong>shape 策略</strong>：可见或隐藏、采样分布、是否报最差 shape。</li>
+<li><strong>计时方法</strong>：warmup 次数、重复次数、取中位数还是最小值、是否含 kernel launch 开销、是否用 CUDA event 而非 wall clock。</li>
+<li><strong>指标族</strong>：逐题 speedup 向量、faster rate、geomean、fast-p、roofline 利用率。</li>
+</ul>
+<p>计时方法这一项常被低估。取最小值会系统性地偏向"偶尔跑得快"的候选，取中位数则对调度抖动更稳健；含 launch 开销时，小 shape 的 kernel 会被固定开销淹没，此时 speedup 反映的是 host 端效率而非设备端效率。代价上，warmup 与重复次数直接乘以评测总时延：100 道题 × 每題 100 次重复 × 多 shape，单轮评测可能达到小时级，这对进化算法的迭代频率是硬约束，也是为什么多数工作选择缩小评估集的原因。</p>
+<p>roofline 利用率需要单独说明其可核查性。计算 SOL 需要知道该 dtype 在该 GPU 上的峰值算力与峰值带宽，两者都随频率与功耗状态浮动。可核查的做法是同时报告"实测达到的 GB/s 或 TFLOP/s"与"理论峰值"，让读者自行判断比值，而不是只给一个百分比。具体例子：一个 GEMM kernel 报告 70% SOL，若其理论峰值按 boost 频率计算而实测在 base 频率下运行，则真实利用率被高估；把绝对吞吐写出来，读者可以用自己的峰值假设复算。</p>
+
+<h3>六 · 哪些数字不可比：一份负面清单</h3>
+<p>最后把不可比的情形显式列出，供读者在引用 3.09× 时对照。第一，跨论文的 speedup 不可比：不同工作的分母（eager vs compile vs 库）、硬件、dtype、shape 策略各不相同，把 cuPilot 的 3.09× 与另一工作的数字并列是无效比较。第二，同一论文内不同题集的平均值不可比：100 道题的构成若偏向访存密集型算子，平均加速比会天然高于偏向计算密集型的题集，因为前者更容易从融合与消除中间张量中获益。第三，未声明容差的正确率不可比：容差放宽一个量级，pass 率与 accept 率都会上升。第四，未锁频的时延不可比：时钟抖动可以带来百分之几十的读数漂移。第五，shape 特化后的离线分数不可直接外推到生产：生产负载的 shape 分布与评测集不同，且往往包含动态 shape。</p>
+<p>论文自身也承认这一局限：结论只在论文给定的硬件、基线与输入分布上成立，数字为论文声称、未独立复现，跨硬件、跨 dtype、跨框架的迁移未验证。工程判断是：把 3.09× 当作"该 agent 在其口径下相对其基线有显著收益"的存在性证据，而不是"换到我的集群上能拿到 3×"的承诺。要落地，必须在本方硬件上按上述清单重跑一遍，尤其要重跑隐藏 shape 与最差 shape 的读数，并检查基线是否已开到最强（`torch.compile` + 厂商库 + 合适 dtype）。若重跑后 faster rate 高但 geomean 低，说明 agent 擅长少数题；若最差 shape 的 speedup 低于 1，说明进化过程过拟合了可见 shape，此时应把 shape 鲁棒性写进适应度而不是继续加大种群。</p>
+
+<h3>口径边界：3.09× 在什么条件下才成立</h3>
+<p>摘要给出的唯一硬数字是“100 个 kernel 上相对 PyTorch 平均 3.09×”。这个数字的可比性完全取决于三件事：基线是否开到最强（PyTorch eager 是否允许 TF32、是否对比 cuBLAS/cuDNN 而非朴素实现）、dtype 是否与参考实现一致、以及每个 kernel 的输入 shape 是固定还是按论文口径采样。把 <span class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}}$$</span> 里的 $T_{\text{base}}$ 换成未调优的 eager 实现，加速比会被系统性高估；同理，若 agent kernel 针对评测 shape 做了 tile/block 特化，而基线是通用实现，比较的就不是同一道题。因此可核查口径必须写明：基线库版本与编译选项、dtype（fp32/fp16/bf16 是否允许 TF32）、warmup 与重复次数、计时是否含 kernel launch 与同步。</p>
+<p>正确性门同样要写死。<span class="formula">$$\text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</span> 中 pass 的判据若是固定容差，则在 bf16/fp16 下几乎必然放宽；若 agent 在数值不稳时回退到参考实现（fallback），正确率会虚高而加速比被稀释——这类 reward hacking 在进化式搜索里是常见失效模式，必须在口径里声明“回退候选计为未通过”或单独统计回退率。隐藏 shape/分布的处理方式是另一处不可比来源：论文未在摘要中给出全部 shape，若评测集与调优集同分布，离线分数无法预测生产端到端收益。</p>
+<table class="mini"><thead><tr><th>口径项</th><th>必须声明</th><th>缺失时的偏差方向</th></tr></thead><tbody><tr><td>基线</td><td>eager / torch.compile / 指定库，TF32 开关</td><td>加速比高估</td></tr><tr><td>dtype</td><td>fp32、fp16、bf16 及容差</td><td>正确率虚高</td></tr><tr><td>shape</td><td>固定或采样分布、是否特化</td><td>离线好、生产崩</td></tr><tr><td>计时</td><td>warmup、同步、是否含 launch</td><td>小 kernel 时延失真</td></tr></tbody></table>
+<p>系统代价落在测量本身：每个候选都要编译、跑正确性、再计时，100 个 kernel 的进化搜索意味着编译时间与 GPU 占用是主要成本，而非 token；roofline 引导的 prompt 会额外消耗上下文预算，profile 回灌又引入一次额外执行。工程判断是：把“可复现的最小口径”（固定 shape + 明确基线 + 回退计失败）作为第一层门，跨硬件、跨 dtype、跨框架的迁移结论在论文给定条件之外一律视为未验证。</p>
+<p class="paper-line">对应：papers/paper-2512-16465 · 第 2/9 部分</p>

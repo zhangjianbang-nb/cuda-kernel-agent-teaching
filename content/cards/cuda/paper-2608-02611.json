@@ -1,0 +1,77 @@
+{
+ "_paper_id": "paper-2608-02611",
+ "_domain": "cuda",
+ "_title": "KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization",
+ "_abstract_only": true,
+ "title_zh": "KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic",
+ "background": "这篇论文发表于 2026 年（arXiv:2608.02611），属于 Agent 脚手架与执行反馈 方向。它要回答的问题是：Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and search often stalls ea",
+ "problem": "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and search often stalls early. We present a practical optimization agent that combines LLM-guided mutation",
+ "core_idea": "We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, policy-gated evaluation, and profiler-informed diagnosis. The system screens many candidates with low-cost evaluation and allocates higher-fidelity budge",
+ "architecture": "The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promising survivors to optimize and evolve GPU kernels. On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, reaching 0.88x-6.72x speedup o",
+ "pipeline": [
+  "读取《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（We present a practical optimization agent that combines LLM-）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{speedup}=\\frac{T_{\\text{base}}}{T_{\\text{agent}}},\\qquad \\text{accept}=\\mathbb{1}[\\text{pass}\\land s\\ge 1]$$",
+ "training": "论文给出的优化/训练配方：On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, reaching 0.88x-6.72x speedup over PyTorch and up to 1.4x speedup over the state-of-the-art kernel agent, with up to 48% lower optimization time. 论文《Ker",
+ "walkthrough": "一次完整流程：先读取《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promising survivors to optimize and evolve GPU kernels. On important Triton kernel generation tasks, this design im",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "论文《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的摘要未展开该点，需读全文核验。 论文《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的摘要未展开该点，需读全文核验。",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and se",
+  "We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, policy-gated evaluation, and profiler-informed diagno",
+  "The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promising survivors to optimize and evolve GPU kernels."
+ ],
+ "limitations": [
+  "《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, reaching 0.88x-6.72x speedup over PyTorch and up to 1.4x speedup over the state-of-the-art kernel agent, with u",
+ "summary": "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and search often stalls early. We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, policy-gated evaluation, and profiler-informed diagnosis. The system screens many candidates with low-cost e",
+ "data_recipe": [
+  "评测负载：《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "Automating GPU kernel optimization remains difficult in practice: generated variants can violate correctness constraints, runtime measurements are noisy, and search often stalls early.",
+  "We present a practical optimization agent that combines LLM-guided mutation, adaptive resource allocation, policy-gated evaluation, and profiler-informed diagnosis.",
+  "The system screens many candidates with low-cost evaluation and allocates higher-fidelity budget only to promising survivors to optimize and evolve GPU kernels.",
+  "On important Triton kernel generation tasks, this design improves both kernel quality and search efficiency, reaching 0.88x-6.72x speedup over PyTorch and up to 1.4x speedup over the state-of-the-art kernel agent, with u",
+  "论文《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的摘要未展开该点，需读全文核验。",
+  "论文《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的摘要未展开该点，需读全文核验。"
+ ],
+ "anchors": [
+  "0.88",
+  "6.72",
+  "1.4",
+  "48"
+ ],
+ "pitfalls": [
+  "《KernelBrain: Coarse-to-Fine, Budget-Aware Search for Agentic GPU Kernel Optimization》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-agent-harness"
+}

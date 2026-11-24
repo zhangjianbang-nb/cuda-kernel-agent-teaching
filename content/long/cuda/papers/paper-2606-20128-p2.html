@@ -1,0 +1,54 @@
+<h3>一 · 基准口径的三层结构：题集、输入、判定</h3>
+<p>论文把“基准”拆成三个可以分别核查的层次，而不是笼统地说“在 KernelBench 上跑了一下”。第一层是题集：KernelBench、TritonBench、GEAK 三个基准的算子集合与参考实现来源不同，同一段候选 kernel 在不同题集里的“通过”含义并不一致。第二层是输入：论文明确指出 <em>The number of inputs varies between benchmarks</em>，即每个 kernel 到底喂几个输入、这些输入怎么来，各基准之间没有统一约定；更关键的是 <em>The shape, dtype, and tolerance are fixed for each kernel</em>——shape 固定、dtype 固定、容差固定，三者一旦固定，正确性判定就退化成“在这一个点上对不对”。第三层是判定：allclose 风格的逐元素比较，配合固定的绝对/相对容差，给出一个二值结论。三层叠在一起，就构成了论文所说的 correctness oracle。</p>
+<p>这三层的耦合方式决定了分数的可比性。若两个工作在题集上重叠、但输入个数不同（一个基准每 kernel 给 5 个输入，另一个给 1 个），那么“通过率”这个标量背后承载的证据量完全不同：5 个输入里错 1 个仍然可能被判通过（取决于聚合方式），1 个输入则是一次性的全有全无。论文没有给出各基准输入个数的具体数值，只给出“varies”这一定性事实，因此任何跨基准的通过率直接相减都是无意义的。可核查的口径必须写成三元组：<em>(题集版本, 每 kernel 输入个数与生成方式, shape/dtype/tolerance 的具体取值)</em>，缺一项就不能声称可比。</p>
+<p>代价在这里已经出现：固定 shape 让基准的测量成本极低（编译一次、跑一个点、比一次），但也让 oracle 的统计功效极低。用 24 个 kernel 的受控语料去检验 oracle 本身，正是对这一低功效的直接回应——<em>We construct a controlled corpus of 24 Triton and CPU stand-in kernels (15 correct controls and 9 LLM-style buggy variants seeded with documented transcription errors)</em>。15 个正确对照 + 9 个带“有据可查的转录错误”的 buggy 变体，构成一个已知 ground truth 的小世界，用来测量 oracle 的漏报率与误报率，而不是测量模型的生成能力。这个设计把“基准可信吗”变成了一个可以算数的实验。</p>
+
+<h3>二 · 指标族：faster rate、speedup、geomean、fast_p 与 roofline</h3>
+<p>论文涉及的指标不是一个，而是一族，且彼此不可互换。最基础的是逐样本加速比：</p>
+<div class="formula">$$s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}},\qquad \text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau]$$</div>
+<p>这里 $T_{\text{base},i}$ 是基线在第 $i$ 个样本上的时延，$T_{\text{cand},i}$ 是候选的时延，$\tau$ 是“算快”的阈值。$\text{score}$ 就是 faster rate（超过阈值的样本占比），它对 $\tau$ 极其敏感：$\tau=1.0$ 表示“只要比基线快一点就算赢”，$\tau=1.2$ 则要求 20% 的实质收益。论文没有给出 $\tau$ 的取值，因此任何 faster rate 数字必须连同 $\tau$ 一起报告，否则不可比。与之并列的是 speedup 的聚合方式：算术平均会被个别超大加速比拉偏，geomean（几何平均）对数量级更稳健，fast_p 则是“第 p 百分位的加速比”，刻画的是尾部而非中心。三者回答的是不同问题——平均收益、典型收益、最差情形——把它们混用是口径事故的常见来源。</p>
+<p>roofline / SOL 是另一条轴：它不比较两个实现的时延，而是把实测时延换算成“达到硬件上限的百分比”。这要求知道该算子在该 dtype 下的算术强度与峰值带宽/算力，因此 roofline 分数天然依赖硬件与 dtype，跨 GPU 类别不可直接比较。论文在五类 GPU 上复跑同一协议（<em>RTX 3060, A10, L40S, A100 SXM4, H100 NVL</em>），这五类的显存带宽与算力档次差异极大，同一个 kernel 在 3060 上可能是带宽 bound、在 H100 NVL 上可能变成延迟 bound，roofline 百分比随之漂移。所以论文报告的“verdicts are identical across all five GPUs”是正确性判定的一致性，不是性能分数的一致性——这两件事必须分开陈述。</p>
+<p>性能代价体现在测量本身：固定 shape 的单点计时方差大，需要重复采样取中位数或最小值；geomean 需要每个样本都有有效计时，任何一个样本编译失败或超时都会污染聚合；roofline 需要额外的硬件参数与算子算术强度推导，编译与 profile 时间随样本数线性增长。这些都是 token 之外的真实开销——agent 多轮迭代时，每一轮都要重跑这套测量，测量预算直接决定了可搜索的候选数量。</p>
+
+<h3>三 · 哪些数字不可比：基线、dtype、容差与硬件的四重错位</h3>
+<p>第一重错位是基线。论文列出的基线是 PyTorch eager、torch.compile 与论文指定库实现。这三者的性能差异可以很大：eager 不做融合、torch.compile 可能生成融合 kernel、库实现（如 cuBLAS/cuDNN 路径）往往是手工调优的。若一个工作报告“相对 eager 加速 3×”，另一个报告“相对最强库加速 1.1×”，两个数字放在一张表里就是误导。更隐蔽的是 TF32：若基线未开 TF32 而候选用了 TF32，加速比会被系统性高估，因为比较的不是算法优劣而是数值精度档位。论文的失败模式清单里明确写了这一点——<em>基线若未开 TF32/未用最强库，加速比会被高估</em>。可核查口径要求写明：基线是哪一个、是否开启 TF32、是否使用厂商库、库版本。</p>
+<p>第二重错位是 dtype 与容差。论文的 oracle 使用 <em>per-(op, dtype) absolute tolerance</em>，即容差按（算子, dtype）对分别设定，并以高精度 fp64 CPU 参考为基准（<em>a high-precision (fp64) CPU reference and per-(op, dtype) absolute tolerance</em>）。这意味着 fp16 与 fp32 的通过标准不同，同一个候选在 fp16 下“通过”不代表在 fp32 下通过；反过来，把 fp16 的通过率与 fp32 的通过率并列，是把两把不同刻度的尺子当成一把。跨 dtype 的分数不可比，跨容差的分数更不可比——容差放宽一倍，通过率会显著上升，而这一变化与 kernel 质量无关。</p>
+<p>第三重错位是硬件。五类 GPU 的复跑给出了一个干净结论：正确性判定在五类硬件上完全一致（<em>10 of 10 illusions caught and 16 of 16 controls clean</em>），但这只说明数值判定对硬件不敏感，不能推出性能排序对硬件不敏感。一个在 A100 上 geomean 1.3× 的候选，在 3060 上可能因为占用率不足而低于 1.0×。因此“跨硬件迁移未验证”是这份工作自己承认的局限，任何跨硬件的加速比对比都必须标注 GPU 型号与显存配置。</p>
+<p>第四重错位是输入分布。固定 shape 意味着候选可以针对这一个 shape 做特化——比如把 tile 大小、寄存器分配、循环展开全部按该 shape 硬编码。这种特化在基准上得分很高，一旦生产输入的 shape 落在特化点之外，性能会崩塌。论文的核心指控正是这一点：<em>shape 特化与隐藏输入分布会让离线分数在生产上崩塌</em>。可核查口径因此必须包含“输入是否对候选可见”：若候选在生成时能看到测试 shape，分数是“开卷”成绩；若测试 shape 被隐藏，才是“闭卷”成绩。两者不可比。</p>
+
+<h3>四 · 隐藏 shape 与分布：op-schema-aware seeded fuzzing 的处理方式</h3>
+<p>论文对隐藏输入的处理不是简单换几个随机 shape，而是 <em>op-schema-aware seeded fuzzing</em>——按算子的 schema（输入个数、每个输入的角色、广播关系、维度约束）生成合法输入，并用固定种子保证可复现。这一点很关键：纯随机 shape 很容易生成非法输入（维度不匹配、广播失败），导致候选在“输入非法”上失败而非在“计算错误”上失败，污染判定。schema-aware 的 fuzzing 保证生成的每个输入都落在该算子的合法域内，从而把失败归因于数值错误。</p>
+<p>伪代码思路大致是：对算子 $op$，读取其 schema 得到参数元组 $(n_{\text{in}}, \text{roles}, \text{constraints})$；由种子 $seed$ 驱动随机数发生器，在约束域内采样 shape 与 dtype；对每个采样点，用 fp64 CPU 参考实现算出期望输出；再用 per-(op, dtype) 绝对容差比较候选输出与期望输出。判定聚合为“任一点失败即整体失败”还是“按点统计失败率”，会显著改变结论——论文的受控语料实验采用的是前者（9 个 buggy 全部被抓、15 个对照全部通过），这说明其聚合是严格的合取式。</p>
+<p>代价有两面。正确性面：fuzzing 的点数越多，漏报率越低，但每个点都要跑一次 fp64 CPU 参考，CPU 参考在 flash-attention 这类算子上极慢，26 个算子（<em>We extend the corpus to 26 ops (adding a flash-attention pair)</em>）的 fuzzing 总时间会远超 GPU 上的候选计时。性能面：fuzzing 只用于正确性判定，不用于性能测量；性能仍在固定 shape 上测，因此“正确性用宽分布、性能用窄分布”是本协议的结构性不对称——一个在宽分布上正确的 kernel，其性能分数仍可能来自对窄分布的过拟合。可核查口径应分别报告：正确性覆盖了多少个 fuzz 点、性能在哪些 shape 上测、两者是否同一组 shape。</p>
+<p>具体例子：flash-attention 对的加入（26 个算子中的一对）是必要的，因为注意力类算子的数值行为（softmax 的 max 减法、fp16 累加溢出）与逐元素算子完全不同，固定容差在注意力上更容易放过“近似正确但数值不稳”的实现。把注意力纳入语料，等于把 oracle 的检验范围从“逐元素容差”扩展到“归约与归一化路径的容差”，这是对 allclose 风格判定的一次实质性压力测试。</p>
+
+<h3>五 · 可核查的测量口径清单</h3>
+<p>把上述讨论收敛成一张可执行的表，是这一部分最实用的产出。下表列出每个字段为什么必须写、缺了会导致什么不可比。</p>
+<table class="mini">
+<thead><tr><th>字段</th><th>必须记录的内容</th><th>缺失后果</th></tr></thead>
+<tbody>
+<tr><td>题集</td><td>KernelBench / TritonBench / GEAK 的具体版本与算子子集</td><td>通过率跨题集不可比</td></tr>
+<tr><td>输入个数</td><td>每 kernel 的输入数、生成方式（固定/随机/fuzz）、种子</td><td>证据量不同，通过率不可比</td></tr>
+<tr><td>shape/dtype</td><td>测试 shape 是否对候选可见；dtype 与混合精度设置</td><td>开卷与闭卷成绩混为一谈</td></tr>
+<tr><td>容差</td><td>per-(op, dtype) 绝对容差取值；参考实现精度（fp64 CPU）</td><td>放宽容差即抬高通过率</td></tr>
+<tr><td>基线</td><td>eager / torch.compile / 厂商库；TF32 开关；库版本</td><td>加速比被系统性高估</td></tr>
+<tr><td>指标</td><td>faster rate 的 $\tau$；speedup 聚合用算术平均还是 geomean；是否报 fast_p</td><td>同一批时延得出不同结论</td></tr>
+<tr><td>硬件</td><td>GPU 型号（如 A100 SXM4、H100 NVL）、显存、时钟策略</td><td>跨硬件性能排序不可迁移</td></tr>
+<tr><td>计时</td><td>重复次数、取中位数还是最小值、是否含编译时间</td><td>方差与冷启动污染加速比</td></tr>
+</tbody>
+</table>
+<p>这张表的作用不是形式主义，而是把“分数”还原成“在什么条件下测得的什么量”。论文的受控语料实验之所以可信，正是因为它把 oracle 的判定条件写死了：24 个 kernel、15 正 9 错、fp64 CPU 参考、per-(op, dtype) 绝对容差、固定种子 fuzzing，结论是 <em>The seeded oracle flags 9 of 9 buggy kernels and passes 15 of 15 correct controls, at zero precision cost on controls</em>。这句话里每个数字都对应上表的一个字段，因此可以被独立复算。反过来，任何只报告“加速 2.1×、通过率 87%”而不给上表字段的结果，都无法被复算，也就无法被信任。</p>
+<p>代价维度也要进表：编译时间（候选编译失败会直接判负，但编译耗时本身消耗 agent 的迭代预算）、显存占用（大 shape fuzz 点可能 OOM，OOM 应算失败还是算跳过，必须预先规定）、token 消耗（多轮迭代中每次反馈都携带测量结果，测量越细 token 越多）。这些不是性能指标，但它们是评测协议的真实成本，决定了协议能否被大规模复用。</p>
+
+<h3>六 · 口径即结论：为什么“不可比”本身就是发现</h3>
+<p>论文的论证链条可以压缩成一句：基准用固定 shape、少量输入、allclose 判定来给正确性打分，而这个 oracle 从未被独立检验；一旦用受控语料去检验，就会发现它在小样本下会放过 buggy kernel（correctness illusion），并且这种放过在五类 GPU 上表现一致（<em>The verdicts are identical across all five GPUs</em>）。这里的“一致”是双刃的：它说明数值判定不依赖硬件，因此 oracle 的缺陷是协议性的、可复现的，而不是某块卡的偶然；但它也说明换硬件不能修复这个缺陷——修复只能来自输入分布与判定逻辑本身。</p>
+<p>工程判断落在两处。其一，任何 LLM kernel 生成工作的“通过率”必须附带 fuzz 点数与容差表，否则该通过率只等价于“在一个点上 allclose 通过”，其信息量接近于零。其二，性能分数必须与正确性分数解耦报告：正确性用宽分布 fuzz 测，性能用明确标注的 shape 集测，两者不共享同一组输入时，必须显式说明这种不对称，否则“又快又对”就是一个拼接出来的假象。论文用 26 个算子、五类 GPU、24 个受控 kernel 建立的这套口径，其价值不在于给出某个模型的排名，而在于把“分数”变成了可以被逐字段核查的测量记录——在这个意义上，口径本身就是结论。</p>
+
+<h3>固定口径的边界：当 shape、dtype 与容差被钉死</h3>
+<p>KernelBench、TritonBench、GEAK 的共同做法是把每个 kernel 的 shape、dtype、容差固定下来，输入样本数在各基准之间不一致。这种口径让分数可复现，却把“正确性”压缩成一条窄缝：候选只需在那一组固定输入上通过 allclose，就能拿到正确性门。论文构造的 24 个 Triton 与 CPU stand-in kernel 语料（15 个正确对照、9 个注入文档化转写错误的 LLM 风格缺陷变体）正是用来暴露这条窄缝——固定口径下的 allclose 无法区分“恰好在这组输入上对”与“在算子语义上对”。一旦把口径换成 op-schema-aware seeded fuzzing 加 fp64 CPU 参考与逐 (op, dtype) 绝对容差，9/9 缺陷被标记、15/15 对照通过且对照上零精度代价；同一协议扩到 26 个算子（含一对 flash-attention）并在 RTX 3060、A10、L40S、A100 SXM4、H100 NVL 五类 GPU 上重跑，判决完全一致：10/10 幻觉被捕获、16/16 对照干净。这说明固定口径的失效条件不是硬件，而是输入分布本身。</p>
+<p>可核查的测量口径必须把“正确性”与“性能”拆成两条独立可复算的链。正确性链写成逐元素的判据，而不是单一布尔：</p>
+<div class="formula">$$\text{pass}_i=\bigwedge_{j}\left|y^{\text{cand}}_{j}-y^{\text{ref}}_{j}\right|\le \tau_{\text{op},\text{dtype}},\qquad \tau \text{ 随 (op, dtype) 变化}$$</div>
+<p>性能链则要固定基线语义：基线是 PyTorch eager、torch.compile 与论文指定库实现，加速比按 <span>score</span> 公式逐样本取 <span>T_base/T_cand</span> 再聚合。代价在于：逐 (op, dtype) 容差表本身是工程负担，fp64 参考在高维归约上会拖慢验证吞吐；seeded fuzzing 把每个 kernel 的验证输入从固定小样本扩到按 schema 生成的分布，编译与运行次数上升，离线评测的墙钟时间与显存占用都随之增加。若基线未开 TF32 或未用最强库实现，加速比会被系统性高估——这是口径不可比的第一来源；跨 dtype（fp32 对照 vs fp16 候选）与跨 shape 特化的分数同样不可直接比较。</p>
+<table class="mini"><thead><tr><th>口径要素</th><th>固定口径风险</th><th>可核查做法</th></tr></thead><tbody><tr><td>输入分布</td><td>隐藏 shape 使离线分数在生产崩塌</td><td>按 op schema 种子化生成，记录种子与分布</td></tr><tr><td>容差</td><td>全局 allclose 掩盖 dtype 相关误差</td><td>逐 (op, dtype) 绝对容差 + fp64 参考</td></tr><tr><td>基线</td><td>未开 TF32/弱库实现抬高 speedup</td><td>钉死基线版本、编译选项与库路径</td></tr></tbody></table>
+<p>具体到工程判断：把 24 个 kernel 的语料当作口径校准集，先用固定小样本跑出“幻觉率”，再用 seeded fuzzing 复跑同一批候选，两者判决之差就是该基准口径的盲区大小；只有当盲区在五类 GPU 上稳定为零（如论文所报的 10/10 与 16/16），离线 faster rate 才具备迁移到生产端到端回归的资格。否则，任何 reward hacking 或 fallback 机制都会让正确率虚高，而 shape 特化会在隐藏分布上直接失效。</p>
+<p class="paper-line">对应：papers/paper-2606-20128 · 第 2/9 部分</p>

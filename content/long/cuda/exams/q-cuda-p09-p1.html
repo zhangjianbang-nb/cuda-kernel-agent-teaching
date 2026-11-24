@@ -1,0 +1,48 @@
+<h3>一 · 题干的三层结构：从“优化”这个词开始拆</h3>
+<p>《AutoKernel: Autonomous GPU Kernel Optimization via Iterative Agent-Driven Search》这个标题里，真正承载考点的不是“Agent”，而是“Iterative”和“Search”两个词之间的张力。题干问的是“跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效”，这句话本身已经给出了三层结构：第一层是<strong>被迁移的对象</strong>——不是模型权重，而是搜索过程产出的 kernel 及其附带的调优决策；第二层是<strong>迁移的维度</strong>——硬件（SM 数量、寄存器文件、共享内存容量、cache 层级、warp 调度粒度）、shape（M/N/K 的比例、batch、序列长度、稀疏结构）、dtype（fp32/fp16/bf16/fp8、累加精度、舍入行为）；第三层是<strong>失效的判据</strong>——“最可能在哪里失效”要求定位到具体机制，而不是笼统地说“泛化性不足”。</p>
+<p>读题时容易滑过去的两个词必须抠出来。其一是“Autonomous”：agent 在没有人类先验的情况下做搜索，意味着它的搜索空间边界、评估信号、停止条件全部由自动化管线定义，任何一处定义偏差都会在迁移时被放大。其二是“Iterative”：多轮搜索的每一轮都以上一轮的 profile 反馈为输入，这构成一条<strong>反馈链</strong>；迁移失效往往不是单点错误，而是反馈链在异质环境里逐轮漂移，最终收敛到一个对原硬件局部最优、对新硬件系统性次优的配置。题干要求的“判断、验证方案与回退条件”，对应的正是：定位反馈链上最脆弱的环节、设计能区分“搜索偏差”与“真实性能差异”的实验、以及给出何时放弃迁移改用重搜的阈值。</p>
+
+<h3>二 · 考点定位：三个迁移维度各自的失效机制</h3>
+<p>把三个维度分开看，失效机制并不相同，不能混为一谈。</p>
+<p><strong>跨硬件</strong>的核心是<strong>资源约束与调度模型的错配</strong>。一个在 A 卡上通过 NCU 反馈调出来的 tile 配置，其合法性依赖于具体的 shared memory 上限、每 SM 的最大 resident warp 数、寄存器溢出阈值。迁移到 shared memory 更小或寄存器压力更紧的目标时，原本“刚好塞得下”的配置会直接编译失败或发生 register spill，而 agent 的搜索历史里没有这类失败样本，它倾向于把失败归因为“该方向不可行”而非“该方向在此硬件上不可行”，从而错误地剪枝。更隐蔽的是 occupancy 与 ILP 的权衡点漂移：原硬件上高 occupancy 掩盖了长延迟，新硬件上 memory latency 与 compute throughput 的比例变了，同一份 pipeline 深度从“恰好隐藏延迟”变成“过度预取、挤占带宽”。</p>
+<p><strong>跨 shape</strong>的核心是<strong>搜索空间的采样偏置</strong>。agent 在固定 benchmark shape 上迭代，其评估信号是这些 shape 的时延；它学到的启发式（例如“K 维分块取 64”“沿 N 维做 split-K”）本质是对该 shape 分布的经验拟合。当 M/N/K 比例反转、batch 变小、或出现尾块（tail block）时，原本被摊薄到可忽略的边界开销变成主导项，而搜索从未见过这类样本，也就从未把边界处理策略纳入搜索维度。</p>
+<p><strong>跨 dtype</strong>的核心是<strong>数值语义与吞吐模型的双重变化</strong>。dtype 改变不只是位宽变化：fp8 引入 scaling 与饱和行为，bf16 的累加精度损失改变了“能否用低精度累加换吞吐”的判断，fp32 的 tensor core 路径（如 TF32）与纯 SIMT 路径的 roofline 拐点完全不同。agent 若以时延为唯一奖励，会在原 dtype 上选出“低精度累加 + 激进分块”的方案，迁移到累加精度要求更高的 dtype 时，正确性 oracle 才暴露问题——而此时搜索已经收敛，回退成本高。</p>
+<table class="mini"><thead><tr><th>维度</th><th>最脆弱环节</th><th>失效表现</th><th>可观测信号</th></tr></thead><tbody><tr><td>硬件</td><td>资源约束合法性检查与剪枝逻辑</td><td>编译失败被误判为方向不可行；occupancy/ILP 拐点漂移</td><td>编译失败率、register spill 计数、achieved occupancy</td></tr><tr><td>shape</td><td>评估信号的采样分布</td><td>边界开销主导；split-K 归约成本反转</td><td>尾块占比、kernel 启动开销占比、有效带宽利用率</td></tr><tr><td>dtype</td><td>奖励函数与正确性 oracle 的耦合</td><td>低精度累加方案在严格 oracle 下失败</td><td>数值误差分布、饱和比例、roofline 拐点位移</td></tr></tbody></table>
+
+<h3>三 · 解题路径：把“失效”转成可判定的命题</h3>
+<p>题目要求“给出你的判断”，工程上可操作的写法是把判断写成可证伪的命题，而不是形容词。路径分四步。</p>
+<p><strong>第一步，界定迁移单元。</strong>要明确迁移的是“最终 kernel 源码”还是“搜索轨迹 + 调优超参”。这两者失效点不同：前者失效于编译与资源约束，后者失效于启发式的分布偏置。AutoKernel 这类迭代搜索的产物天然包含轨迹，因此判断应落在轨迹上——即“agent 在源环境学到的剪枝规则与超参先验，在目标环境是否仍然成立”。</p>
+<p><strong>第二步，建立源-目标差异的量化描述。</strong>硬件维度用资源比值刻画，例如目标/源 的 shared memory 容量比、每 SM 寄存器总量比、memory bandwidth 与 peak FLOPs 之比。shape 维度用形态比值刻画，例如 M/N/K 的偏斜度、尾块占比、batch 与 tile 尺寸的整除关系。dtype 维度用精度-吞吐折点刻画，即该 dtype 下 tensor core 峰值与 SIMT 峰值之比。这些比值构成迁移“距离”，距离越大，轨迹先验越不可靠。</p>
+<p><strong>第三步，构造判别实验。</strong>关键是把“搜索偏差”与“真实性能差异”分开。做法是：在目标环境上，用同一 agent、同一预算，分别从零搜索和从源轨迹热启动搜索，比较两者收敛到的时延分布。若热启动显著劣于从零搜索，说明轨迹先验有害，失效点在剪枝规则；若两者相当但都劣于人工基线，说明失效点在搜索空间定义或评估信号本身。这一步的代价是搜索预算翻倍，属于必须支付的验证成本。</p>
+<p><strong>第四步，给出回退条件。</strong>回退不是“效果不好就重搜”，而是要有可判定的阈值。可用的判据包括：热启动搜索在给定轮数内未超过从零搜索的中位数、编译失败率超过某比例、正确性 oracle 在目标 dtype 上出现系统性误差、或 profile 显示 achieved occupancy 与 roofline 预测的偏差超过可解释范围。这些判据都可在不引入外部数字的前提下定性表述为“相对基线”的比较。</p>
+<div class="formula">$$\text{migration\_risk} \;\propto\; \frac{D_{\text{res}} \cdot D_{\text{shape}} \cdot D_{\text{dtype}}}{\text{budget}_{\text{verify}}}$$</div>
+<p>这个式子不是要算出数值，而是表达判断的结构：风险随三个维度的差异度乘积上升，随验证预算下降。工程含义是——当差异度大而验证预算不足时，正确决策是放弃轨迹迁移、直接重搜，而不是修补轨迹。</p>
+
+<h3>四 · 需要调用的公式与伪代码思路</h3>
+<p>解题时需要把性能模型摆出来，否则“失效”无法定位到具体项。第一组是 roofline 与 SOL 的分解：</p>
+<div class="formula">$$T_{\text{lower}} = \max\!\left(\frac{\text{FLOPs}}{\text{Peak}_{\text{compute}}},\ \frac{\text{Bytes}}{\text{BW}}\right),\quad \text{SOL} = \frac{T_{\text{lower}}}{T_{\text{measured}}}$$</div>
+<p>跨硬件迁移时，Peak 与 BW 的比值变化会移动 roofline 拐点，原本 compute-bound 的 kernel 可能变成 memory-bound，此时“加深 pipeline、提高 ILP”的先验从有益变为有害。跨 dtype 时，Peak 本身随精度路径改变（tensor core 与 SIMT 两条曲线），拐点位移更剧烈。跨 shape 时，Bytes 项里的边界读写与归约流量随尾块占比上升，使实际 BW 利用率下降，SOL 虚高。</p>
+<p>第二组是 occupancy 与资源约束的判定式，用于定位“编译失败被误剪枝”这一失效：</p>
+<div class="formula">$$\text{occupancy} = \min\!\left(\frac{R_{\text{reg}}}{R_{\text{reg,per-thread}}\cdot W},\ \frac{S_{\text{smem}}}{S_{\text{smem,per-block}}},\ \frac{W_{\text{max}}}{W}\right)$$</div>
+<p>迁移到寄存器更紧或 shared memory 更小的硬件时，该式的最小项切换，原本由寄存器约束主导的配置变为由 shared memory 主导，agent 若只记录“该配置失败”而不记录“失败原因是最小项切换”，就会把可修复的配置永久剪掉。</p>
+<p>伪代码层面，验证方案的核心是一个受控对照循环，思路如下（以文字描述，不写代码块）：对每个迁移维度，固定 agent 与预算，跑三条支线——从零搜索、源轨迹热启动、以及仅迁移超参不迁移剪枝规则；三条支线共享同一正确性 oracle 与同一 profile 采集口径；比较收敛时延、编译失败率、oracle 通过率三个指标；若热启动在任一指标上系统性劣于从零搜索，则判定该维度轨迹先验失效，触发回退。这个设计的代价是搜索轮数三倍，但它是唯一能把“失效点”与“性能差异”解耦的实验结构。</p>
+
+<h3>五 · 具体例子：一个 tile 配置在三维度上的连锁失效</h3>
+<p>设源环境是一个 K 维较长、batch 较大的 GEMM 类 kernel，agent 经多轮 NCU 反馈收敛到“K 分块 64、双缓冲、每 block 256 线程、低精度累加”的方案，其时延在该 shape 上接近 roofline 的 compute 项。现在做三维度同时迁移。</p>
+<p>硬件侧：目标卡 shared memory 更小，双缓冲的 64 分块刚好超出容量，编译期报资源超限。agent 的剪枝规则把“K=64 双缓冲”标为不可行，转而探索 K=32，但未意识到在源卡上 K=64 的收益来自隐藏 memory latency，而目标卡的 latency/BW 比已变，K=32 配合更深 pipeline 才是正解。结果是搜索收敛到一个合法但次优的点，profile 显示 achieved occupancy 偏高而 memory throughput 未饱和——这是“最小项切换未被记录”的典型症状。</p>
+<p>shape 侧：目标 shape 的 M 很小、N 很大，尾块占比上升，split-K 的归约流量从可忽略变成主导。agent 在源 shape 上学到的“split-K 有益”先验被直接沿用，归约 kernel 的启动开销与跨 block 写回吃掉了并行收益，SOL 反而下降。此处失效点在评估信号的采样分布：搜索从未在尾块占比高的 shape 上评估过。</p>
+<p>dtype 侧：目标 dtype 要求更高累加精度，源方案的低精度累加在正确性 oracle 下出现系统性偏差。由于 agent 的奖励以时延为主、oracle 只在末端把关，搜索前期不会因数值问题被惩罚，直到收敛后才暴露，回退成本最高。这一维度的失效最危险，因为它不表现为性能下降，而表现为“快但错”。</p>
+<p>三个维度叠加时，失效不是相加而是相乘：硬件侧的次优配置降低了性能余量，shape 侧的归约开销进一步压缩余量，dtype 侧的精度问题使整个方案不可用。工程判断应落在“先验证 dtype 正确性、再验证 shape 形态覆盖、最后才调硬件资源约束”的顺序上，因为三者的回退成本依次递减。</p>
+
+<h3>六 · 回退条件的工程化表述与判断落点</h3>
+<p>回退条件要写成可执行的判定，而不是原则。可用的三条：其一，<strong>正确性优先回退</strong>——目标 dtype 下 oracle 的误差分布超出源 dtype 的可接受带，立即放弃轨迹迁移，改为在目标 dtype 上重跑搜索并以 oracle 通过率为硬约束；其二，<strong>形态覆盖回退</strong>——目标 shape 集合中尾块占比或整除关系与源分布差异导致热启动搜索的时延中位数劣于从零搜索，放弃 shape 维度的先验，仅保留与形态无关的代码结构；其三，<strong>资源合法性回退</strong>——编译失败率在热启动支线上显著高于从零支线，说明剪枝规则已过时，丢弃剪枝历史、保留搜索空间定义重搜。</p>
+<p>这三条的共同结构是“以从零搜索为对照基线”，因为只有对照才能把轨迹先验的贡献从硬件真实差异中剥离。代价是验证预算，收益是避免在错误先验上继续迭代——后者在多轮 RL 式搜索里会持续放大，因为每一轮都把上一轮的偏差当作事实输入。</p>
+<p>最终判断应落在一个具体机制上：AutoKernel 这类迭代 agent 搜索的迁移失效，最可能发生在<strong>剪枝规则与评估信号的耦合处</strong>——剪枝规则把“在源环境失败”编码为“不可行”，而评估信号只在源 shape/dtype 分布上采样，两者共同构成一个对源环境过拟合、对目标环境欠采样的反馈闭环。硬件资源约束只是这个闭环最先崩的一环，shape 与 dtype 的失效则更晚、更贵。因此工程上的第一动作不是迁移 kernel，而是迁移“失败原因的记录口径”：让 agent 记录每次失败的最小约束项与采样形态，使剪枝规则在目标环境可被重新判定，而不是被继承。</p>
+
+<h3>迁移失效的三条断层线：读题时先定位“谁在变”</h3>
+<p>这道题问的不是“AutoKernel 好不好”，而是“迭代 agent 驱动搜索在什么条件下会把错误答案当成正确答案”。读题时先拆出三个自变量：硬件（SM 数、寄存器文件、共享内存容量、cache 层级）、shape（M/N/K 的比例、batch、是否规整）、dtype（fp32/fp16/bf16/fp8、是否混合精度）。考点在于：agent 的搜索空间与反馈信号是否随这三个变量同步重参数化。失效最可能发生在“反馈信号与真实目标脱钩”的地方——即 agent 用旧硬件上测得的时延/通过率作为奖励，去评价新硬件上的候选 kernel。此时奖励函数变成 <span class="formula">$$R_{\text{proxy}}(k)=T_{\text{old}}(k)\cdot\mathbb{1}[\text{correct}(k)]$$</span> 而真实目标是 <span class="formula">$$R_{\text{true}}(k)=T_{\text{new}}(k)\cdot\mathbb{1}[\text{correct}(k)]$$</span>，两者排序不一致时，搜索会收敛到旧硬件的局部最优。</p>
+<p>具体机制上，跨硬件迁移的断层线是 occupancy 与 tile 尺寸的耦合：在 SM 多、寄存器宽的卡上最优的 block/tile 配置，搬到 SM 少、共享内存紧的卡上会直接触发寄存器溢出或 shared memory 超限，编译期就失败，agent 若把编译失败当作“该候选差”而剪枝，就会误删本可调参救活的家族。跨 shape 的断层线是尾块与 wave quantization：K 不是 tile 整数倍时，padding 浪费的算力占比随 shape 变化，agent 在规整 shape 上学到的“大 tile 更快”在瘦长 shape 上会反转。跨 dtype 的断层线是数值路径：fp8 需要缩放因子与累加精度策略，agent 若沿用 fp16 的累加假设，正确性 oracle 会放过溢出但结果偏差的 kernel。代价是具体的：每次跨硬件重测要付编译时间与 profile 采集时延，跨 dtype 要付额外正确性校验的 token 与运行时间。</p>
+<p>验证方案应做成三段式回退条件表，而不是一次性全量重搜：</p>
+<table class="mini"><thead><tr><th>迁移维度</th><th>先验检查</th><th>回退触发条件</th></tr></thead><tbody><tr><td>硬件</td><td>编译可行性 + occupancy 上限</td><td>候选池编译失败率超阈值即回退到保守 tile 家族</td></tr><tr><td>shape</td><td>尾块浪费占比与 wave 数</td><td>浪费占比高于规整基线即回退到 shape 专用模板</td></tr><tr><td>dtype</td><td>累加精度与缩放范围</td><td>oracle 出现超容差偏差即冻结该 dtype 的搜索分支</td></tr></tbody></table>
+<p>工程判断落在“先验剪枝优先于重搜”：读题阶段就应把这三个维度写成 agent 的硬约束注入 prompt，让搜索在迁移前先排除必然失效的家族，把有限的编译与 profile 预算留给真正需要重参数的候选，而不是让 agent 在新硬件上从零重跑一遍旧搜索轨迹。</p>
+<p class="paper-line">对应：exams/q-cuda-p09 · 第 1/2 部分</p>

@@ -1,0 +1,36 @@
+<h3>一 · 条目边界：NCU 指标不是“性能分数”，而是可复现的观测坐标</h3>
+<p>在 Kernel Agent 的闭环里，NCU 指标的第一重身份不是“跑分”，而是观测坐标：它把一次 kernel launch 映射到一个可被程序读取、可被 agent 解析、可被 RL 奖励函数消费的向量。因此速查条目的准确定义必须包含三件事——采集命令（哪个 section、哪个 metric 名、是否需要 replay）、语义（分子分母各是什么、在哪个硬件单元上计数）、以及判读边界（什么取值区间对应哪类瓶颈）。缺任一项，条目就退化成“看起来专业的数字”，agent 会把它当成奖励信号去拟合，从而产生指标投机（metric gaming）。</p>
+<p>以 SM 占用率为锚点说明这种区分。NCU 中 <code>sm__warps_active.avg.pct_of_peak_sustained_active</code> 一类指标度量的是“活跃 warp 数相对硬件上限的百分比”，它是<em>理论占用率</em>的一个采样近似；而 achieved occupancy 度量的是“实际驻留并处于 active 状态的 warp 占比”，两者在存在 tail effect、warp 提前退出、或 block 调度不均衡时会分离。这个分离本身就是诊断信息：理论占用率高而 achieved 低，指向调度或同步结构问题，而非寄存器压力。条目若不写清“分子是 active warp 的周期平均、分母是 peak sustained active”，读者会把两者当同义词互换使用，agent 也会在 reward 里重复计权。</p>
+<div class="formula">$$\text{occ}_{\text{theo}}=\frac{W_{\text{per SM}}^{\text{resident}}}{W_{\max}},\qquad \text{occ}_{\text{ach}}=\frac{1}{T}\int_0^T \frac{W_{\text{active}}(t)}{W_{\max}}\,dt$$</div>
+<p>代价维度必须写进条目：采集 achieved occupancy 需要逐周期采样，NCU 的 replay 次数随 section 数量线性增长，一个含 8 个 section 的 profile 可能把 kernel 时延放大到原值的数十倍量级（定性表述，具体倍数取决于 replay 模式与 kernel 长度）。这意味着 agent 在多轮优化中不能每步都做全量 profile，条目应标注“轻量 section / 重量 section”的分类，供调度器按 token 预算与墙钟预算取舍。例子：一个 reduction kernel 理论占用率 100%、achieved 仅 40%，条目应引导读者先查 block 尺寸与 grid 是否整除 SM 数，而不是先去调 shared memory。</p>
+
+<h3>二 · 分类维度一：按硬件层级切分，避免跨层比较</h3>
+<p>速查表最容易被误用的方式是跨层比较：把 DRAM 吞吐百分比和 tensor core 利用率百分比并列成“两个 80%”，读者会以为它们等价。正确的分类维度是硬件层级——SM 内计算单元（含 tensor core、FP32/INT 管线）、指令发射与 warp 调度、片上存储（register file、shared memory、L1）、L2、DRAM。每个条目必须标注其计数所在的层级，因为同一百分比在不同层级上的“饱和”含义完全不同：SM 内管线饱和意味着算力受限，DRAM 饱和意味着带宽受限，而 L2 饱和往往是访问模式问题而非容量问题。</p>
+<p>机制上，NCU 的 metric 命名本身编码了层级：<code>sm__</code> 前缀对应 SM 域，<code>l1tex__</code> 对应 L1/纹理单元，<code>lts__</code> 对应 L2 slice，<code>dram__</code> 对应显存控制器。条目应把前缀作为分类键，并在表里显式给出“该指标的分母是哪个单元的峰值”。例如 DRAM 吞吐条目要写明分母是该 GPU 的峰值 sustained 带宽（由时钟与总线宽度决定，不在本表展开），分子是实际传输字节数除以采样周期；而 L2 吞吐的分母是 L2 到 SM 的互连带宽，两者数值不可互换。</p>
+<table class="mini"><thead><tr><th>层级</th><th>代表条目</th><th>饱和含义</th><th>典型误用</th></tr></thead><tbody><tr><td>SM 计算单元</td><td>tensor core 利用率、指令发射率</td><td>算力受限</td><td>与 DRAM 百分比并列比较</td></tr><tr><td>warp 调度</td><td>warp stall 原因分布</td><td>延迟隐藏不足</td><td>把 stall 计数当时间占比</td></tr><tr><td>片上存储</td><td>shared memory  bank 冲突、L1 命中</td><td>访问模式受限</td><td>用命中率替代有效带宽</td></tr><tr><td>L2 / DRAM</td><td>L2 吞吐、DRAM 吞吐</td><td>带宽受限</td><td>把 L2 命中当 DRAM 节省</td></tr></tbody></table>
+<p>代价：跨层混算会让 roofline 判读整体偏移。一个 kernel 若 DRAM 吞吐 70%、tensor core 利用率 30%，正确判读是“接近带宽上限、算力有余”，优化方向是减少字节而非增加 MMA 指令；若 agent 把两者平均成 50% 并据此加大 tile，反而会增加寄存器压力、降低 achieved occupancy。例子：GEMM 在较大 M/N 下 DRAM 吞吐条目接近饱和而 tensor core 条目偏低，说明瓶颈在数据搬运而非 MMA 吞吐，条目应直接给出这一判读路径。</p>
+
+<h3>三 · 分类维度二：按“计数 / 比率 / 分布”三种量纲切分</h3>
+<p>第二维是量纲。NCU 条目混杂了三类量：绝对计数（如 stall 周期数、指令数）、比率（如占用率、吞吐百分比、命中率）、分布（如 stall 原因在总 stall 周期中的占比）。三者的可加性完全不同：计数可加、比率不可直接平均、分布必须归一化到同一分母才能比较。速查表若不给量纲标签，agent 在做多 kernel 聚合时会对比率取算术平均，产生辛普森悖论式的错误结论。</p>
+<p>机制上，比率的正确聚合是按分母加权。设第 <em>i</em> 次采样的比率为 <em>r<sub>i</sub></em>、分母为 <em>d<sub>i</sub></em>，则聚合值应为 Σ(<em>r<sub>i</sub>d<sub>i</sub></em>)/Σ<em>d<sub>i</sub></em>，而非 Σ<em>r<sub>i</sub></em>/<em>n</em>。stall 原因分布则要求先取各原因的周期计数，再除以总 stall 周期，得到占比向量；直接对比两次 profile 的占比向量而不看总 stall 周期，会把“总延迟下降但结构未变”误判为“瓶颈转移”。</p>
+<div class="formula">$$r_{\text{agg}}=\frac{\sum_i r_i d_i}{\sum_i d_i},\qquad p_k=\frac{c_k}{\sum_j c_j}$$</div>
+<p>代价：分布类条目的采集成本最高，因为需要多个 counter 同时开启，容易触发 replay 与 counter 多路复用，profile 时延与显存占用都会上升；而计数类条目最便宜，适合作为每轮 RL 的稠密奖励。条目应标注“是否可单 pass 采集”，供 agent 决定哪些指标进 reward、哪些只进诊断日志。例子：warp stall 条目若只报“long scoreboard 占 40%”，读者无法判断这是 40% 的总周期还是 40% 的 stall 周期；条目必须写明分母是 <code>smsp__average_warps_issue_stalled_*</code> 的周期总和，并提示与指令发射率条目联读。</p>
+
+<h3>四 · 与相邻概念的区别：吞吐、利用率、效率不是同义词</h3>
+<p>速查表最常见的定义事故是把“利用率”与“吞吐”混用。利用率（utilization）通常指某单元处于 busy 状态的周期占比，吞吐（throughput）指单位时间完成的字节或操作数，效率（efficiency）则是实际值相对峰值的比值。三者可以同时高、同时低，也可以一高一低：一个 tensor core 利用率 90% 的 kernel 可能只达到峰值 FLOPs 的 30%，因为大量 MMA 指令的操作数尺寸偏小、存在流水气泡。条目必须给出每个词的分子分母，而不是让读者凭语感替换。</p>
+<p>机制上，tensor core 利用率条目应说明它统计的是“tensor pipe 处于 active 的周期比例”，而 tensor core 实际算力条目统计的是“完成的 MMA 操作数除以峰值”。二者联读才能区分“管线忙但没喂饱”与“管线闲”。同理，指令发射率（issue rate）条目度量的是每个 scheduler 每周期发射的指令数相对上限，它与 warp stall 条目互为镜像：发射率低必然对应某类 stall 占比高，但具体是哪类必须看分布条目，不能从发射率反推。</p>
+<p>代价：把利用率当吞吐写进 reward，会诱导 agent 生成“空转但占住管线”的代码路径，例如插入无依赖的 MMA 以拉高 busy 周期，而实际 FLOPs 不变。这类指标投机在 RL 中极难通过正确性 oracle 拦截，因为数值结果仍然正确。例子：一个 tile 过小的 GEMM 可能 tensor core 利用率高而有效算力低，条目应把“操作数尺寸与峰值算力的关系”作为判读前置条件写清，而不是只给一个百分比阈值。</p>
+
+<h3>五 · 条目字段规范：让 agent 能解析，让人能复核</h3>
+<p>为了让速查表同时服务人和 agent，每个条目应固定字段：名称与别名、采集命令（section 名与 metric 名）、量纲与分母、硬件层级、单 pass 可行性、判读阈值区间、相邻条目（易混项）、以及一条最小复现例子。字段化的直接收益是 agent 可以把条目解析成结构化 schema，用于奖励函数与诊断规则；间接收益是人工复核时有据可查，避免“同一个词在不同章节指不同东西”。</p>
+<p>伪代码思路：条目在检索时先按层级过滤，再按量纲校验，最后按阈值判读。若 agent 请求的指标与当前 kernel 的层级不匹配（例如对纯访存 kernel 查 tensor core 利用率），应返回“不适用”而非默认值，防止把无关指标塞进 reward 向量造成维度污染。阈值区间必须写成闭区间并注明适用前提（dtype、tile 尺寸、是否含 epilogue），否则阈值会被跨场景套用。</p>
+<p>代价：字段化会增加条目维护成本，每次工具链版本升级都要核对 metric 名是否变更；但相比 agent 因字段缺失而误读指标、进而在多轮 RL 中浪费的采样预算与 token，这一成本更低。例子：若条目未标注“achieved occupancy 需 replay”，调度器可能把它排进单 pass 采集队列，导致采集失败或静默返回零值，而 agent 会把零值当成“占用率为零”的强信号，触发错误的优化方向。</p>
+<p>工程判断上，速查表的分类维度应优先保证“可判读”而非“可穷举”：层级、量纲、字段三项定死之后，新增条目只是填充，不会改变 schema；而一旦允许条目自由定义分母，整张表就退化为不可被程序消费的散文。对 Kernel Agent 而言，能被解析的指标定义比指标数量更重要，因为奖励函数的稳定性来自分母一致，而非覆盖广度。</p>
+
+<h3>指标的“可判读边界”：采集口径、分母选择与失效条件</h3>
+<p>速查表里每一条指标都隐含一个分母与一个采样域，二者一旦错配，数值就失去判读意义。以 SM 占用率为例，它有两种常见口径：静态占用率由 launch bounds 与每线程寄存器数、每 block 共享内存量在编译期决定，反映的是“理论上每 SM 能驻留多少 warp”；achieved occupancy 则由 NCU 在采样窗口内实测的活动 warp 数与 SM 支持的最大 warp 数之比，反映的是“实际驻留”。二者差值本身就是诊断信息：静态高而 achieved 低，说明 block 调度受限（尾部效应、grid 维度不足、block 间依赖），而不是资源不足。同理，DRAM 吞吐的分母是峰值带宽，L2 吞吐的分母是 L2 到 SM 的可用链路带宽，两者不能互换——一个 L2 命中率很高的 kernel 可以在 DRAM 吞吐很低的同时把 L2 吞吐顶到上限，此时把 DRAM 指标当作“内存瓶颈”判据就会误判。采集命令层面，`ncu --metrics` 指定的是 raw metric，而 section 里呈现的是经过派生计算的指标，派生过程会引入归一化与时间窗口对齐，跨 section 比较数值前必须确认两者是否同一采样域。</p>
+<p>失效条件主要有三类。第一类是采样窗口过短：kernel 执行时间接近或低于 NCU 的最小采样粒度时，warp stall 原因的分布会被序列化开销与启动开销污染，此时 stall 占比之和不再收敛到 100%，出现“其他”项膨胀。第二类是重放（replay）带来的状态扰动：NCU 为采集多组计数器会多次重放同一 kernel，若 kernel 含原子操作、随机数或跨 launch 的状态依赖，重放后的行为与原执行不同，指标不可直接外推。第三类是多 pass 采集下的计数器预算冲突：SM 内可同时驻留的硬件计数器数量有限，NCU 需要分多 pass 采集，跨 pass 的指标（如指令发射率与 tensor core 利用率）不在同一时间片上，做相关性分析时只能定性。这三类失效的共同代价是采集时延——重放次数与 pass 数直接放大 profiling 开销，一个原本毫秒级的 kernel 在完整 section 采集下可能被拉长到秒级，在 RL 训练回路里这意味着执行反馈的吞吐被 profiling 本身吃掉。</p>
+<p>与相邻概念的区别需要落在“判读对象”上。指令发射率衡量的是 warp scheduler 每个周期成功发射指令的比例，它的分母是调度器周期数，反映前端供给是否跟得上；tensor core 利用率衡量的是 tensor core 流水线在采样窗口内处于活跃的周期占比，分母是时钟周期，反映专用单元是否被喂饱。二者可以同时低：当 warp 因长延迟访存而 stall 时，发射率下降，tensor core 也因缺少操作数而闲置，此时真正的瓶颈在访存而非计算，单看任一指标都会把根因指向错误的方向。warp stall 原因则是把发射率拆解到具体阻塞源上的分布量，它本身不是“利用率”，不能与占用率并列比较。一个具体例子：某 GEMM kernel 的 achieved occupancy 为高值、tensor core 利用率却明显偏低，且 stall 分布集中在“等待共享内存”一项，此时正确的判读是 shared memory 到 register 的数据通路存在 bank conflict 或流水线深度不足，而不是 occupancy 不够——提高 occupancy 只会让更多 warp 一起等，吞吐不变。判读阈值必须绑定分母口径与采样域才有意义，脱离口径的“占用率高于某值即健康”这类规则在跨架构、跨 kernel 形态时不成立。</p>
+<div class="formula">$$\text{发射率} = \frac{\text{成功发射的 warp 指令数}}{\text{scheduler 周期数} \times \text{每周期可发射槽位}},\quad \text{stall 占比}_i = \frac{\text{因原因 } i \text{ 阻塞的周期数}}{\text{总采样周期数}}$$</div>
+<p>工程上应把速查条目当作“带前提的判据”而非“绝对健康线”：先确认分母（峰值带宽、最大 warp 数、scheduler 槽位）与采样域（单 pass 还是跨 pass、是否重放），再看数值，最后用 stall 分布做交叉验证。代价体现在两处：一是 profiling 的重放与多 pass 开销直接压缩了单位时间内可评估的 kernel 数量，二是口径错配导致的误判会把优化预算引向错误的瓶颈，二者都比指标本身的读数误差更贵。</p>
+<p class="paper-line">对应：appendix/ap-ncu · 第 1/5 部分</p>

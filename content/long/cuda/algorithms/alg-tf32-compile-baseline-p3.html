@@ -1,0 +1,50 @@
+<h3>一 · 有效加速比 $S_{\text{eff}}$ 的分母构造：为什么取 min 而不是取默认路径</h3>
+<p>评分公式 $S_{\text{eff}}=\min\{T_{\text{eager}},T_{\text{tf32}},T_{\text{compile}},T_{\text{cublas}}\}/T_{\text{gen}}$ 的关键一步不在分子，而在分母的 <em>min 算子</em>。若把分母写成单条路径，比如 PyTorch eager fp32，则生成 kernel 只要比未编译、未融合的 eager 快，就能拿到虚高的加速比；反过来，若分母写成 torch.compile 的 max-autotune 结果，生成 kernel 又会被一个已经做过算子融合与自动调优的强基线压住，加速比虚低。取 min 的语义是：分母代表“在同一硬件、同一数值口径下，工程上可达的最快参考实现”，生成 kernel 必须击败这个最优参考才算有效加速。推导上这一步等价于把“基线选择”从评分者的主观判断转成一个可复现的优化问题——分母是四条参考路径时延的下确界。</p>
+<p>min 的代价是分母对最弱项的敏感性：四条路径中任意一条被测量噪声压低，分母就整体偏低，$S_{\text{eff}}$ 被系统性抬高。因此分母不是四次计时的简单最小值，而是每条路径各自取中位数之后再取 min，且每条路径的计时必须满足 warmup 与计时次数的固定配额（本机制给定 warmup 20 次、计时 100 次取中位数）。中位数而非均值的理由是：单次 kernel 时延分布右偏，均值会被偶发的调度抖动拉高，中位数对长尾不敏感，而 min 又只在四条中位数之间做选择，两层抗噪结构缺一不可。</p>
+<p>具体例子：某 shape 上 eager fp32 因未融合而慢，eager tf32 因张量核路径快但误差大，torch.compile 因 autotune 缓存命中而最快，cuBLAS 直调因启发式选到退化 kernel 而偏慢。四条中位数分别为 $T_{\text{eager}}$、$T_{\text{tf32}}$、$T_{\text{compile}}$、$T_{\text{cublas}}$，分母取 $T_{\text{compile}}$。此时若生成 kernel 的 $T_{\text{gen}}$ 只比 $T_{\text{eager}}$ 快，$S_{\text{eff}}&lt;1$，评分正确地拒绝把它计为加速。反过来，若 cuBLAS 在该 shape 上退化，min 不会把 cuBLAS 的弱项当成生成 kernel 的强项——因为分母取的是四条中最快的那条，cuBLAS 退化只会让它退出竞争，不会拉低分母。</p>
+<div class="formula">$$S_{\text{eff}}=\frac{\min\{T_{\text{eager}},T_{\text{tf32}},T_{\text{compile}},T_{\text{cublas}}\}}{T_{\text{gen}}}$$</div>
+<p>工程判断上，min 的语义还要求四条路径共享同一输入分布与同一数值口径：若 tf32 路径开启而 fp32 路径关闭，则四条路径不在同一数值精度下竞争，min 失去意义。这就是为什么分母构造必须与 manifest 中的开关锁定绑定，而不是在评分时临时决定。</p>
+
+<h3>二 · 有效性指示函数 $\text{valid}$ 的阈值 $\tau$ 与“精度换速度”的判定边界</h3>
+<p>公式 $\text{valid}=\mathbb{1}[\max_i|y_{\text{gen},i}-y_{\text{fp64},i}|\le\tau]$ 的推导关键一步是把“正确性”从逐元素相对误差改成 <em>对 fp64 参考的绝对误差上确界</em>。逐元素相对误差在接近零的输出上会爆炸，导致数值上正确的 kernel 被判错；绝对误差上确界则对输出尺度不敏感，代价是对大数值输出过于宽松。取 max 而非均值，是因为 kernel 的错误往往是局部的：一个 warp 的归约写错，只污染少数输出元素，均值会被大量正确元素稀释到阈值以下，max 则直接暴露最坏元素。</p>
+<p>$\tau$ 的选取不是拍脑袋，而是与分母的数值口径对齐：若分母包含 tf32 路径，则 $\tau$ 必须至少容纳 tf32 相对 fp32 的舍入误差量级，否则分母最快的 tf32 路径本身就过不了 valid 检查，min 的分母构造自相矛盾。反过来，若 $\tau$ 设得过宽，生成 kernel 可以用低精度近似换取时延优势而不被惩罚，评分退化为纯速度竞赛。工程上的做法是把 $\tau$ 写成“参考路径自身对 fp64 的误差上确界 × 安全系数”，让阈值随基线数值口径自适应，而不是全局常数。</p>
+<p>“精度换速度”的判定边界由此明确：当 $T_{\text{gen}}&lt;\min\{T_{\text{eager}},T_{\text{tf32}},T_{\text{compile}},T_{\text{cublas}}\}$ 但 $\text{valid}=0$ 时，$S_{\text{eff}}$ 数值上大于 1，但该结果不计入有效加速。这一步在评分管线里是硬门，不是软惩罚：不把 $S_{\text{eff}}$ 打折，而是直接把该 shape 的有效加速记为无效，避免“用 0.7 倍精度换 1.3 倍速度”这类交易在聚合指标里被平均掉。</p>
+<p>具体例子：生成 kernel 在某个归约 shape 上把累加器从 fp32 降到 fp16，时延优于四条基线，但对 fp64 参考的 max 绝对误差超出 $\tau$，valid 置 0。此时即使 $S_{\text{eff}}=1.4$，该 shape 也不贡献有效加速；聚合时该 shape 的分母仍保留，分子记为无效，防止用无效 shape 拉高整体均值。代价是：$\tau$ 的标定需要每条参考路径都跑一遍 fp64 对比，单 shape 多出一次 fp64 参考计算与误差统计，显存峰值也要记录以确认基线未溢出。</p>
+
+<h3>三 · 时延与显存项的分解：中位数计时、warmup 配额与峰值显存的可比性</h3>
+<p>时延项 $T$ 在公式里是一个标量，但它的构造包含三层：warmup 20 次、计时 100 次、取中位数。warmup 的作用是排除首次启动的上下文初始化、cuBLAS handle 创建、torch.compile 的图捕获与 autotune 探测；计时 100 次的作用是让中位数稳定到调度抖动的量级以下。推导上，单次时延 $t_j$ 的分布是右偏的，中位数 $\tilde{t}$ 满足 $P(t\le\tilde{t})\ge 0.5$，对偶发的长尾不敏感；而 min 在四条 $\tilde{t}$ 之间选择，等价于在四个分布的 50% 分位数上取下确界，比在均值上取下确界更接近“工程可达最快”。</p>
+<p>显存项不是公式里的独立变量，而是分母构造的前置校验：四条参考路径各自记录峰值显存，若某条路径因输入过大而溢出或触发降精度回退，该路径的时延不可比，必须从 min 的候选集中剔除。这一步的代价是每条路径都要挂显存采样，采样本身有开销，因此采样频率要低到不影响计时，通常只在 warmup 与计时窗口的边缘打点，而不是逐 kernel 采样。</p>
+<p>具体例子：torch.compile 的 max-autotune 在首次遇到某 shape 时会触发 autotune 探测，编译时间可达秒级；若不清缓存，第二次测量同一 shape 时 autotune 缓存命中，基线时延偏低，分母被系统性压低。因此每个 shape 测量前必须清 autotune 缓存，代价是单 shape 的编译时间被计入测量开销，而不是被缓存掩盖。这一条与“每 shape 清缓存”的工程约束直接对应：不清缓存的分母是偏低的，偏低的分母抬高 $S_{\text{eff}}$，属于评分器自身的偏差而非生成 kernel 的能力。</p>
+<table class="mini"><thead><tr><th>项</th><th>构造</th><th>偏差来源</th><th>代价</th></tr></thead><tbody><tr><td>$T$ 中位数</td><td>warmup 20 + 计时 100</td><td>长尾抖动、首次初始化</td><td>单路径 120 次调用</td></tr><tr><td>min 分母</td><td>四条中位数取 min</td><td>最弱项被噪声压低</td><td>四路径全测</td></tr><tr><td>显存峰值</td><td>边缘打点</td><td>溢出/降精度回退</td><td>采样开销、剔除候选</td></tr><tr><td>autotune 缓存</td><td>每 shape 清空</td><td>缓存命中压低基线</td><td>编译时间计入测量</td></tr></tbody></table>
+
+<h3>四 · 奖励公式与 $S_{\text{eff}}$ 的耦合：为什么奖励不能直接取 speedup</h3>
+<p>若把奖励直接写成 $S_{\text{eff}}$，则 RL 信号会奖励“挑一个弱基线”的行为：生成策略可以通过选择对比路径来抬高分母，而不是通过写出更快的 kernel。奖励公式必须把分母构造与 valid 门一起编码进去，形式上是 $R=\text{valid}\cdot f(S_{\text{eff}})$，其中 $f$ 是单调但有界的变换，例如 $f(S)=\min(S,S_{\max})$ 或对数压缩。有界的作用是防止单个极端 shape 的 $S_{\text{eff}}$ 主导梯度；valid 乘法的作用是让无效 shape 的奖励归零，而不是给一个打折的正奖励。</p>
+<p>推导的关键一步是把“加速比”与“可信度”拆成两个正交因子：$S_{\text{eff}}$ 度量速度，valid 度量数值可信度，奖励是二者的乘积而非加权和。加权和的问题是权重可以调，调权重等于调评分口径；乘积则让任一因子为零时奖励为零，口径不可通过调参绕过。代价是：valid 为 0 的 shape 在奖励里完全消失，若某策略大量产出无效 kernel，梯度信号会变得稀疏，需要额外的无效样本惩罚项来维持学习信号，而不是靠奖励本身。</p>
+<p>具体例子：某策略在两个 shape 上分别得到 $S_{\text{eff}}=1.5$（valid=1）与 $S_{\text{eff}}=2.0$（valid=0）。若奖励取加权和 $0.5S+0.5\text{valid}$，第二个 shape 仍贡献正奖励；若奖励取乘积，第二个 shape 贡献 0，策略被迫在两个 shape 上都保持数值正确才能拿到高奖励。这一差别在聚合时被放大：无效 shape 的分母仍保留在聚合分母里，分子记为无效，整体有效加速不会被无效 shape 拉高。</p>
+<div class="formula">$$R=\text{valid}\cdot\min\left(S_{\text{eff}},S_{\max}\right)$$</div>
+<p>工程判断上，$S_{\max}$ 的取值要与分母构造的噪声量级匹配：若分母的中位数抖动在百分之几量级，$S_{\max}$ 设得过高会让奖励对噪声敏感，设得过低则压缩了真实加速的区分度。这一条不引入具体数字，只要求 $S_{\max}$ 由分母的置信区间宽度决定，而不是由经验常数决定。</p>
+
+<h3>五 · 伪代码：把公式落到可实现的分母构造与评分管线</h3>
+<p>下面给出分母构造与评分的伪代码思路，重点在四条路径的测量顺序、缓存清理与 valid 门的插入位置。伪代码不依赖具体框架 API，只依赖“路径 × shape × 计时”的三层循环。</p>
+<ul>
+<li>对每个 shape：先清 torch.compile 的 autotune 缓存与 cuBLAS workspace，再依次跑 eager fp32、eager tf32、compile(max-autotune)、cuBLAS 直调四条路径；每条路径 warmup 20 次、计时 100 次取中位数，同时记录峰值显存与对 fp64 参考的 max 绝对误差。</li>
+<li>分母 $D=\min\{\tilde{t}_{\text{eager}},\tilde{t}_{\text{tf32}},\tilde{t}_{\text{compile}},\tilde{t}_{\text{cublas}}\}$，但只从“未溢出、未降精度回退”的路径中取 min；被剔除的路径记入 manifest 的排除列表，而不是静默丢弃。</li>
+<li>生成 kernel 的时延 $T_{\text{gen}}$ 用同一 warmup/计时配额测量；valid 由 $\max_i|y_{\text{gen},i}-y_{\text{fp64},i}|\le\tau$ 判定，$\tau$ 由参考路径自身对 fp64 的误差上确界乘安全系数得到。</li>
+<li>输出 $S_{\text{eff}}=D/T_{\text{gen}}$ 与置信区间；若 $S_{\text{eff}}>1$ 但 valid=0，标记“精度换速度”，不计入有效加速；聚合时该 shape 分母保留、分子无效。</li>
+</ul>
+<p>伪代码的关键一步是“先清缓存再测四条路径”的顺序：若先测 compile 再测 eager，autotune 缓存已被 compile 写入，eager 路径不受影响但 compile 的第二次测量会命中缓存；因此每个 shape 的测量必须从清缓存开始，且四条路径的测量顺序固定，避免顺序效应污染分母。代价是单 shape 成本约 4×100 次计时，加上 compile 的编译时间与 fp64 参考计算，单 shape 的测量开销远高于一次普通 benchmark，这是分母可信度的直接成本。</p>
+<p>具体例子：某 shape 上 cuBLAS 直调因启发式选到退化 kernel，$\tilde{t}_{\text{cublas}}$ 明显偏大；伪代码不会因此把 cuBLAS 从分母里删掉，而是让 min 自然忽略它。若该 shape 上 compile 路径因 autotune 缓存未清而偏低，伪代码的清缓存步骤会把它纠正回真实编译时延，分母回到正确量级。这一纠正的代价是编译时间被计入测量，单 shape 的 wall-clock 成本上升，但分母不再被缓存偏差压低。</p>
+
+<h3>六 · 误差项与分母的耦合：$\tau$ 随基线口径自适应，而不是全局常数</h3>
+<p>误差项 $\max_i|y_{\text{gen},i}-y_{\text{fp64},i}|$ 与分母的耦合点在于：分母包含 tf32 路径时，参考路径自身对 fp64 的误差已经接近 $\tau$ 的量级，若 $\tau$ 是全局常数，则 tf32 路径可能自己就过不了 valid 检查，min 的分母构造与 valid 门互相矛盾。推导的关键一步是把 $\tau$ 写成 $\tau=\alpha\cdot\max_{p\in\{eager,tf32,compile,cublas\}}\epsilon_p$，其中 $\epsilon_p$ 是路径 $p$ 对 fp64 的 max 绝对误差，$\alpha$ 是安全系数。这样 $\tau$ 随基线数值口径自适应：分母里最快的路径若精度较低，$\tau$ 相应放宽，valid 门不会把分母自身判错；若分母里最快的是 fp32 路径，$\tau$ 收紧，生成 kernel 不能靠降精度取巧。</p>
+<p>代价是 $\epsilon_p$ 的测量需要每条参考路径都跑一遍 fp64 对比，单 shape 多出四次 fp64 参考计算与误差统计；fp64 参考在 GPU 上的吞吐远低于 fp32，这部分开销在测量总成本里占比不低。工程上的折中是只对分母候选路径（即四条中时延最快的那条）做完整 fp64 对比，其余路径只做抽样校验，但抽样校验会漏掉局部错误，因此抽样比例要与 $\tau$ 的置信要求匹配，而不是随意取。</p>
+<p>具体例子：某 shape 上 tf32 路径是分母最快项，其 $\epsilon_{\text{tf32}}$ 较大，$\tau$ 相应放宽；生成 kernel 用 fp32 累加但做了重排，误差小于 $\tau$，valid=1，$S_{\text{eff}}$ 计入有效加速。若同一 shape 上分母最快项换成 fp32 路径，$\tau$ 收紧，同一生成 kernel 的重排误差可能超出 $\tau$，valid=0，尽管其时延仍优于分母。这一差别说明 valid 不是生成 kernel 的固有属性，而是相对于分母口径的属性；评分必须把 $\tau$ 与分母绑定记录在 manifest 里，跨机器复现时重跑全部参考路径，否则 $\tau$ 的基准漂移会让同一 kernel 在不同机器上得到不同的 valid 判定。</p>
+<p>工程判断落在最后一步：分母构造、$\tau$ 标定、valid 门、奖励乘积四者共享同一份 manifest，任何一项在运行时被改动，评分即失效。这不是形式化验证的替代品，而是评分管线自身的可复现性约束——公式里的每个符号都对应 manifest 里的一个字段，字段缺失即视为分母不可信，该 shape 的有效加速不计入聚合。</p>
+
+<h3>锚定基线的失效边界与系统代价</h3>
+<p>这套口径的脆弱点不在公式，而在分母的可信性。<code>S_eff</code> 取四条参考路径最小值，等价于假设“基线已充分优化”，但 <code>torch.compile(max-autotune)</code> 的 autotune 缓存是跨 shape 复用的：若不清缓存，后续 shape 的基线时延被前序调优结果压低，分母偏小、加速比虚低，生成 kernel 被误判为退化。反之，若 warmup 不足 20 次，cuBLAS 启发式尚未稳定选核，分母偏大、加速比虚高。因此每次测量前必须 <code>torch._dynamo.reset()</code> 并清空 inductor 缓存目录，把“清缓存”写进计时循环而非放在循环外——这一步的编译开销（每个 shape 数十秒量级）直接计入评测 wall time，是复现成本的主要来源。</p>
+<div class="formula">$$\text{cost}_{\text{eval}} = N_{\text{shape}}\cdot\left(4\cdot(20+100)\cdot T_{\text{iter}} + T_{\text{compile}}\right),\quad \text{bias}=\frac{T_{\text{gen}}}{T_{\text{base}}}\Big|_{\text{stale cache}}&lt;1$$</div>
+<p>失效条件有三类。其一，cuBLAS 在特定 shape（如极小 M 或非对齐 N）上退化，四基线最小值仍远高于手写 kernel 的理论下界，此时 <code>S_eff</code> 高估了生成 kernel 的相对水平——应同时报告相对 roofline 的 SOL 利用率作为绝对锚。其二，<code>valid</code> 的阈值 <code>τ</code> 与 TF32 自身误差同量级时，eager tf32 基线本身就可能踩线，导致“精度换速度”标记误伤合法 kernel；需对每条参考路径单独记录对 fp64 的 <code>max_i|Δ|</code>，确认基线未降精度后再比较。其三，跨机器复现：GPU 型号与驱动写入 manifest 只保证版本一致，不保证 SASS 调度一致，换卡必须重跑全部参考路径，单 shape 约 4×100 次计时的成本无法摊销。</p>
+<table class="mini"><thead><tr><th>失效源</th><th>观测信号</th><th>处置</th></tr></thead><tbody><tr><td>autotune 缓存污染</td><td>同 shape 二次测量基线偏低</td><td>每 shape 前 reset + 清缓存</td></tr><tr><td>cuBLAS shape 退化</td><td>四基线最小值远高于 SOL 下界</td><td>补报 SOL 利用率</td></tr><tr><td>τ 与 TF32 误差重叠</td><td>基线自身 max|Δ| 接近 τ</td><td>逐路径记录误差，不放宽 τ</td></tr></tbody></table>
+<p>工程判断上，把“清缓存 + 逐路径误差记录”做成评测 harness 的强制前置，比事后解释异常加速比便宜得多；显存峰值同样要按路径记录，因为 compile 路径的 workspace 分配可能让基线在接近容量上限的 shape 上 OOM，此时分母缺失，该 shape 应直接标记为不可评测而非回退到 eager。</p>
+<p class="paper-line">对应：algorithms/alg-tf32-compile-baseline · 第 3/8 部分</p>

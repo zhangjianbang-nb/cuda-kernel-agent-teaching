@@ -1,0 +1,58 @@
+<h3>二 · 速查表的组织原则：字段、阈值、口径三列分离</h3>
+<p>一张能照着用的速查表，最容易犯的错是把“指标名”“采集命令”“判读阈值”混在一行里，导致读者在真实排查时无法区分“这个数字是硬件上限还是我的实测值”。本表的组织原则是把每一行拆成三列语义：字段（NCU 里可被采集的 raw metric 或 derived metric 名称，含单位）、阈值（在什么区间内该指标指向哪种瓶颈，以及阈值的口径前提）、口径（该阈值的分母是谁、采样范围是单 kernel 还是整段、是否受 clock control 影响）。三列分离的直接收益是：当读者发现实测值与阈值不符时，能立刻定位是“指标本身口径不同”还是“kernel 确实偏离”。</p>
+<p>阈值必须带口径，否则不可用。以 SM 占用率为例，同一个 50% 的数字，分母若是 theoretical occupancy（由 register/共享内存/block 上限推出的理论上限），说明资源受限；分母若是 achieved occupancy（实际 warp 活跃比例），说明调度或尾部效应受限。表中每个阈值都标注其分母定义，读者不得跨口径比较。采集命令统一走 <code>ncu --set full</code> 或分节采集（<code>--section Occupancy</code>、<code>--section MemoryWorkloadAnalysis</code>、<code>--section SchedulerStats</code>、<code>--section WarpStateStats</code>、<code>--section ComputeWorkloadAnalysis</code>），并注明 replay 模式对结果的影响：kernel replay 会多次重放同一 kernel，对含原子操作或非确定性写入的 kernel，吞吐类指标在 replay 下可能偏离单次执行。</p>
+<div class="formula">$$\text{occupancy}_{\text{achieved}} = \frac{\text{active warps per cycle}}{\text{max warps per SM}}$$</div>
+<p>代价在于：分节采集虽然降低了 replay 次数与总采集时延（相对 <code>--set full</code> 的全指标采集，分节采集显著缩短单次 profile 的墙钟时间），但跨节拼接时需要读者自己保证口径一致；而 <code>--set full</code> 一次拿全，却对长 kernel 的 replay 开销与显存快照占用更高。工程判断是：先分节定位瓶颈域，再对可疑域用 full 采集做交叉验证。</p>
+
+<h3>三 · 速查表主体：字段 / 阈值 / 口径</h3>
+<p>下表按“先看吞吐、再看占用、再看 stall、最后看指令与 tensor core”的排查顺序排列。阈值均为定性区间，不给出具体实验数字；读者应把阈值当作“指向性判据”，而非硬性门槛。</p>
+<table class="mini">
+<thead>
+<tr><th>字段（单位）</th><th>阈值与判读</th><th>口径前提</th></tr>
+</thead>
+<tbody>
+<tr><td>sm__throughput.avg.pct_of_peak_sustained_elapsed（%）</td><td>接近峰值 → SM 侧计算受限；显著低于峰值且 DRAM 吞吐高 → 访存受限</td><td>分母为 elapsed 周期内的峰值持续吞吐，受 clock control 与 boost 状态影响</td></tr>
+<tr><td>dram__throughput.avg.pct_of_peak_sustained_elapsed（%）</td><td>高 → DRAM 带宽瓶颈；低但 L2 高 → 缓存层级问题而非 HBM 问题</td><td>峰值按器件规格，replay 下多次重放会改变有效带宽占用</td></tr>
+<tr><td>lts__throughput.avg.pct_of_peak_sustained_elapsed（%）</td><td>L2 吞吐高而 DRAM 低 → 数据在 L2 命中，瓶颈在 L2 端口或 slice 分布</td><td>分母为 L2 峰值，受 slice 间不均衡影响，需结合 lts__t_sectors 分布看</td></tr>
+<tr><td>sm__warps_active.avg.pct_of_peak_sustained_active（%）</td><td>即 achieved occupancy；低 → 调度不足或尾部效应；高但吞吐低 → stall 主导</td><td>分母为每 SM 最大 warp 数，采样窗口为 active 周期</td></tr>
+<tr><td>launch__occupancy_limit_registers / shared_mem / blocks / warps</td><td>指出理论上限由哪一资源卡住；register 限制 → 降 register 压力或调 block 尺寸</td><td>理论上限，不含运行时调度损耗，与 achieved 之差即调度损失</td></tr>
+<tr><td>smsp__issue_active.avg.pct_of_peak_sustained_active（%）</td><td>指令发射率低 → 存在 stall 或指令依赖；高 → 发射不是瓶颈，转向 stall 分析</td><td>分母为每 scheduler 每周期可发射数，受双发射与指令类型影响</td></tr>
+<tr><td>smsp__average_warps_issue_stalled_*_per_issue_active.ratio</td><td>逐项看 stall 原因占比：memory dependency、long scoreboard、barrier、MIO throttle 等，占比最高者即主因</td><td>分母为 issue active 周期；同一 warp 可同时计入多类 stall，占比不可简单相加为 100%</td></tr>
+<tr><td>sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active（%）</td><td>tensor core 利用率低 → 矩阵形状不匹配、数据布局转换开销或流水未重叠</td><td>分母为 tensor pipe 峰值活跃周期；不同精度（FP16/BF16/TF32）走不同 pipe，需选对 metric</td></tr>
+<tr><td>smsp__inst_executed.avg.per_cycle_active（条/周期）</td><td>与 issue_active 联读：inst_executed 高而 issue 低 → 指令级并行不足</td><td>分母为 active 周期，含所有已发射指令，不含被 predicate 掉的</td></tr>
+</tbody>
+</table>
+<p>一个具体用法例子：某 GEMM kernel 的 <code>sm__throughput</code> 与 <code>dram__throughput</code> 都显著低于峰值，<code>sm__warps_active</code> 也低，但 <code>launch__occupancy_limit_registers</code> 显示 register 是理论上限的主因。此时不应先去调 tile 尺寸，而应先确认 register 压力是否来自 unroll 过度或 accumulator 过多；降 register 后 achieved occupancy 上升，若吞吐仍不升，则瓶颈转移到 stall 项，需看 long scoreboard 是否指向 global load 延迟未被流水掩盖。这条链路正是速查表三列分离的价值：字段告诉你查什么，阈值告诉你往哪走，口径告诉你别误判。</p>
+
+<h3>四 · 阈值判读的两个陷阱：分母漂移与采样窗口</h3>
+<p>第一个陷阱是分母漂移。NCU 的 <code>pct_of_peak_sustained_elapsed</code> 与 <code>pct_of_peak_sustained_active</code> 是两个不同分母：前者按整个 kernel 的 elapsed 周期算，后者只按 SM 处于 active 的周期算。当 kernel 存在明显的 launch tail 或 block 调度空窗时，elapsed 口径会把空闲周期计入分母，使百分比被稀释；active 口径则排除空闲，数值更高。速查表里凡是标 <code>_elapsed</code> 的字段，阈值判读时必须意识到“低”可能是尾部效应而非稳态性能差。工程做法是对同一指标同时看 elapsed 与 active 两个版本，若两者差距大，先解决尾部与调度问题，再谈稳态优化。</p>
+<p>第二个陷阱是采样窗口与 replay。kernel replay 下，NCU 会把同一 kernel 重放多次以采集不同指标组，每次重放前的 cache 状态可能被清空或保留，取决于 <code>--cache-control</code> 设置。对依赖 L2 残留数据的 kernel，<code>--cache-control all</code>（清空）与 <code>--cache-control none</code>（保留）会给出不同的 L2 与 DRAM 吞吐，进而使“是否访存受限”的判读翻转。速查表的口径列因此必须注明 cache-control 假设；读者在对比两个 kernel 的 DRAM 吞吐时，必须保证两次采集的 cache-control 一致，否则比较无效。</p>
+<div class="formula">$$\text{effective BW} = \frac{\text{bytes moved}}{\text{elapsed cycles} \times \text{clock}}$$</div>
+<p>代价体现在采集时延与显存：replay 次数越多、采集节越全，单次 profile 的墙钟时间与显存快照占用越高；对长时 kernel 或大 grid，full 采集可能因 replay 开销而不可行，此时只能分节采集并用口径一致性换可执行性。这是速查表必须标注口径的现实原因，而非学术洁癖。</p>
+
+<h3>五 · stall 原因的速查读法：占比、共现与主因判定</h3>
+<p>stall 指标是一组 ratio，分母为 issue active 周期，每类 stall 各自计数。读者最常见的误用是把各项占比相加当作 100% 来读，实际上同一 warp 在一个周期内可被计入多类 stall，且不同 warp 的 stall 会重叠，因此占比之和可以超过 100%。正确读法是：先找占比最高的单项作为主因候选，再看与之共现的项是否指向同一根因。例如 long scoreboard 高通常指向 global memory 依赖未被掩盖，若同时 barrier 也高，则可能是流水划分导致 warp 在 barrier 处等待，根因在同步策略而非单纯访存延迟。</p>
+<p>伪代码思路如下，用于把 stall 占比转成排查顺序：</p>
+<div class="formula">$$\text{rank} = \arg\max_{s \in \text{stall types}} \frac{\text{stall}_s}{\text{issue\_active}}$$</div>
+<p>具体例子：一个 reduction kernel 的 <code>smsp__average_warps_issue_stalled_barrier_per_issue_active</code> 显著高于 memory dependency 项，说明瓶颈在 block 内同步而非访存。此时优化方向是减少同步点、改用 warp-level 原语或调整 block 内归约树深度，而不是去调 global load 的向量化宽度。若读者只看“memory 相关指标不高”就断定不是访存问题，会错过 barrier 这一主因。速查表把 stall 行放在占用率之后，正是因为占用率低时 stall 占比的分母（issue active）本身偏小，占比会被放大，必须先确认占用率不是被资源上限压死，再读 stall 才有意义。</p>
+<p>代价在于：stall 采集需要 <code>--section WarpStateStats</code>，该节在 replay 下对每个 scheduler 采样，采集开销随 SM 数与采样周期上升；对超短 kernel，采样窗口可能不足以覆盖稳态，stall 占比的统计噪声变大，此时应改用多次采集取中位数而非单次读数。</p>
+
+<h3>六 · tensor core 利用率与指令发射率的联合判读</h3>
+<p>tensor core 利用率单看没有意义，必须与指令发射率和 stall 联合读。若 <code>sm__pipe_tensor_op_hmma_cycles_active</code> 低而 <code>smsp__issue_active</code> 高，说明指令在发射但没走到 tensor pipe，常见原因是数据布局转换（如 shared memory 到 register 的 ldmatrix 前后处理）占用了发射带宽，或矩阵形状不满足 tensor core 的 tile 对齐要求导致走 fallback 路径。若两者都低，则更可能是占用率不足或 stall 主导，tensor pipe 根本没被喂饱。</p>
+<p>具体例子：某 FP16 GEMM 的 tensor pipe 活跃率低，issue_active 也不高，stall 项里 MIO throttle 占比突出。MIO throttle 指向 shared memory 或特殊功能单元的队列拥塞，说明 ldmatrix 与 store 的节奏没有和 MMA 流水重叠，瓶颈在数据搬运的队列深度而非 MMA 本身。此时调 tile 尺寸不如调 shared memory 的 bank 布局与 ldmatrix 的发射节奏。速查表把 tensor core 行与 issue 行相邻放置，就是为了强制读者做这种联合判读，而不是孤立地看一个百分比。</p>
+<p>口径上要注意：不同精度的 MMA 走不同 pipe，FP16 与 BF16 通常共享 HMMA pipe，TF32 与 FP64 各有独立路径，选错 metric 会得到接近零的利用率并误判为“没用 tensor core”。采集时用 <code>--section ComputeWorkloadAnalysis</code> 可一次拿到 pipe 利用率与指令组合，避免逐 metric 试错。代价是这一节的 replay 会额外增加采集时间，且对混合精度 kernel，pipe 归属需按指令类型拆分看，单一行无法覆盖。</p>
+
+<h3>速查表之外：口径漂移、失效边界与采集代价</h3>
+<p>速查表最容易误导人的地方不是阈值本身，而是阈值的口径。同一张表里“SM 占用率”与“achieved occupancy”并列时，前者是理论驻留上限（由寄存器、共享内存、block 粒度共同决定），后者是采样周期内实际有 warp 驻留的比例；两者相差一个“tail effect + 调度空转”的因子。判读时若把 achieved occupancy 低直接归因为寄存器压力，就会漏掉 block 尺寸导致的 wave quantization：当 grid 不能被 SM 数整除时，最后一波只有部分 SM 有活干，采样窗口内的平均驻留率被拉低，而寄存器用量其实很健康。因此速查表必须给每条指标标注三个字段：采集命令（如 <code>ncu --metrics sm__warps_active.avg.pct_of_peak_sustained_active</code>）、口径（峰值基准是 active cycles 还是 elapsed cycles）、以及可比条件（是否固定 clock、是否关闭 ECC 与 MPS）。缺任一项，阈值就不可跨 kernel 比较。</p>
+<p>失效条件集中在三类。第一类是短 kernel：采样窗口与 kernel 时长同量级时，NCU 的 replay 机制会多次重放 kernel 以收集全部 pass，重放期间 cache 状态被重置，L2 命中率与 DRAM 吞吐的读数偏离真实稳态；此时吞吐类阈值应视为下界而非判据。第二类是访存主导且工作集小于 L2 的 kernel：DRAM 吞吐低并不代表瓶颈在计算，速查表若只写“DRAM 吞吐低于峰值即非带宽瓶颈”，会诱导优化者去调指令发射率，而真正的问题是 L2 到 SM 的路径。第三类是 tensor core 利用率：该指标的峰值基准依赖于指令形态（是否使用稀疏 MMA、是否混合精度），不同形态的峰值不同，跨形态比较无意义。可以把判读写成条件式：</p>
+<div class="formula">$$\text{bottleneck} = \arg\max_{r \in \{\text{sm, dram, l2, tc}\}} \frac{u_r}{u_r^{\text{peak}}(\text{shape},\ \text{clock})},\quad \text{仅当 } T_{\text{kernel}} \gg T_{\text{replay}}$$</div>
+<p>其中 $u_r$ 为实测利用率，$u_r^{\text{peak}}$ 必须带形态与时钟限定，否则分母不可比。这条式子的工程含义是：速查表给的是“相对峰值的比例”，而不是绝对性能；任何跨 kernel 的横向对比都要先对齐分母。</p>
+<p>采集本身有系统代价，这是速查表最常省略的一栏。NCU 默认开启 replay，单 kernel 的采集时间可达原生执行的数倍到数十倍；对训练端到端 profile，这意味着不能对每个 step 都开全指标集，只能按 kernel 名过滤并限制 pass 数（<code>--set</code> 选轻量集、<code>--launch-count</code> 限次）。warp stall 原因的采集尤其昂贵，因为它需要逐 warp 采样调度器状态，pass 数与 stall 类别数成正比；实践中常先取 <code>smsp__average_warps_issue_stalled_*</code> 的汇总比例，再对占比最高的两类单独深挖。指令发射率与 tensor core 利用率可以在同一 pass 内合并采集，而 DRAM/L2 吞吐需要独立的内存子系统 pass，二者混采会显著拉长 replay。工程判断是：速查表应把指标分成“单 pass 可得的粗筛集”和“需专门 pass 的确认集”，粗筛集用于日常回归，确认集只在定位到可疑 kernel 后开启。以一次典型的 attention 前向为例，粗筛集给出 achieved occupancy 偏低、stall 以 long scoreboard 为主，此时再开内存 pass 确认 DRAM 吞吐是否接近峰值——若接近，则结论是带宽受限而非占用率问题，调 block 尺寸无效；若不接近，才回到占用率与指令发射率上找原因。</p>
+<table class="mini"><thead><tr><th>字段</th><th>口径限定</th><th>失效条件</th><th>采集代价</th></tr></thead><tbody><tr><td>achieved occupancy</td><td>active cycles 基准</td><td>grid 不整除 SM 数</td><td>单 pass，低</td></tr><tr><td>DRAM 吞吐</td><td>峰值随 clock 变</td><td>工作集小于 L2</td><td>独立内存 pass，高</td></tr><tr><td>warp stall 比例</td><td>按 stall 类别分 pass</td><td>短 kernel replay 失真</td><td>与类别数成正比，很高</td></tr><tr><td>tensor core 利用率</td><td>峰值依赖 MMA 形态</td><td>跨形态比较</td><td>可与发射率合并，中</td></tr></tbody></table>
+
+<h3>速查表自身的失效边界：阈值是判据不是结论</h3>
+<p>速查表把 SM 占用率、achieved occupancy、DRAM/L2 吞吐、warp stall 原因、tensor core 利用率、指令发射率压成“字段—阈值—口径”三列，好处是现场可照着读，代价是把多维耦合压成单维判据。同一 achieved occupancy 数值在不同 kernel 上含义相反：访存受限 kernel 的占用率低但 DRAM 吞吐已接近峰值，说明瓶颈不在并行度；而计算受限 kernel 占用率低且 stall 集中在长延迟依赖，才是真问题。因此阈值必须与“口径”绑定——采样窗口长度、是否含尾部 wave、是否按 SM 子分区统计，任一变化都会让同一字段跨过阈值线。判读顺序应是先看吞吐类字段是否触顶，再看 stall 分布定位原因，最后才用占用率解释余量。</p>
+<div class="formula">$$\text{判读优先级}:\ \text{throughput}_{DRAM/L2} \rightarrow \text{stall 分布} \rightarrow \text{occupancy 余量}$$</div>
+<p>系统代价在于采集本身：逐 stall 原因采样与指令发射率统计需要多次 replay，kernel 被反复重放，采样时间随指标数量线性增长，长 kernel 上单次 profile 的墙钟开销足以打断迭代节奏；若改为单遍轻量采集，stall 归因粒度变粗，阈值判读的置信度下降。工程判断是：速查表用于快速排除明显瓶颈，不用于给出优化结论；命中阈值只说明“值得进一步看”，最终判据仍要回到 roofline/SOL 口径下的实测吞吐与正确性 oracle 的通过状态。</p>
+<table class="mini"><thead><tr><th>字段</th><th>阈值用法</th><th>失效条件</th></tr></thead><tbody><tr><td>achieved occupancy</td><td>低于目标占用率时查 stall</td><td>访存受限时低占用率不构成瓶颈</td></tr><tr><td>DRAM 吞吐</td><td>接近峰值即判访存受限</td><td>采样窗口含尾部 wave 时被稀释</td></tr><tr><td>tensor core 利用率</td><td>低值提示未走 MMA 路径</td><td>小 shape 下 tile 不足，低值属正常</td></tr></tbody></table>
+<p class="paper-line">对应：appendix/ap-ncu · 第 2/5 部分</p>

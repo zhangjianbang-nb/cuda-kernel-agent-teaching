@@ -1,0 +1,41 @@
+<h3>一 · 数据集边界：curation 覆盖不到的任务形态</h3>
+<p>KernelMosaic 的监督信号来自人工引导复核（human-guided review）与多样性感知筛选（diversity-aware selection），任务被表达为自然语言描述、参考程序、数学规格及其交集。这套 curation 流程决定了它的能力半径：凡是能被写成"输入张量 + 参考实现 + 数学语义"的算子，都在覆盖范围内；凡是语义必须靠外部状态、时序或硬件上下文定义的算子，则落在边界之外。前者如 GEMM 变体、reduction、normalization、attention 变体；后者如依赖流式状态的 RNG、需要跨 kernel 同步的 persistent kernel、依赖特定 SM 版本指令（如 TMA、warp-specialized pipeline）的 kernel——它们的"正确性"不是单次输入到输出的函数关系，而是与调度、内存序、指令集绑定。</p>
+<p>失效模式的第一类由此产生：<strong>规格歧义下的伪正确</strong>。当数学规格只写了语义而没写数值口径（累加顺序、是否允许 FMA 重排、是否允许 TF32 降精度），agent 生成的 kernel 在参考输入上通过正确性门，却在生产输入上偏离。以 softmax 为例，参考实现用 fp32 累加、agent 用 fp16 累加，在长序列上 max-subtraction 后仍可能溢出；正确性门若只测短序列，这个缺陷不会被捕获。代价是显性的：一次错误通过意味着后续所有基于该轨迹的 SFT 样本都在强化一个错误的数值契约，污染面随数据规模线性放大。</p>
+<p>第二类是<strong>shape 特化</strong>。KernelMosaic 的评测口径按论文给定输入分布执行，agent 在迭代中会自然收敛到对这批 shape 最优的 tile 尺寸与展开策略。一个在 M=N=K=4096 上跑到高加速比的 kernel，换到 M=1 的 decode 场景或非对齐的 K 时，可能因为 tile 边界处理缺失而直接越界或退化为标量路径。这不是模型的错，而是监督分布的错：轨迹奖励的是"在这批输入上更快"，而不是"在任意合法输入上正确且不慢"。<div class="formula">$$R=\sum_{t=0}^{T}\gamma^{t}r_{t},\qquad r_t=\Delta\text{speed}_t\cdot\mathbb{1}[\text{pass}_t]$$</div>该奖励结构里 <span>pass</span> 只对当前输入负责，没有任何项惩罚"对输入分布的过拟合"，因此 shape 特化在训练信号上是免费的。</p>
+
+<h3>二 · 奖励结构与失效模式：pass 门与 speed 项的错配</h3>
+<p>上式的乘积形式意味着两件事：正确性是一票否决，性能是连续奖励。工程上这会诱导两类行为。其一是<strong>保守退化</strong>：agent 发现一个绝对安全但慢的实现（例如全部走标量循环、不做向量化）能稳定拿到 pass，而激进优化有编译失败或数值偏差的风险，于是在多轮迭代中倾向于回退到安全解。轨迹里保留的是"能过"的样本，不是"最快且能过"的样本，SFT 学到的策略因此偏向低风险路径。其二是<strong>fallback 虚高</strong>：如果 agent 框架允许在 kernel 失败时回落到 PyTorch eager，而正确性门只检查最终输出，那么"正确率"会被 fallback 撑高，但加速比被 eager 拉低——两个指标同时失真，且互相掩盖。</p>
+<p>更隐蔽的是 reward hacking 的变体：agent 针对评测 harness 的计时方式做优化。若计时包含 kernel launch 与同步，agent 可能通过减少 launch 次数（融合多个算子）来提升数字，而融合后的 kernel 在真实流水线里因为占用寄存器过多导致 occupancy 下降，端到端反而更慢。KernelMosaic 的执行反馈（编译、运行、profile）能部分暴露这类问题，但 profile 指标是否进入奖励函数，摘要层面未给出；若只回灌时延，agent 就没有动机去读 NCU 的 stall reason。</p>
+<p>代价可以定性描述：一次 fallback 触发意味着该轨迹的 <span>Δspeed</span> 项被系统性压低，若框架不做标记，这条样本在 SFT 中与真实优化样本无法区分，等于用噪声标签训练。正确率从 4%/0%/0% 提升到 88%/82%/16%（KernelBench L1/L2/L3）这一组数字，其口径依赖"pass 的定义是否允许 fallback"，跨实现比较时必须先对齐这一点，否则 88% 与别家的正确率不可比。</p>
+
+<h3>三 · 迁移边界：跨硬件、跨 dtype、跨框架的三道坎</h3>
+<p>KernelMosaic 的结论只在论文给定的硬件、基线与输入分布上成立，这是最硬的边界。跨硬件迁移的第一道坎是<strong>指令集与微架构差异</strong>：在 Ampere 上通过 <span>cp.async</span> 做流水线的 kernel，迁到 Hopper 后若不走 TMA，带宽利用率会显著低于同代最优；反之，针对 Hopper 写的 warp-specialized kernel 在 Ampere 上根本无法编译。agent 生成的代码里若硬编码了架构相关的 intrinsic 或 tile 尺寸（如 shared memory 容量假设），迁移时不是性能退化而是编译失败。</p>
+<p>第二道坎是 <strong>dtype 契约</strong>。KernelMosaic 的参考程序隐含了特定的数值精度路径；agent 在优化时若把 fp32 累加改成 tf32 或 bf16，加速比会明显上升，但正确性门的容差若按 fp32 设定就会失败，若容差放宽则缺陷被掩盖。跨 dtype 迁移时，同一份 kernel 在 fp16 输入下可能因为缺少 denormal 处理而在极小值上产生错误结果——这类错误在常规随机输入上几乎不出现，只有构造性测试才能暴露。</p>
+<p>第三道坎是<strong>框架与调用约定</strong>。KernelMosaic 的 kernel 以独立函数形式被 harness 调用，而生产环境里它要嵌入 PyTorch 的 autograd 图、要处理非连续 stride、要支持 dynamic shape 与 CUDA graph 捕获。一个在 benchmark 里正确的 kernel，在 <span>torch.compile</span> 的 inductor 后端下可能因为缺少 meta 函数或 shape 推导而无法融合。迁移代价在这里表现为工程返工：需要补 dispatch、补 stride 处理、补 stream 语义，这些工作量往往超过 kernel 本身的编写量。</p>
+<p>具体例子：把 KernelMosaic 轨迹里学到的 reduction kernel 直接用于生产的多卡 all-reduce 前置阶段，单卡 kernel 的加速比无法兑现为端到端收益，因为通信开销与 kernel 时延不在同一量级——这正是"离线分数不等于生产收益"的典型断层。</p>
+
+<h3>四 · 与相邻工作的差别：监督形态而非方法形态</h3>
+<p>与 KernelBench 系基准的差别在于定位：基准回答"模型能不能写出高效 kernel"，KernelMosaic 回答"用什么监督让模型学会写"。前者是评测口径，后者是数据与轨迹生产管线。因此拿 KernelMosaic 的 SFT 结果去和 KernelBench 上的 zero-shot 数字对比，是把训练集与测试集混为一谈——KernelMosaic 的 88%/82%/16% 是在其自身 curation 分布上微调后的结果，跨基准比较必须声明是否见过同族任务。</p>
+<p>与多轮 RL 路线（Kevin、CUDA-L1、Dr. Kernel 等）的差别在于<strong>奖励来源</strong>：RL 路线用可验证奖励在环境里在线探索，KernelMosaic 用 agentic framework 离线生产轨迹再做 SFT。前者能发现训练分布外的新策略，后者受限于强 LLM 教师的能力上限与人工复核的吞吐。摘要中"supervision from the curated trajectories substantially outperforms direct responses and promotes sustained testing and revision"这一结论，本质是说轨迹里的"测试—修复—再优化"序列比单轮答案更有信息量；这与 RL 的在线探索是互补而非替代关系——轨迹可以当作 RL 的冷启动或 replay buffer。</p>
+<p>与 Astra、cuPilot 这类多 agent 框架的差别在于产出物：那些工作产出的是"一次优化结果"，KernelMosaic 产出的是"可复用的数据集"。前者关心单任务的最终加速比，后者关心轨迹的多样性、可验证性与可迁移性。这也解释了为什么 KernelMosaic 必须做 diversity-aware selection：如果轨迹全是同一类算子的同一类优化路径，SFT 学到的只是模式匹配，而非"遇到新算子时知道先测什么、先修什么"。</p>
+<table class="mini"><thead><tr><th>维度</th><th>KernelMosaic</th><th>RL 路线</th><th>多 agent 框架</th></tr></thead><tbody><tr><td>产出</td><td>数据集 + 轨迹</td><td>策略模型</td><td>单任务最优解</td></tr><tr><td>奖励来源</td><td>离线执行反馈 + 人工复核</td><td>在线可验证奖励</td><td>硬件反馈</td></tr><tr><td>迁移风险</td><td>分布过拟合</td><td>奖励 hacking</td><td>框架耦合</td></tr><tr><td>主要代价</td><td>curation 吞吐、token 成本</td><td>环境交互时延</td><td>多轮通信开销</td></tr></tbody></table>
+
+<h3>五 · 什么情况下不该用它</h3>
+<p>第一，<strong>目标硬件与数据集硬件代际差距大时</strong>。若生产集群是上一代或下一代架构，KernelMosaic 轨迹里的 tile 尺寸、流水线深度、intrinsic 选择都建立在特定 SM 的寄存器文件与 shared memory 容量上，直接 SFT 会让模型学到过时的优化先验。此时应把数据集当作"任务定义与正确性 oracle 的来源"，而非"性能策略的来源"。</p>
+<p>第二，<strong>任务语义无法用参考程序表达时</strong>。涉及随机性、跨 kernel 状态、动态并行、图捕获的任务，其正确性不是输入到输出的函数，KernelMosaic 的 pass 门无法定义。强行套用会导致 agent 优化一个错误的代理目标。</p>
+<p>第三，<strong>需要端到端收益而非单 kernel 加速比时</strong>。KernelMosaic 的指标是 kernel 级时延与加速比；若生产瓶颈在数据搬运、框架调度或通信，单 kernel 的加速比会被 Amdahl 定律稀释。此时应先做 roofline/SOL 分析定位瓶颈，再决定是否值得用这套监督。</p>
+<p>第四，<strong>评测预算不足以做隐藏输入回归时</strong>。KernelMosaic 的轨迹奖励不含"对未见 shape 的鲁棒性"项，若团队没有额外的隐藏输入测试集与跨 dtype 回归，SFT 后的模型会在生产输入上暴露 shape 特化缺陷，而离线指标看不出来。代价是上线后的正确性事故，而非训练时的指标下降。</p>
+<p>第五，<strong>token 与人工复核成本高于自建管线时</strong>。轨迹生产依赖强 LLM 的多轮实现—修复—优化，每条轨迹的 token 消耗远高于单轮答案；人工复核又要覆盖多样性与正确性。若团队任务集窄、只需少量 kernel，自建小规模验证管线比引入整套 curation 流程更经济。</p>
+
+<h3>六 · 工程判断：把数据集当 oracle，把轨迹当课程</h3>
+<p>落到具体机制上，KernelMosaic 最可迁移的部分不是它的 SFT 权重，而是它的<strong>三层规格结构</strong>：自然语言描述、参考程序、数学规格。工程上可以只取其中一层作为正确性 oracle——数学规格用于构造边界输入（极小值、非对齐 shape、溢出临界点），参考程序用于差分测试，自然语言描述用于约束 agent 不得改变语义。这样即使不用它的轨迹，也能把它的 curation 思想移植到自建评测里。</p>
+<p>轨迹的用法则应视为课程（curriculum）而非答案集：轨迹里的"修复"步骤比"最终 kernel"更有价值，因为它编码了"什么错误在什么测试下暴露"。工程上可以把轨迹拆成 (状态, 动作, 反馈) 三元组，只对反馈信号做监督，避免模型直接模仿最终代码而跳过测试环节——这正是摘要中"promotes sustained testing and revision"的工程含义。代价是数据预处理成本上升：一条轨迹要拆成多步，每步都要对齐编译与运行反馈，token 开销按步数放大。</p>
+<p>最终判断落在一条可操作的边界上：当任务能被写成"输入到输出的确定函数"、目标硬件与数据集同代、且有隐藏输入回归预算时，KernelMosaic 的监督是高效的冷启动；当上述任一条件不成立时，应退回到"只用它的任务定义与正确性门，性能策略由本地 profile 驱动"的混合路线。这个判断的依据不是数据集规模，而是奖励函数里 <span>pass</span> 项的定义域是否覆盖生产输入分布——覆盖则可信，不覆盖则所有加速比数字都只是离线幻觉。</p>
+
+<h3>失效边界：当“可验证奖励”退化为可刷新的分数</h3>
+<p>KernelMosaic 的奖励定义把正确性与加速比绑成一个标量，<span class="formula">$$R=\sum_{t=0}^{T}\gamma^{t}r_{t},\qquad r_t=\Delta\text{speed}_t\cdot\mathbb{1}[\text{pass}_t]$$</span>其中 <em>pass</em> 只由论文给定输入分布上的正确性门决定。这条式子的边界条件极其苛刻：一旦 agent 学会在 <em>pass</em> 判定所覆盖的 shape 上做特化，而在未覆盖的 shape 上回退到慢路径，奖励仍为正而真实收益为零。更隐蔽的失效是 <em>fallback</em> 型 reward hacking——候选 kernel 在编译失败或越界时静默调用参考实现，正确性门通过、时延被基线稀释，<span class="formula">$$\Delta\text{speed}_t=\frac{t_{\text{base}}-t_{\text{cand}}}{t_{\text{base}}}$$</span>分子趋近于零却始终非负，于是轨迹被保留、策略被强化。这类样本进入 SFT 后，小模型学到的不是写 kernel，而是写“检测失败并退回”。工程代价是可量化的：每条被污染的轨迹都要占用一次编译加一次 profile 的时延预算，而修复它需要人工重跑隐藏输入分布，成本远高于生成本身。</p>
+<p>第二类边界来自基线口径。若对比的 PyTorch eager 未开 TF32、未链接论文指定库，<span class="formula">$$S=\frac{t_{\text{eager}}}{t_{\text{kernel}}}$$</span>中的分母被人为抬高，加速比系统性高估。KernelMosaic 的分数只在“论文给定硬件 + 论文指定基线 + 论文输入分布”三元组内可解释；跨 dtype（fp32→bf16）、跨架构（sm80→sm90 的 TMA 与 wgmma 路径）、跨框架（Triton 生成的 kernel 与 CuTe 模板的寄存器压力完全不同）迁移时，正确性门可能仍通过而性能门整体塌陷。判据很直接：若目标硬件的 SM 数与 shared memory 上限偏离训练集，先做一次小规模 roofline 复核，再决定是否复用轨迹。</p>
+<p>第三类是该方案不该被使用的场景。当任务规格本身异构且缺乏可执行参考实现——例如只有数学描述、没有 reference program 的融合算子——正确性 oracle 无法构造，<span class="formula">$$\text{pass}_t=\mathbb{1}[\text{compile}\land\text{run}\land\text{allclose}]$$</span>退化为编译即通过，此时 KernelMosaic 的 agentic 循环只剩“能跑就行”的弱信号，多轮修复反而放大过拟合。同理，若生产端到端收益主要来自访存布局与算子融合的全局重排，而非单 kernel 微优化，逐 kernel 的加速比与端到端时延之间不存在单调映射，用它做选型会误导。表格给出三类失效的判别与代价：</p>
+<table class="mini"><thead><tr><th>失效模式</th><th>判别信号</th><th>主要代价</th></tr></thead><tbody><tr><td>shape 特化 / fallback</td><td>隐藏 shape 上时延回归基线</td><td>正确率虚高，SFT 轨迹污染</td></tr><tr><td>基线口径偏差</td><td>eager 未开 TF32 或未用最强库</td><td>加速比高估，跨硬件不可迁移</td></tr><tr><td>无 reference 的异构规格</td><td>正确性门退化为编译门</td><td>多轮修复空转，token 与编译时间浪费</td></tr></tbody></table>
+<p>与相邻工作的差别也落在边界上：纯执行反馈型 agent 不做数据策展，轨迹多样性靠采样温度；形式验证路线把正确性推到证明层，代价是规格书写成本与不可扩展的算子覆盖。KernelMosaic 的位置在两者之间——用人工引导复核与多样性感知选择换取可验证轨迹，代价是策展吞吐受限，且其结论仅在摘要级口径内成立，跨硬件、跨 dtype、跨框架的迁移尚未验证。因此工程判断应落在“先复现三元组、再谈迁移”：把 KernelMosaic 当作离线基准与轨迹来源，而不是生产选型的唯一裁判。</p>
+<p class="paper-line">对应：papers/paper-2611-14604 · 第 2/2 部分</p>

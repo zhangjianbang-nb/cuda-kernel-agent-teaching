@@ -1,0 +1,36 @@
+<h3>一 · 论文要解决的不是“谁更快”，而是“怎么比才可比”</h3>
+<p>Tile-based 编程模型（Triton、cuTile）在工程叙事里长期被当成“写起来简单、跑起来接近手写 CUDA”的一类抽象。但这类断言在跨模型比较时几乎不可证伪：同一算子，Triton 实现与 cuTile 实现可以有不同的 tile 形状、不同的流水深度、不同的 autotune 搜索空间，甚至不同的数值路径。只要实现结构不匹配，测出来的时延差异就同时混入了“语言表达力差异”和“工程师调参水平差异”，无法归因。TileBench 的核心判断是：在讨论 tile-based 模型优劣之前，必须先把**算子语义**与**实现结构**对齐，否则任何加速比都只是特定实现的偶然产物。</p>
+<p>论文因此在 NVIDIA B200 上构建了一个受控基准：45 个算子，每个算子同时提供 PyTorch 参考实现、经过验证的 Triton 实现与 cuTile 实现，并统一 dtype 与输入尺寸扫描、默认配置与 autotuned 配置、roofline 指标与 profiling 引导的诊断。这里的“受控”不是指固定 shape 跑一次，而是指**比较维度被显式参数化**：dtype、size、配置档位、诊断口径都是基准的一部分，而不是留给评测者临场决定。这一点直接决定了 TileBench 在 CUDA kernel agent 版图上的位置——它不是一个“给 agent 打分的题库”，而是一个**归因工具**：当 agent 生成的 kernel 变慢时，它能回答“慢在 tile 模型本身、慢在 autotune 没搜到、还是慢在访存模式不匹配”。</p>
+<p>代价是明确的：45 个算子 × 双实现 × dtype/size 扫描 × 默认与 autotuned 两档，意味着基准本身的维护成本与运行成本都远高于单点 KernelBench 式任务；autotune 档位的编译与搜索时间会直接进入评测时延，若不做缓存，单次全量评测的 wall-clock 会被编译主导。这是“可比性”换来的开销，也是使用 TileBench 时必须先接受的口径前提。</p>
+
+<h3>二 · 45 个算子覆盖的是模式空间，不是算子清单</h3>
+<p>TileBench 的 45 个算子被描述为覆盖“diverse AI-kernel patterns and memory/computation behaviors”。这句话的工程含义是：算子集合的采样维度是**访存/计算行为**，而非 API 覆盖面。对 agent 评测而言这很关键——如果基准只堆 GEMM 变体，agent 学到的只是 Tensor-Core 路径的模板；如果只堆 elementwise，agent 学到的只是向量化与合并访存。TileBench 同时放入 Tensor-Core/TMA 友好型、不规则访存型、流式型与带宽受限型，使得同一套生成策略在不同模式上的表现可以被分开观察。</p>
+<p>论文给出的结论正是这种模式划分的直接产物：性能差距是 workload-dependent 的，cuTile 在一小簇 Tensor-Core/TMA 友好算子上占优，而 Triton 在许多不规则、流式与带宽受限算子上更强。这个结论的方法论价值大于结论本身——它说明“tile-based 模型谁更好”是一个**分模式的条件命题**，任何全局排名都是在做跨模式的加权平均，权重选择即结论选择。对 kernel agent 的启示是：优化策略应当按模式路由，而不是按语言路由；一个 agent 若对带宽受限算子套用 Tensor-Core 流水模板，性能会退化，而 TileBench 的 roofline 指标能把这种退化定位到“离 SOL 的距离”而非笼统的“慢”。</p>
+<p>具体机制上，每个任务同时给出默认配置与 autotuned 配置，等价于把“语言默认表达力”与“搜索后上限”拆成两个测量点。两者之间的差距就是 autotune 的收益空间；若某算子在默认档已接近 roofline，则 autotune 的边际收益低，agent 在此处的调参预算应被压缩。代价是 autotune 档的搜索本身消耗编译时间与 GPU 时隙，且搜索空间由基准作者预设，agent 无法通过扩大搜索空间来“刷”分数——这既是可比性的保障，也是上限的约束。</p>
+
+<h3>三 · 评分口径：阈值命中率与逐题加速比</h3>
+<p>TileBench 的评测口径可以抽象为阈值化的通过率与逐题加速比两层。逐题加速比定义为基线时延与候选时延之比，整体分数是加速比达到阈值的题目占比：</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>这个口径有两个工程后果。第一，它是**阶跃式**的：一道题从 0.99τ 提升到 1.01τ 带来的分数增量，与从 0.1τ 提升到 0.9τ 相同（都是 0），这意味着 agent 的优化预算应优先投向“接近阈值但未达标”的题目，而不是在已达标题目上继续压榨。第二，基线选择直接决定 τ 的语义：论文口径中的基线包括 PyTorch eager、torch.compile 与论文指定库实现。若基线未开 TF32、未使用最强库路径，加速比会被系统性高估，阈值命中率随之虚高——这是 TileBench 使用说明里必须前置声明的失败模式，也是所有以加速比为奖励的 agent 训练共同面对的口径风险。</p>
+<p>与逐题加速比配套的是 roofline 指标：每个任务给出基于 roofline 的度量，把实测时延折算为相对 SOL（speed-of-light）的达成率。它的作用不是替代加速比，而是**解释加速比**。一个 s_i 很高但 roofline 达成率低的题目，说明基线本身弱，候选只是相对更好而非接近硬件极限；一个 s_i 接近 1 但 roofline 达成率高的题目，说明双方都已逼近上限，继续优化的空间在算法而非实现。profiling 引导的诊断则进一步把差距落到具体瓶颈：是 TMA 未启用、是 occupancy 受限、还是 bank conflict 导致的额外事务。代价是 profiling 本身引入测量开销与重放次数，全量 profile 的时延远高于纯计时，因此实践中通常只在“未达标且 roofline 差距大”的子集上开启。</p>
+
+<h3>四 · LLM 生成 kernel 的评测：token 效率成为一等指标</h3>
+<p>TileBench 不只评测人类写的两套参考实现，还评测 LLM 生成的 cuTile 与 Triton kernel。论文给出的发现是：在相同的迭代精化协议下，Triton 始终比 cuTile 更 token-efficient。这个指标值得单独拆开看，因为它把“生成成本”引入了 kernel agent 的评价体系——此前多数基准只关心最终时延，把生成过程中的 token 消耗当作实现细节。</p>
+<p>机制上，token 效率差异来自两处：一是语言表面积，cuTile 的 tile 抽象与 TMA 描述需要更多结构化声明，模型在生成时必须显式表达布局与流水，token 预算被语法占据；二是迭代精化的收敛路径，Triton 的错误信息与编译反馈更贴近模型预训练分布中的代码形态，模型更容易从编译错误中定位修复点，从而减少往返轮数。伪代码层面，一次迭代精化循环可写成：生成候选 → 编译 → 正确性检查 → 计时与 roofline 对比 → 若未达阈值则带反馈重写。token 成本近似为轮数乘以每轮生成长度，Triton 的优势体现在两个因子上同时更小。</p>
+<p>代价与风险同样清楚：token 效率高不等于最终性能好，若 Triton 路径在 Tensor-Core/TMA 友好算子上本就弱于 cuTile，则“省 token”换来的是更低的 s_i。更隐蔽的风险是 reward hacking——模型可能生成在基准 shape 上特化、在隐藏输入分布上崩溃的实现，或依赖 fallback 路径让正确性检查通过而实际未执行目标 kernel。TileBench 的受控口径（统一 dtype 与 size 扫描、双档配置）能部分压制 shape 特化，但无法完全消除；因此正确性门必须与性能门分离，且正确性检查需覆盖扫描中的多个尺寸而非单点。</p>
+
+<h3>五 · 在 CUDA kernel agent 版图上的位置：从“能不能写”到“为什么慢”</h3>
+<p>把 TileBench 放进现有的 kernel agent 评测谱系，可以看到一条清晰的坐标轴迁移。KernelBench 系基准回答的是“模型能否写出正确且相对快的 kernel”，其评分以逐题加速比为主，题目多为单实现、单语言；CUDA-LLM、Kevin、CUDA-L1、CUDA-L2 等工作把多轮反馈与对比式强化学习引入生成循环，关注的是**搜索效率**；Geak、Astra、CudaForge、cuPilot、EvoEngineer 则把多 agent 协作、硬件反馈、进化式改写作为方法核心；Dr. Kernel 与 Fine-Tuning GPT-5 之类工作聚焦于训练侧配方与数据构造。这些工作的共同缺口是：它们大多只测一种 tile 模型，或只测一种实现结构，因而无法回答“换一种 tile 抽象，同一 agent 策略是否仍然有效”。</p>
+<p>TileBench 填补的正是这个缺口，但它填的方式不是“再加一个排行榜”，而是提供**跨模型的可比口径与瓶颈归因**。它的 45 算子双实现结构使得同一 agent 策略可以在 Triton 与 cuTile 上被平行测量，从而把“策略好坏”与“语言适配度”分离；它的 roofline 与 profiling 诊断把“慢”拆成可操作的子问题；它的默认/autotuned 双档把“语言默认表达力”与“搜索上限”分离。对 agent 工程而言，这意味着 TileBench 更适合作为**诊断集**而非**训练奖励源**：用它定位失败模式，再用更轻量的基准做高频迭代。</p>
+<table class="mini"><thead><tr><th>评测维度</th><th>KernelBench 系</th><th>TileBench</th></tr></thead><tbody><tr><td>比较对象</td><td>单实现 vs 基线</td><td>Triton vs cuTile，语义与结构对齐</td></tr><tr><td>评分口径</td><td>逐题加速比为主</td><td>阈值命中率 + roofline 达成率</td></tr><tr><td>配置维度</td><td>通常单档</td><td>默认档与 autotuned 档并列</td></tr><tr><td>诊断能力</td><td>弱，多为端到端时延</td><td>profiling 引导的瓶颈定位</td></tr><tr><td>生成成本</td><td>一般不计量</td><td>token 效率作为一等指标</td></tr></tbody></table>
+<p>这张表也暴露了 TileBench 的边界：它的结论只在 B200、给定基线与给定输入分布上成立，跨硬件、跨 dtype、跨框架的迁移未被验证；45 个算子虽覆盖模式空间，但相对真实模型中的融合算子仍显稀疏。因此把 TileBench 分数直接当作生产端到端收益的预测器是危险的——离线基准的阈值命中率高，不代表在真实 shape 分布与融合边界上仍然成立。工程判断应当是：用 TileBench 做**归因与选型**，用生产回归做**收益确认**，两者不可互相替代。</p>
+<p>最后落到一个具体机制上：TileBench 的每道题都带 PyTorch 参考实现，这使正确性 oracle 不依赖候选之间的互相比较，而依赖一个语义固定的外部锚点。对 agent 流水线而言，这个锚点的存在把“正确性门”与“性能门”解耦成两个独立可测的环节——先过锚点，再谈加速比；任何绕过锚点的 fallback 都会在 dtype/size 扫描中被暴露。这一设计选择，比任何单一加速比数字都更能决定 TileBench 在可信评测方向上的分量。</p>
+
+<h3>匹配语义之下：TileBench 的受控边界与失效面</h3>
+<p>TileBench 的“controlled”落在两处硬约束上：一是算子语义对齐（同一算子给出 PyTorch 参考、经核验的 Triton 与 cuTile 两版实现），二是实现结构可比（默认配置与 autotuned 配置并列，dtype 与输入尺寸做扫描）。这决定了它的分数含义——不是“某个库最快能多快”，而是“在相同语义与相近结构下，两种 tile 抽象各自把多少硬件潜力兑现”。因此它天然排斥跨语义比较：若候选 kernel 改变了归约顺序、累加精度或边界处理，即便时延更低也不进入同一口径。对 agent 而言，这意味着基准题同时是正确性 oracle 的规格书，候选必须先通过语义等价门，才轮到性能门。</p>
+<p>代价首先体现在评测预算上。45 个算子乘以 dtype 与尺寸扫描、再乘以默认/自动调优两套配置，单次全量跑是一次可观的时间与显存开销；autotune 本身在编译期展开的候选空间会拉长编译时间，而 tile 尺寸搜索的收益又高度依赖 shape，于是“调优开销”与“稳态时延”必须分开记账。若把 autotune 时间计入加速比，小尺寸算子的分数会被系统性压低；若不计入，则离线分数对生产部署偏乐观。一个可操作的记账方式是只对通过正确性门的候选计算阈值命中率：</p>
+<div class="formula">$$\text{score}=\frac{1}{N}\sum_{i=1}^{N}\mathbb{1}[s_i\ge\tau],\qquad s_i=\frac{T_{\text{base},i}}{T_{\text{cand},i}}$$</div>
+<p>其中基线 $T_{\text{base}}$ 的选取直接决定 $s_i$ 的量级：若基线未开 TF32、未用最强库实现，加速比会被高估，阈值 $\tau$ 也就失去区分度。这是 TileBench 口径最容易被 agent 利用的缝隙——不是伪造 kernel，而是让基线变弱。</p>
+<p>失效条件集中在迁移性上。论文的结论明确是 workload-dependent：cuTile 在一小簇 Tensor-Core/TMA 友好的算子上占优，Triton 在大量不规则、流式与带宽受限算子上更强。这意味着任何“某模型全面更优”的归纳都是错的，基准给出的是一张分模式的胜负表，而非单一排序。跨硬件、跨 dtype、跨框架的迁移未经验证，B200 上的 tile 尺寸与流水深度换到别的 SM 配置上会整体偏移；shape 特化与隐藏输入分布会让离线高分在生产上崩塌，因为基准的尺寸扫描是离散采样，候选完全可能对采样点过拟合。</p>
+<p>LLM 生成环节另有一层系统代价：在相同的迭代精修协议下，Triton 比 cuTile 更 token 高效。这直接影响 agent 的预算分配——同样的反馈轮次，cuTile 侧需要更多 token 才能收敛到可比实现，而 tile 抽象的声明式程度越高，编译期报错与 profile 反馈的可读性越差，回灌信号的信噪比越低。工程判断是：把 TileBench 当作分模式的诊断台而非排行榜，用 roofline 指标与 profiling 引导定位瓶颈属于访存、Tensor-Core 利用率还是 TMA 流水，再决定是否值得为某一簇算子切换到 cuTile；对不规则与带宽受限算子，Triton 的默认路径通常已是更稳的起点。</p>
+<p class="paper-line">对应：papers/paper-2609-29067 · 第 1/2 部分</p>

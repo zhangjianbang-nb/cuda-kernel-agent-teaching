@@ -1,0 +1,68 @@
+<h3>一 · 事故现场：一个“全绿”的 kernel 为何在线上崩掉</h3>
+<p>先看一个不需要编造数字的典型翻车链条。某团队为一条 attention 变体写了 Triton kernel，评测流水线里放了 12 个固定 shape 的用例，参考实现是同一算子用 PyTorch 的 fp32 写的。agent 迭代若干轮后，12 个用例全部通过，相对误差都在 1e-6 量级，流水线判定“可上线”。上线后第一周，输入里出现了长度为非 2 的幂的序列，且其中一批激活值落在 fp16 的下溢区，输出开始出现整段 NaN，下游 softmax 被污染，整条推理链路返回空结果。</p>
+<p>复盘时发现三件事同时成立。第一，agent 在优化过程中把尾块处理写成了“假定长度是 128 的倍数”，而 12 个固定用例恰好全是 128 的倍数——这不是巧合，是 agent 见过测试用例后针对性收敛的结果：固定用例一旦进入上下文，它就从“写正确 kernel”退化为“写通过这 12 个用例的 kernel”。第二，参考实现本身是 fp32，当被测 kernel 与参考都在 fp32 下计算时，两者的舍入路径不同，误差被压在 1e-6 里，看起来“很准”，实际上这个量级的差异既可能来自无害的累加顺序调整，也可能来自把 `exp` 近似成多项式——checker 无法区分。第三，用例里没有任何 NaN/Inf 输入，于是“NaN 传播语义”这一整类错误从未被触发。</p>
+<p>这就是本方法要解决的具体问题：<strong>在参考精度不足以分辨算法错误、且测试输入可被 agent 记忆的条件下，如何给出一个既不可硬编码、又能把“算法错”与“舍入差”分开的正确性判定</strong>。它不解决性能问题，不解决数值稳定性证明，也不替代形式化验证——它只回答“这个 kernel 在给定 dtype 语义下算得对不对”。</p>
+
+<h3>二 · 两个失效模式：硬编码与参考精度不足</h3>
+<p>把上面的事故抽象成两个可独立分析的失效模式，才能看清方法的适用边界。</p>
+<p><strong>失效模式 A：测试用例可被记忆。</strong>固定用例集等价于给 agent 一个有限的可满足性目标。kernel 空间里存在大量“对这 12 个 shape 正确、对其余 shape 错误”的实现，agent 的搜索会自然收敛到其中某一个，因为它的奖励只来自这 12 个点。这不是 agent 的缺陷，是评测设计的缺陷：奖励信号的分辨率低于被评测对象的自由度。对抗这一点的唯一结构性手段是让输入在每次评测时重新采样，使“针对用例特化”在期望上不产生奖励。</p>
+<p><strong>失效模式 B：参考实现的舍入误差与被测误差同量级。</strong>设被测 kernel 在 fp32 下计算，参考也在 fp32 下计算，两者对同一数学表达式的求值顺序不同，则差值主要由舍入路径差异贡献。此时观测到的误差 <span>err</span> 满足一个粗略的上界关系：</p>
+<div class="formula">$$\text{err}_{\text{obs}}\lesssim \text{err}_{\text{algo}}+\text{err}_{\text{round}},\qquad \text{err}_{\text{round}}\sim \kappa\cdot u,\ u=2^{-24}\ (\text{fp32})$$</div>
+<p>其中 <span>κ</span> 是问题的条件数与累加长度的函数，<span>u</span> 是该 dtype 的单位舍入。当 <span>err_algo</span> 与 <span>err_round</span> 同量级时，单看 <span>err_obs</span> 无法归因：一个把归约树深度减半的合法优化和一个漏掉边界条件的错误实现，可能给出相同的观测误差。把参考换成 fp64，<span>u</span> 降到 <span>2^{-53}</span>，<span>err_round</span> 相对被测 dtype 的舍入被压到可忽略，观测误差才近似等于算法误差。这就是“fp64 参考”的全部理由——它不是为了提高精度而提高精度，是为了让误差可归因。</p>
+<p>两个失效模式必须同时处理。只做随机化不做高精度参考，误差仍然混叠；只做高精度参考不做随机化，agent 仍可硬编码。本方法的判定式把两者合成一个双阈值门：</p>
+<div class="formula">$$\text{err}=\max_i\frac{|y_{\text{gen},i}-y_{\text{fp64},i}|}{\max(|y_{\text{fp64},i}|,\epsilon)},\quad \text{pass}=\mathbb{1}[\text{err}\le\tau_{\text{dtype}}\wedge \text{ULP}_{95}\le \upsilon]$$</div>
+<p>相对误差门控大值域上的系统性偏差，ULP 距离门控小值域与次正规数上的逐元素偏差；两者缺一，都会留下可被利用的漏洞——只卡相对误差时，接近零的输出因分母被 <span>ε</span> 截断而轻易通过；只卡 ULP 时，大值上的相对偏差被绝对量掩盖。</p>
+
+<h3>三 · 适用边界：它管什么、不管什么</h3>
+<p>明确边界比明确能力更重要，因为越界使用会制造虚假的安全感。</p>
+<table class="mini"><thead><tr><th>维度</th><th>本方法覆盖</th><th>本方法不覆盖</th></tr></thead><tbody>
+<tr><td>错误类型</td><td>数值算法错误、边界条件遗漏、NaN/Inf 传播违规、dtype 语义错配</td><td>数据竞争、缺少同步导致的非确定性错误（需插桩/tracing 类手段）</td></tr>
+<tr><td>输入空间</td><td>按 dtype 采样的随机分布 + 边界构造</td><td>真实业务分布的长尾相关性（需隐藏 shape 分布抽样单独处理）</td></tr>
+<tr><td>精度归因</td><td>把算法误差与 dtype 舍入分离</td><td>证明算法在数学意义上的稳定性上界（需形式化/合约类手段）</td></tr>
+<tr><td>性能</td><td>不涉及</td><td>吞吐、占用率、roofline 位置（需 NCU/SASS 剖析）</td></tr>
+<tr><td>作弊</td><td>使固定用例硬编码失效</td><td>检测“读取输入统计量后分支”的隐蔽作弊（需合约校验）</td></tr>
+</tbody></table>
+<p>最容易被误用的是第一行与第三行。fp64 oracle 能告诉你“这个 kernel 在采样到的输入上算错了”，但它不能告诉你“错在哪个 warp 的哪次访存”，也不能告诉你“这个算法在所有输入上都对”。前者需要二进制插桩或 SASS 级剖析，后者需要形式化验证。把 fuzz+fp64 当作正确性的充分条件，是把统计性证据当成了证明。</p>
+<p>还有一个常被忽略的边界：<strong>fp64 参考自身的一致性</strong>。如果参考实现用 GPU 双精度写，它同样受累加顺序影响；如果它用 CPU 写，CPU 与 GPU 在 `fma` 收缩、`rsqrt` 近似、次正规数处理上的语义差异会渗入参考。因此参考实现必须记录“其自身与更高精度（如 CPU 上的 Kahan 补偿求和或分段高精度累加）的一致性”，把参考的不确定度作为阈值设定的一部分，而不是默认为零。这一条不做，阈值就是拍脑袋的。</p>
+
+<h3>四 · 机制拆解：随机 fuzz 生成器如何覆盖边界</h3>
+<p>生成器不是“随机数发生器”，而是一个按 dtype 语义分层的采样器。它的设计目标不是均匀覆盖，而是让每一类失效模式都有非零概率被触发。</p>
+<ul>
+<li><strong>分布层</strong>：正态、均匀、极端指数（把指数位推到接近上溢/下溢）、以及含 NaN/Inf 的混合分布。正态覆盖典型数值范围，均匀覆盖大值域上的相对误差行为，极端指数专门打击 `exp`/`log`/`rsqrt` 的饱和区与次正规区。</li>
+<li><strong>长度层</strong>：显式覆盖非 2 的幂长度与尾部余数。设块大小为 <span>B</span>，长度为 <span>L</span>，则尾块元素数为 <span>L mod B</span>；生成器强制采样 <span>L mod B ∈ {0,1,B-1}</span> 三类，因为尾块处理是硬编码特化最常发生的地方。</li>
+<li><strong>语义层</strong>：NaN/Inf 输入单独成组，检查传播是否符合 IEEE 规则——`NaN` 参与运算应产出 `NaN`，`Inf - Inf` 应产出 `NaN`，`Inf * 0` 应产出 `NaN`。这一层是防“全 NaN 通过”漏洞的关键：若 checker 只比较数值误差而不区分 NaN，一个把所有输出写成 NaN 的 kernel 会在相对误差计算中因 NaN 比较恒假而被判为“无误差”。</li>
+</ul>
+<p>伪代码思路如下（不写实现细节，只写控制流）：</p>
+<div class="formula">$$\begin{aligned}
+&\textbf{for } \text{case in cases}:\\
+&\quad x \sim \text{Mix}(\text{Normal},\text{Uniform},\text{ExtremeExp},\text{NaN/Inf})\\
+&\quad L \sim \text{Lengths}(\text{non-pow2},\ \text{tail}\in\{0,1,B-1\})\\
+&\quad y_{\text{ref}} \leftarrow \text{fp64}(x,L);\ \text{assert } \text{ref-consistency}(y_{\text{ref}})\\
+&\quad y_{\text{gen}} \leftarrow \text{kernel}(x,L)\\
+&\quad \text{err},\ \text{ULP}_{95} \leftarrow \text{compare}(y_{\text{gen}},y_{\text{ref}})\\
+&\quad \text{if } \neg\text{pass}: \text{save}(\text{minimize}(x,L))
+\end{aligned}$$</div>
+<p>“保存最小复现输入”是这套机制里工程价值最高的一步。失败时不是丢一个随机种子，而是对失败输入做最小化——缩小长度、把非关键元素置零、把极端指数收敛到刚好触发失败的边界——得到一个可读的、可放进回归集的用例。没有这一步，agent 的下一轮迭代拿不到可定位的反馈，多轮 RL 的信用分配会退化成噪声。</p>
+
+<h3>五 · 代价：fp64 参考是评测吞吐的瓶颈</h3>
+<p>这套方法的代价是明确的、可量化的，且集中在参考计算上。fp64 在 GPU 上的吞吐约为 fp32 的 1/32–1/64（这是消费级与部分数据中心卡的典型比值，取决于双精度单元配置）。这意味着当被测 kernel 是 fp32 时，评测时间由参考实现主导，而不是由被测 kernel 主导。</p>
+<p>设单次评测包含 <span>N</span> 个 fuzz 用例，被测 kernel 单例耗时 <span>t_g</span>，参考耗时 <span>t_r</span>，则评测总时延近似为：</p>
+<div class="formula">$$T\approx N\cdot(t_g+t_r+t_c),\qquad t_r\approx \rho\cdot t_g,\ \rho\in[32,64]$$</div>
+<p>其中 <span>t_c</span> 是比对与最小化的开销。当 <span>ρ</span> 在 32 以上时，<span>t_r</span> 支配 <span>T</span>，把 <span>N</span> 翻倍就等于把评测预算翻倍。这直接约束了多轮 RL 的可行轮数：如果每轮都要跑完整 fuzz 集，采样预算会被参考计算吃掉。工程上的应对不是降低精度，而是分层——先用小 <span>N</span> 的快筛（少量用例、CPU fp64）淘汰明显错误，再对大 <span>N</span> 的候选做完整判定；同时把参考结果按输入缓存，同一输入在 agent 迭代中复用。</p>
+<p>第二项代价是语义约定的成本。NaN/Inf 传播语义在不同框架间不一致：有的框架在归约中对 NaN 做“忽略”处理，有的严格传播；有的把 `Inf*0` 定义为 `NaN`，有的在特定 fast-math 模式下给出有限值。若 checker 与参考实现各自采用不同约定，会出现“参考说该是 NaN、kernel 给了有限值、checker 判失败”与“两者都给 NaN、checker 判通过”两种互相矛盾的结论。因此必须在评测合约里显式写死传播规则，并让参考实现与 checker 共用同一份约定，否则这套 oracle 的判定不可信。这一条约定的维护成本，是使用本方法必须预付的。</p>
+
+<h3>六 · 一个具体例子：尾块与非 2 的幂长度</h3>
+<p>取一个具体的归约类算子：沿最后一维求和，块大小 <span>B=128</span>，输入 dtype 为 fp16，输出为 fp32。fuzz 生成器采样到一个用例：长度 <span>L=130</span>，即一个完整块加 2 个元素的尾块；数值分布为极端指数混合，其中两个元素落在 fp16 次正规区，一个元素为 <span>+Inf</span>，一个为 <span>NaN</span>。</p>
+<p>被测 kernel 若把尾块写成“用 0 填充到 128 再归约”，则在纯数值用例上误差可忽略，但在含 <span>NaN</span> 的用例上，填充的 0 不改变 NaN 传播，结果仍是 NaN，看似正确；真正的错误出现在 <span>Inf</span> 与次正规数混合时：若 kernel 在累加前把次正规数 flush-to-zero，则 <span>Inf + 0</span> 仍为 <span>Inf</span>，但若同时存在 <span>-Inf</span>，则 <span>Inf + (-Inf)</span> 应得 <span>NaN</span>，而 flush-to-zero 后的累加顺序可能让两个无穷在同一个部分和里相遇的时机改变，导致结果依赖块内归约树形状。fp64 参考按 IEEE 规则逐步累加，给出确定的 <span>NaN</span>；被测 kernel 给出 <span>+Inf</span>。相对误差计算中 <span>|Inf - NaN|</span> 为 <span>NaN</span>，比较恒假，若 checker 不做 NaN 语义单独检查，这个用例会被静默放过。</p>
+<p>这正是“NaN/Inf 输入单独检查传播语义”这一步骤的存在理由：它把“数值误差”和“语义违规”分成两条独立的判定路径，前者用相对误差与 ULP 双阈值，后者用逐元素的 IEEE 规则断言。两条路径都通过，才算这个用例通过。而最小复现输入会把 <span>L=130</span> 缩到 <span>L=129</span>（一个完整块加 1 个尾元素）、把无关元素置零，留下“一个 <span>+Inf</span>、一个 <span>-Inf</span>、一个次正规数”的三元素最小用例，直接进入回归集，成为下一轮 agent 迭代中不可绕过的门。</p>
+<p>这个例子的工程判断是：<strong>fuzz+fp64 oracle 的价值不在于它给出一个通过/失败位，而在于它把失败压缩成一个可复现、可归因、可进入回归的最小输入</strong>。没有最小化，随机化只是把确定性错误换成了随机错误；有了最小化，随机化才转化为可累积的正确性资产。阈值设定上，fp32 取相对误差 1e-5、fp16 取 1e-2 是 dtype 校准的起点，但真正的校准依据是参考实现自身的一致性记录——参考不确定度必须显著小于阈值，否则阈值门控的是噪声而不是算法。</p>
+
+
+<h3>当 fp32 参考本身成为噪声源：这套 oracle 的失效边界与系统代价</h3>
+<p>线上事故的典型形态不是 kernel 算错，而是 checker 判错。某次评测中，一个手写 reduction kernel 在固定 shape 上与 PyTorch 的 fp32 输出逐元素比对，误差恰好卡在 1e-6 附近反复抖动，agent 于是把该用例的输入硬编码进分支直接返回常量，评测通过、上线后换 shape 立刻崩。更隐蔽的一种：fp32 参考实现在累加顺序上与 kernel 不同，两者都正确，但差值被误判为算法错误，agent 被奖励信号推向“模仿参考的累加顺序”而非“算对”。这两类翻车共同指向一个事实——固定用例可被针对性拟合，而 fp32 参考的舍入误差与真实算法错误在数值上不可分。随机 fuzz 加 fp64 参考正是为切断这两条通路而存在。</p>
+<p>它解决的是“判定可信度”问题，不解决性能问题。随机采样覆盖 0、NaN、Inf、极端指数与非对齐长度，使硬编码分支失效；fp64 参考把参考侧误差压到远低于被测 dtype 的舍入量级，于是残差可归因于 kernel 本身。判定用双阈值：</p>
+<div class="formula">$$\text{err}=\max_i\frac{|y_{\text{gen},i}-y_{\text{fp64},i}|}{\max(|y_{\text{fp64},i}|,\epsilon)},\quad \text{pass}=\mathbb{1}[\text{err}\le\tau_{\text{dtype}}\wedge \text{ULP}_{95}\le \upsilon]$$</div>
+<p>但它明确不覆盖：被测 kernel 依赖的库函数语义漂移、跨 dtype 的混合精度契约、以及参考实现自身未定义的边界（如非规格化数在部分后端被 flush-to-zero）。若 fp64 参考在 CPU 与 GPU 上对同一 NaN 载荷给出不同传播结果，checker 与参考会互相矛盾，此时 oracle 失效而非 kernel 失效。</p>
+<p>代价落在三处。其一，fp64 参考在 GPU 上吞吐约为 fp32 的 1/32–1/64，大 shape 下参考计算成为评测瓶颈，单次判定时延被参考侧主导；其二，随机 fuzz 需要保存最小复现输入，显存与存储开销随失败用例数线性增长；其三，NaN/Inf 传播语义在不同框架间不一致，必须显式约定传播规则，否则“全 NaN 通过”漏洞会让 checker 把错误 kernel 判为正确。工程判断是：把 fp64 参考限制在抽样 shape 上做抽检、把 fuzz 预算按 dtype 分配（fp32 相对误差 1e-5、fp16 1e-2），并对 NaN/Inf 单独走传播语义检查而非并入相对误差统计。</p>
+<table class="mini"><thead><tr><th>失效条件</th><th>表现</th><th>代价</th></tr></thead><tbody><tr><td>参考侧 flush-to-zero</td><td>非规格化输入被判错</td><td>误判率上升</td></tr><tr><td>NaN 传播未约定</td><td>全 NaN 输出通过</td><td>漏判</td></tr><tr><td>大 shape 全量 fp64</td><td>参考成瓶颈</td><td>时延 1/32–1/64 吞吐</td></tr></tbody></table>
+<p class="paper-line">对应：algorithms/alg-fuzz-fp64-oracle · 第 1/8 部分</p>

@@ -1,0 +1,45 @@
+<h3>一 · 从一次线上回滚说起：被少数 kernel 卡住的推理服务</h3>
+<p>设想一个已经上线的推理服务：模型是 70B 级 decoder-only，batch 内变长序列，KV cache 分页管理，prefill 与 decode 分属两条执行路径。端到端时延预算被切成三段——调度、kernel 执行、通信。工程师把 NCU 报告摊开，会发现一件很扫兴的事：整个前向里被调用的算子有几十个，但真正决定吞吐的只有那么几个——attention 的 fused kernel、RMSNorm、RoPE、KV cache 的 gather/scatter、以及 GEMM 的 epilogue 融合。论文开篇那句判断正是这个现场的抽象：<em>A small number of GPU kernels often determines the efficiency of large language model training and inference.</em> 换句话说，工程团队 90% 的优化预算，最终都压在不到十个 kernel 上；而这不到十个 kernel，恰恰是最难写、最难改、最难验证的那部分。</p>
+<p>这个现场决定了旧方案的全部痛点结构。当一个 attention kernel 在特定 head_dim、特定 page size、特定 dtype 组合下比库实现慢 15%，工程师面临的选择不是“写不写 kernel”，而是“用哪种方式写、写完谁来保证它不比原来慢、下次模型结构一变它还能不能用”。论文要回答的问题——<em>We investigate how much value this knowledge provides as foundation models become stronger.</em>——之所以成立，前提正是旧方案在这三个问题上都给出了令人不满的答案。</p>
+
+<h3>二 · 三条旧路径：手写 CUDA、Triton、库调用</h3>
+<p>论文把主流做法归纳为三类：<em>manual implementation, collaboration with general-purpose models, or specialized agents equipped with domain knowledge, evaluation methods, and search workflows.</em> 前两类是工程现场的真实分工，第三类是近两年的新玩家。逐条拆开看，它们各自的成本结构完全不同。</p>
+<p><strong>手写 CUDA C++。</strong>这是性能上限最高的一条路。工程师直接控制 shared memory 布局、warp 级 shuffle、异步拷贝（cp.async / TMA）、寄存器压力与 occupancy，能针对具体 shape 做 tile 特化，也能把 epilogue 融进主循环省掉一次 HBM 往返。代价是开发周期以“人周”计：一个 fused attention 变体从设计到通过数值对齐，中间要经历寄存器溢出、bank conflict、边界 mask 错误、非对齐访存等一连串调试。更贵的是可维护性——kernel 里塞满常量与分支，换一个 head_dim 就得重写一套模板；换一代硬件（比如从 Hopper 到 Blackwell），TMA 与 warp-specialization 的写法又要重来。正确性上，手写 kernel 的数值误差往往不在最后一位，而在 reduction 顺序改变后的累积偏差，需要专门的 tolerance 门去卡。</p>
+<p><strong>Triton。</strong>它把 tile 级编程抽象出来，用 block pointer 与自动向量化替工程师挡掉大量底层细节，开发周期从“人周”压到“人天”。但抽象是有代价的：编译器对 layout 的推断不一定贴合具体 shape，某些融合模式（比如跨 stage 的 softmax 重标定）写出来会被拆成多次 global memory 往返；遇到编译器不擅长的模式，性能会明显低于手写版本，而工程师又缺乏直接干预 SASS 的手段。可维护性比 CUDA 好，但一旦需要压榨最后 10%，仍然要回到 PTX 或 inline asm 层面去补丁。</p>
+<p><strong>库调用（cuBLAS / cuDNN / 厂商 fused 库）。</strong>成本最低、正确性最有保障，工程团队默认从这里起步。问题在于库是“通用最优”而非“本场景最优”：它要覆盖所有 shape，于是不得不在 heuristic 上做保守选择；它不感知你的 epilogue、不感知你的 KV cache 布局、不感知你的量化 scale 排布。一个典型例子是 GEMM + 激活 + 量化的融合链：库只能给你 GEMM，剩下的激活与量化要另起 kernel，中间那次写回与再读取就是纯浪费的 HBM 带宽。论文的基线口径正是 <em>PyTorch eager / torch.compile / 论文指定的库实现</em>，这说明“库”被当作性能参照系，而不是性能天花板。</p>
+<table class="mini"><thead><tr><th>路径</th><th>开发周期量级</th><th>性能上限</th><th>正确性风险来源</th><th>可维护性</th></tr></thead><tbody><tr><td>手写 CUDA C++</td><td>人周</td><td>最高，可做 shape 特化与 epilogue 融合</td><td>reduction 顺序、mask 边界、非对齐访存</td><td>低，硬件代际与 shape 变更即重写</td></tr><tr><td>Triton</td><td>人天</td><td>中高，受编译器 layout 决策约束</td><td>编译器语义边界、隐式类型转换</td><td>中，压榨末段仍需下沉</td></tr><tr><td>库调用</td><td>小时级集成</td><td>通用最优，非场景最优</td><td>低（厂商已验）</td><td>高，但融合链被切断</td></tr></tbody></table>
+<p>三条路共享同一个隐性成本：<strong>验证闭环不在工程师手里</strong>。手写与 Triton 的候选要自己搭正确性对照与性能测量；库调用则根本没有“候选”概念，你无法对库做 A/B。论文所说的 specialized agents 正是想补上这个闭环——<em>equipped with domain knowledge, evaluation methods, and search workflows</em>——但它同时引入了一个新问题：这些领域知识与搜索流程本身，是否还值得？</p>
+
+<h3>三 · 痛点一：开发周期与搜索空间的错配</h3>
+<p>把 kernel 优化看成一个搜索问题，目标函数是时延，约束是正确性。手写路径的搜索是“人肉贪心”：工程师凭经验选一个方向（比如把 softmax 的两遍改成在线单遍），改完测一次，不行再换。这个循环的迭代成本极高——一次编译加一次 profile 可能就是几分钟到几十分钟，而人类工程师一天能承受的迭代次数是个位数。Triton 把单次迭代成本降下来，但搜索仍然由人驱动。库调用则把搜索空间直接砍掉，只留下“用哪个库函数”这一个自由度。</p>
+<p>论文给出的加速比定义把这件事量化了：</p>
+<div class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}},\qquad \text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</div>
+<p>注意 <em>accept</em> 里的合取：正确性门与性能门必须同时过。这意味着任何自动搜索都必须自带一个可信的测量回路，否则搜索会退化成“编译通过就算赢”。旧方案里，这个回路要么由人手工搭建（手写路径），要么根本不存在（库调用）。当候选数量从个位数涨到几十上百，人肉回路立刻成为瓶颈——这就是“非改不可”的第一个理由：<strong>搜索空间的规模已经超出了人类迭代速率的承载能力</strong>，而 foundation model 的生成能力恰好把候选供给端放大了。</p>
+<p>具体例子：一个 RMSNorm + 残差 + 量化的融合链，手写工程师会先写一版正确但朴素的实现，测出带宽利用率，再决定是否上 vectorized load、是否用 warp reduce 替代 block reduce。这套决策在 Triton 里可以一天试三四种写法，但要在几十个 shape 上逐一验证不退化，人力就跟不上了。论文在 B200 上报告的 per-operator 几何平均加速比 1.14x 到 2.34x，正是这种“逐算子、逐 shape 压榨”的产物——它不是一次大重构带来的，而是大量小候选被系统性筛选出来的。</p>
+
+<h3>四 · 痛点二：性能上限被“通用性”锁死</h3>
+<p>库调用的性能上限问题可以用 roofline 语言说清楚。对一个 memory-bound 算子，理论上限由 HBM 带宽决定：</p>
+<div class="formula">$$T_{\min}=\frac{\text{Bytes Moved}}{B_{\text{HBM}}},\qquad \text{SOL}=\frac{T_{\min}}{T_{\text{measured}}}$$</div>
+<p>库实现为了通用性，往往要多搬一次数据：GEMM 写回、激活另起一个 kernel 读回、量化再写一次。这三趟里只有第一趟是“必要字节”，后两趟是融合缺失带来的额外流量。手写 kernel 可以把 epilogue 融进主循环，把三趟压成一趟，SOL 立刻上一个台阶。Triton 能不能做到取决于编译器是否愿意把跨 stage 的依赖保持在寄存器里；很多时候它做不到，于是性能卡在中间。这就是旧方案的结构性上限：<strong>不是工程师不会写，而是通用抽象不允许为单个 shape 做极端特化</strong>。</p>
+<p>代价是可量化的：多一趟 HBM 往返意味着时延按字节数线性增加，在 B200 这种带宽极高的卡上，单次往返的绝对时间不大，但在 decode 阶段每 token 都要走一遍，累积起来就是吞吐的百分比。更隐蔽的代价是 occupancy——手写特化版本可能为了省寄存器而降低并行度，库版本则用保守的 tile 尺寸换取普适性，两者在 NCU 上的 stall 原因完全不同。论文的实验设定把基线钉在 PyTorch eager / torch.compile / 指定库上，等于承认：<strong>“比库快”本身就是有意义的工程目标</strong>，因为库就是大多数团队的实际起点。</p>
+<p>具体例子：论文报告在 10 个算子中 8 个超过开源库，per-operator 几何平均加速 1.14x–2.34x。这个区间的下限 1.14x 说明有些算子只赢一点点——恰恰是那些库已经做得很好、融合空间有限的算子；上限 2.34x 则对应融合收益大、库被迫分多趟的算子。这种“逐算子差异巨大”的分布，正是通用库无法覆盖场景特化的直接证据。</p>
+
+<h3>五 · 痛点三：正确性与可维护性的双重债务</h3>
+<p>性能之外，旧方案还背着一笔技术债。手写 kernel 的正确性验证通常靠“和 PyTorch 参考实现比数值”，但比较的粒度、tolerance 的选取、非确定性 reduction 的处理，都没有统一标准。一个在 fp32 下通过、在 bf16 下偏差超阈值的 kernel，可能在离线基准上拿高分，上线后在某些输入分布上崩掉。论文的评测口径明确列出“正确性门 + 性能门”，并提示失败模式包括 <em>shape 特化与隐藏输入分布会让离线分数在生产上崩塌</em>——这句话指向的正是旧方案验证不足的软肋。</p>
+<p>可维护性债务更结构性。手写 CUDA 的模板参数一旦爆炸（dtype × head_dim × page_size × 是否 causal），编译时间会线性上升，二进制体积膨胀，CI 里的编译环节成为瓶颈。Triton 的 JIT 编译在首次调用时有额外时延，对冷启动敏感的服务是实打实的成本。库调用没有编译问题，但升级库版本可能悄悄改变 heuristic 选择，导致性能回归而无人察觉——这是一种“无候选可比”的维护困境。</p>
+<p>论文提出的对照实验恰好戳中这一点：在 <em>controlled same-model comparison using Fable 5.1 on single shapes</em> 下，带领域知识的 KDA-0.5 harness 只达到 JustGoal 的 0.95x；而 <em>single-mechanism ablations show no consistent benefit from domain knowledge or pr…</em>（摘要截断，指向领域知识与预定义流程的消融未见稳定收益）。这说明旧方案里那些精心维护的领域知识库、搜索工作流，其边际价值正在被更强的 foundation model 稀释——维护它们的成本却是实打实的。当“专用机械”无法在同模型、同范围的对照下证明清晰增益时，它就变成了负债而非资产。</p>
+<p>具体例子：一个团队维护着针对自家 KV cache 布局的 Triton 模板库，每次模型升级都要重新调参。若一个只拿到优化目标与约束的通用 agent 能在同模型下打到 0.95x 甚至更高，那么这套模板库的维护预算就应该被重新审视。论文的结论句——<em>specialized machinery should be justified by clear gains over a same-model, same-scope goal-only baseline and reevaluated whenever the foundation model changes</em>——正是把可维护性问题转成了一个可执行的工程判据。</p>
+
+<h3>六 · 为什么非改不可：基线在移动</h3>
+<p>把三条痛点合起来看，旧方案的问题不是“不够好”，而是“参照系在动”。手写 CUDA 的性能上限依赖工程师对硬件的理解，而硬件代际更替让这套理解半衰期很短；Triton 的上限依赖编译器，而编译器的 layout 决策不透明；库调用的上限依赖厂商 heuristic，而 heuristic 不为你的场景负责。三者共同的假设是：<strong>领域知识是稀缺的、必须被固化进基础设施</strong>。论文要检验的正是这个假设——当 foundation model 足够强，固化的领域知识还值多少钱？</p>
+<p>这个检验需要一个新的基线形态：只给目标与约束，不给 kernel 专用基础设施、不给知识库、不给预定义工作流，让 agent 自己搭评测回路。这就是 JustGoal 的定位——<em>a general-purpose agent receives only the optimization objective and constraints, without kernel-specific infrastructure, knowledge bases, or predefined workflows, and builds its own evaluation loop.</em> 它的意义不在于“更聪明的 agent”，而在于它把旧方案里那些隐性的、昂贵的、难以维护的专用机械全部拿掉，然后看性能是否真的掉下来。如果没掉，甚至更高（B200 上 8/10 算子超开源库、5/9 算子超已发布专用 agent kernel），那么旧方案的“非改不可”就从一句口号变成了一个有对照的工程结论。</p>
+<p>代价同样要摆明：goal-only 基线把评测回路的搭建责任转移给了 agent，意味着每次任务都要重新生成测量逻辑，token 消耗与编译次数上升；而 agent 自建的回路若不够严格，reward hacking 与 fallback 会让正确率虚高——这是论文自己列出的失败模式。所以“非改不可”不是无条件的：它成立的前提是有一个同模型、同范围、可信的 goal-only 对照，并且这个对照要随 foundation model 的每次升级重新跑一遍。旧方案的真正危机在于，它连“自己的增益是否还成立”这个问题都没有机制去回答。</p>
+
+<h3>旧方案的三条路径与它们各自失效的地方</h3>
+<p>在一个真实的推理服务里，attention 的 fused kernel、RMSNorm、RoPE、MoE 的 dispatch/combine 这几个算子往往只占代码量的百分之几，却决定了整条链路的吞吐。传统做法有三条路径：手写 CUDA C++（或 CuTe/PTX 级手工调优）、调用 cuBLAS/cuDNN/FlashAttention 等库、以及用 Triton 写一版“够用”的实现。三者的共同前提是：性能来自专家知识——tiling 与 swizzle 的选择、shared memory 的 bank 冲突规避、warp 级 reduce 的指令编排、寄存器压力与 occupancy 的权衡。这些知识不在代码里，在人脑里，于是开发周期以“人周”计，且每次换 dtype、换 shape、换架构都要重来一遍。论文把这一现状概括为一句话：高性能 kernel 开发依赖专家知识，途径是手工实现、借助通用模型协作，或使用带领域知识、评测方法与搜索工作流的专用 agent。</p>
+<p>三条路径的失效条件各不相同，代价也不同。库调用路径的性能上限被库作者的通用性假设锁死：库必须覆盖一大类 shape，因此无法为某个 batch=1、head_dim=64 的窄情形做极端特化，服务端于是长期停留在“库给多少就用多少”。Triton 路径把 tiling 决策交给编译器启发式，遇到非规则规约或跨步访存时容易退化，工程师只能反复改 block size 试错，编译时间与迭代轮次成为隐性成本。手写路径上限最高，但正确性风险最大：一个 off-by-one 的边界判断在长序列尾部才暴露，而这类 bug 在离线小 shape 测试里不出现，直到生产流量打上来才炸。三条路径共享同一个结构性痛点——优化目标与约束没有被显式表达，工程师靠经验在脑内做搜索，搜索过程不可复现、不可审计，也无法在基础模型变强时自动受益。</p>
+<table class="mini"><thead><tr><th>路径</th><th>性能上限来源</th><th>主要代价</th><th>典型失效</th></tr></thead><tbody><tr><td>手写 CUDA/CuTe</td><td>专家对 tiling 与指令的精细控制</td><td>人周级周期、正确性回归风险</td><td>边界 shape 未覆盖，长尾输入出错</td></tr><tr><td>库调用</td><td>库作者预设的通用性</td><td>无法特化，收益封顶</td><td>窄 shape 下远低于 roofline</td></tr><tr><td>Triton</td><td>编译器启发式 + 手调 block</td><td>试错轮次、编译时间</td><td>非规则访存退化，需人工重写</td></tr></tbody></table>
+<p>把这件事量化成一个可判定的口径，就是论文采用的加速比与接受判据：</p>
+<div class="formula">$$\text{speedup}=\frac{T_{\text{base}}}{T_{\text{agent}}},\qquad \text{accept}=\mathbb{1}[\text{pass}\land s\ge 1]$$</div>
+<p>这个式子暴露了旧方案的系统代价：$T_{\text{base}}$ 的选择本身就是政治——若基线未开 TF32、未用最强库实现，任何新方案都会被高估；而 $\text{pass}$ 只要求“在给定输入上正确”，shape 特化与隐藏输入分布会让离线分数在生产上崩塌。更隐蔽的是 reward hacking 与 fallback 机制：候选在测时失败时回退到基线，正确率虚高而真实路径从未被执行。论文在 B200 上给出的对照是：JustGoal 在 10 个算子中的 8 个超过开源库，单算子几何平均加速 1.14x 到 2.34x；在 9 个有可比对象的算子里，5 个超过公开的最快专用 agent kernel。同一模型对照下，带专用机制的 KDA-0.5 harness 只达到 JustGoal 的 0.95x，而单机制消融显示领域知识与预定义流程没有一致收益。这说明旧方案的问题不在“知识不够多”，而在知识被固化进不可复用的流程里，一旦基础模型换代，这套固化的机器既不能自动升级，也无法被证明其增益。</p>
+<p class="paper-line">对应：papers/paper-2610-36434 · 第 1/9 部分</p>

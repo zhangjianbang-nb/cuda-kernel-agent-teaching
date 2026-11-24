@@ -1,0 +1,41 @@
+<h3>一 · 先把题干拆成三层：基准、生成、生产</h3>
+<p>《FastKernels》这个标题本身就是一个陷阱。读者看到“Benchmarking GPU Kernel Generation”会本能地把它归入 KernelBench 那一族——给一个算子描述，让模型写出 CUDA，跑正确性，测加速比。但标题里还挂着“in Production”，而题干问的是“跨硬件、跨 shape 或跨 dtype 迁移时最可能在哪里失效”。这两句话合起来，说明要读的不是“它比 KernelBench 多了哪些题”，而是“它把评测对象从单点 kernel 挪到了生产链路之后，哪些不变量被打破了”。拆题的第一步是把名词分层：<strong>基准层</strong>（题目集、正确性 oracle、性能度量口径）、<strong>生成层</strong>（agent 的输入表征、反馈信号、搜索预算）、<strong>生产层</strong>（真实负载的 shape 分布、dtype 组合、硬件代际、端到端时延占比）。三层各自有独立的失效模式，而“迁移”恰好是三层之间的接口处最容易断的地方。</p>
+<p>考点因此不是“复述它的 pipeline”，而是识别出：一个在固定硬件、固定 shape、固定 dtype 上被验证通过的 kernel，凭什么被认为可以迁移。这个“凭什么”就是整篇论文的隐含假设，也是题干要你攻击的靶心。解题路径应当是：先定位论文用什么机制把“生产”编码进基准（否则“生产”只是修辞），再检查该机制在跨硬件/跨 shape/跨 dtype 三个方向上是否携带了足够的信息来约束迁移，最后给出可执行的验证方案与回退条件。需要调用的公式集中在三处：roofline 的算术强度判据、正确性 oracle 的容差判据、以及端到端收益的 Amdahl 型分解。</p>
+
+<h3>二 · 考点一：基准的“生产性”是怎么被编码的</h3>
+<p>要判断迁移失效点，必须先弄清基准用什么载体表达“生产”。常见载体有三类：一是<strong>shape 采样</strong>——题目不再是单一 (M,N,K)，而是一个来自真实负载的分布，评测时按分布抽样；二是<strong>dtype 矩阵</strong>——同一算子给出 fp16/bf16/fp32/fp8 甚至混合精度的多组实例；三是<strong>硬件清单</strong>——在若干代 GPU 上分别跑，取某种聚合。这三类载体对应三种不同的“生产性”承诺，而它们的承诺强度差别很大。</p>
+<p>关键在于：如果基准只给出 shape 分布的<em>采样点</em>而不给出分布本身的结构（比如是否集中在某些 tile 边界、是否存在极端长尾），那么 agent 在训练/搜索阶段见到的 shape 与评测阶段见到的 shape 之间就存在分布偏移，而这种偏移在基准内部是不可见的。同理，dtype 矩阵若只标注“支持 fp8”，却不标注该 dtype 下的累加精度策略与溢出边界，那么正确性 oracle 的容差判据就失去了物理依据。这里要调用的是容差判据的形式：对浮点输出，通常用</p>
+<div class="formula">$$\ \|y_{\text{gen}} - y_{\text{ref}}\| \le \tau_{\text{abs}} + \tau_{\text{rel}}\cdot\|y_{\text{ref}}\|\ $$</div>
+<p>而 $\tau$ 的取值必须随 dtype 的尾数位宽缩放；若基准对所有 dtype 用同一组 $\tau$，那么 fp8 实例要么被过松放过（掩盖真实错误），要么被过紧误杀（把合法的重排/累加顺序差异判为错）。代价是双面的：过松会让错误 kernel 进入“通过”集合，污染后续的 RL 奖励信号；过紧会让 agent 把预算浪费在与数值顺序无关的微调上，编译与试跑时间被吞掉。一个具体例子：同一 reduction 算子，fp32 下换用不同的 warp 归约树会带来末位差异，若 $\tau_{\text{rel}}$ 取在 1e-6 量级，这类差异会被判错，agent 学到的“正确”其实是“与参考实现同序”，而非“数值正确”——这正是迁移到不同硬件（不同 warp 宽度、不同 shuffle 指令）时最先崩的地方。</p>
+
+<h3>三 · 考点二：跨硬件迁移失效的机制——occupancy 与指令组合的耦合</h3>
+<p>跨硬件是三个方向里最容易被低估的。表面上看，CUDA C++ 源码不变，编译到不同 SM 架构即可；但性能是否保持，取决于两个与硬件强耦合的量：<strong>occupancy 上限</strong>与<strong>指令级并行度</strong>。一个在 A 代 GPU 上通过调 register 用量把 occupancy 顶到某个档位的 kernel，到了 B 代 GPU 上，由于 SM 数量、每 SM 的 register file 大小、shared memory 容量、warp scheduler 数量都变了，同一个 launch config 会落到完全不同的 occupancy 区间。roofline 判据在这里给出的是上界而非实际值：</p>
+<div class="formula">$$\ P_{\text{bound}} = \min\left(P_{\text{peak}},\ \frac{I}{B_{\text{peak}}}\cdot P_{\text{peak}}\right),\quad I = \frac{\text{FLOPs}}{\text{Bytes}} $$</div>
+<p>其中 $I$ 是算术强度。问题在于 $I$ 由算法与 tile 策略决定，而 tile 策略往往是为某一代硬件的 shared memory 容量与 bank 宽度手工调出来的。迁移时若 tile 不变，$I$ 名义上不变，但实际可达带宽 $B$ 与峰值算力 $P_{\text{peak}}$ 的比例变了，roofline 拐点移动，原本“算力受限”的 kernel 可能变成“带宽受限”，此时继续按原 tile 调优就是南辕北辙。更隐蔽的是指令组合：PTX 层的 `ldmatrix`、`mma` 形状、`cp.async` 的可用性在不同代际间不同，Triton/CuTe 生成的低层代码若依赖某个特定指令的吞吐，迁移后该指令可能被模拟或吞吐减半，性能断崖而正确性无损——这类失效不会触发 oracle，只会体现在端到端时延上。</p>
+<p>验证方案应当是可判定的：对每个候选 kernel，在目标硬件上采集 NCU 的 occupancy 实际值与 memory throughput 占比，与源硬件的 profile 做逐项对比；若 occupancy 落入不同档位或 throughput 占比跨越 roofline 拐点，则标记为“迁移可疑”。回退条件是：当目标硬件的实测 $I$ 拐点相对源硬件偏移超过一个 tile 粒度所能补偿的范围时，放弃参数迁移，退回按目标硬件重新搜索 tile 与 launch config。代价是编译与 autotune 时间——每个硬件代际都要重跑搜索，token 预算与 wall-clock 都翻倍，这正是“生产”场景下不能无限承受的。</p>
+
+<h3>四 · 考点三：跨 shape 迁移失效的机制——边界条件与尾块</h3>
+<p>跨 shape 的失效点几乎总在边界。生产负载的 shape 分布有长尾：绝大多数请求落在几个热点 shape 上，但少量请求的维度不是 tile 的整数倍，或者小到无法填满一个 block。基准若按分布采样，热点 shape 会主导平均加速比，尾块 case 被稀释；而 agent 的搜索若以平均奖励为目标，就会系统性地忽略尾块路径。伪代码层面的机制是：</p>
+<ul>
+<li>kernel 内对 M/N/K 做 tile 划分，主体循环处理满 tile，尾部用 predicate 掩码或标量循环兜底；</li>
+<li>若生成器只优化主体路径（例如把 K 维展开成固定 unroll 因子），尾块的掩码分支会带来分支发散与额外访存；</li>
+<li>当 shape 缩小到小于一个 tile 时，整个 block 的并行度被浪费，occupancy 名义值高但有效 lane 极低。</li>
+</ul>
+<p>这里的代价是显存访问效率与有效算力利用率：尾块路径的带宽利用率通常远低于主体，且其耗时在端到端中占比随 shape 变小而上升。用 Amdahl 分解看端到端收益：</p>
+<div class="formula">$$\ S_{\text{e2e}} = \frac{1}{(1-f) + f/S_{\text{kernel}}} $$</div>
+<p>其中 $f$ 是该 kernel 在端到端时延中的占比，$S_{\text{kernel}}$ 是 kernel 级加速比。跨 shape 迁移时，热点 shape 的 $S_{\text{kernel}}$ 可能很高，但尾块 shape 的 $S_{\text{kernel}}$ 可能小于 1（比参考实现还慢），而尾块在请求计数上占比不小——于是按请求加权的端到端收益被拉低，而按平均 kernel 加速比看的基准却给出乐观结论。一个具体例子：一个 GEMM 在 M=4096 时达到很高加速比，在 M=1（decode 阶段的单 token 生成）时退化为带宽受限的 GEMV，原 tile 策略完全失效；若基准的 shape 分布里 M=1 的权重被低估，迁移到推理服务就会暴露。验证方案：按 shape 分桶报告加速比而非只报聚合值，并对每个桶单独检查尾块路径是否被覆盖；回退条件是当某桶的 $S_{\text{kernel}}&lt;1$ 且该桶请求占比超过阈值时，禁止把该 kernel 纳入生产，或强制走 fallback 路径。</p>
+
+<h3>五 · 考点四：跨 dtype 迁移失效的机制——累加精度与溢出边界</h3>
+<p>跨 dtype 的失效最不像“性能问题”，而像“正确性问题”，因此最危险。机制在于：低精度输入（fp16/bf16/fp8）在乘加时通常需要提升到 fp32 累加，而累加器的位宽、归约顺序、以及是否使用 tensor core 的混合精度模式，共同决定了结果的误差分布。若 agent 在 fp16 上验证通过，迁移到 fp8 时，输入尾数位宽从 10 位降到 3 位左右，动态范围急剧收缩，原本安全的累加策略会出现溢出或下溢。此时容差判据 $\tau$ 若仍按 fp16 标定，就会同时出现假阴性与假阳性。更细的机制是 scaling：fp8 需要 per-tensor 或 per-block 的 scale 因子，scale 的选择依赖输入分布，而输入分布随 shape 与负载变化——这意味着 dtype 迁移与 shape 迁移是耦合的，不能分开验证。</p>
+<p>代价体现在两处：一是正确性 oracle 的判定成本——对每个 dtype 组合都要重新标定 $\tau$ 并跑参考实现，验证时间随 dtype 矩阵规模线性增长；二是性能上的隐性损失——为保正确性而插入的 fp32 累加与 rescale 操作会增加寄存器压力与指令数，可能把 occupancy 拉低一档，从而抵消低精度带来的吞吐收益。一个具体例子：同一 attention 算子在 bf16 下用 fp32 累加通过验证，迁到 fp8 时若沿用同一累加器布局，softmax 前的 logits 动态范围可能超出 fp8 可表示区间，需要引入行级 scale；若生成器没有把 scale 作为可搜索维度，agent 就只能靠试错撞上，token 消耗大且不稳定。验证方案：对每个 dtype 单独建立误差包络（用参考实现的输出分布统计 $\tau$ 的合理区间），并在迁移时检查 scale 策略是否随 dtype 改变；回退条件是当目标 dtype 下误差包络与源 dtype 不重叠时，拒绝参数迁移，要求重新生成带 scale 的版本。</p>
+
+<h3>六 · 解题路径：把三个方向做成一张可判定的检查表</h3>
+<p>把上述考点收敛成一条可执行的读题路径，而不是泛泛而谈“要注意迁移”。第一步，定位基准中“生产性”的编码载体，判断它是 shape 采样、dtype 矩阵还是硬件清单，并检查该载体是否携带了分布结构信息——没有结构信息的载体，其迁移承诺是空的。第二步，对跨硬件方向，用 NCU 采集 occupancy 与 throughput 占比，对照 roofline 拐点是否移动；对跨 shape 方向，按桶报告 $S_{\text{kernel}}$ 并检查尾块路径覆盖；对跨 dtype 方向，重建误差包络并检查 scale 策略是否随 dtype 变化。第三步，把三个方向的判定结果代入端到端 Amdahl 分解，只有当每个桶、每个 dtype、每个硬件代际上的 $S_{\text{kernel}}$ 都不低于 1 且 oracle 通过时，才认为迁移成立。</p>
+<p>这张检查表的工程价值在于它把“最可能失效在哪里”变成了可观测的量：跨硬件看 occupancy 档位与 roofline 拐点，跨 shape 看尾块桶的加速比，跨 dtype 看误差包络重叠度。三者中，跨 dtype 的失效最隐蔽（正确性 oracle 可能漏判），跨 shape 的失效最容易被聚合指标掩盖，跨硬件的失效最容易被误认为“只是慢一点”。回退条件的统一形式是：任一维度上源域与目标域的可观测判据不重叠，即停止参数迁移，退回按目标域重新搜索——代价是编译与 autotune 的 wall-clock 与 token 预算，这正是生产场景必须显式计入的成本项，而不是可以忽略的调优开销。</p>
+
+<h3>迁移失效的判定边界：从“读题”到“验伪”的三道闸</h3>
+<p>《FastKernels》把考点从“能否写出一个能跑的 kernel”推进到“能否在生产约束下稳定复现收益”，因此读题时必须先拆出迁移维度：硬件（SM 架构、共享内存容量、L2 与 HBM 带宽比）、shape（归约长度、batch、tile 对齐）、dtype（fp32/fp16/bf16/fp8 的累加精度与向量化宽度）。这三者中任何一维变化，都会同时改变 roofline 拐点与正确性 oracle 的容差设定。解题路径不是直接调参，而是先给出“该 kernel 的算术强度下界”与“目标硬件的可达带宽上界”，再用 <span class="formula">$$I=\frac{2N_{flop}}{N_{byte}},\quad T_{\min}=\max\!\left(\frac{N_{flop}}{P_{peak}},\ \frac{N_{byte}}{B_{peak}}\right)$$</span> 判断迁移后是算力受限还是带宽受限——拐点一旦跨过，原先的 tiling 与流水深度就整体失效，而不是局部劣化。</p>
+<p>最可能失效的位置有三处，且失效模式不同。其一是 tile 尺寸与共享内存/寄存器预算的耦合：跨硬件时 SM 的 shared memory 上限与 register file 大小变化，原 tile 会从“刚好占满一个 SM”变成占用率骤降或直接编译失败，代价是 occupancy 掉档、时延抬升，且这种失效在正确性测试里完全不可见。其二是 dtype 迁移下的累加语义：fp16 输入配 fp32 累加在长归约上会引入可观测的舍入漂移，若 oracle 只做 allclose 而不做分块误差界，就会把“数值上可接受但分布尾部超差”的实现判为通过。其三是 shape 非对齐：当归约长度不是向量宽度的整数倍时，尾块处理分支会引入 warp 内分支发散，带宽利用率下降，而这一代价只在 NCU 的 sector 命中率与指令发射统计里显形，不在 wall-clock 单点测量里稳定复现。</p>
+<p>验证方案应做成“三段闸”：第一段用编译期静态检查（shared memory 用量、寄存器数、是否触发 spill）筛掉结构性失效，代价是编译时间与一次 ptxas 详细输出；第二段用固定随机种子的多 dtype、多 shape 网格做正确性 oracle，并对长归约额外计算分块误差上界，代价是 token 与运行时长；第三段用 NCU 采集 DRAM throughput、L2 hit rate 与 warp stall 分布，与 roofline 预测比对，偏差超过设定阈值即判定迁移失败。回退条件写成可执行判据：若实测带宽利用率低于预测值的既定比例，或寄存器 spill 字节数非零，或分块误差界被突破，则回退到原硬件/原 shape 的已验证配置，并把该维度标记为“不可迁移”，而不是继续在失效点上做多轮 RL 微调——后者会把算力浪费在搜索一个已被结构性排除的空间上。</p>
+<table class="mini"><thead><tr><th>迁移维度</th><th>典型失效机制</th><th>可观测代价</th><th>回退判据</th></tr></thead><tbody><tr><td>跨硬件</td><td>tile 超出 shared memory / 寄存器预算</td><td>occupancy 下降、编译失败</td><td>spill 非零或占用率低于阈值</td></tr><tr><td>跨 dtype</td><td>累加精度漂移、向量化宽度错配</td><td>尾部误差超界、吞吐减半</td><td>分块误差界被突破</td></tr><tr><td>跨 shape</td><td>尾块分支发散、对齐缺失</td><td>sector 命中率下降</td><td>实测带宽显著低于 roofline 预测</td></tr></tbody></table>
+<p class="paper-line">对应：exams/q-cuda-p14 · 第 1/2 部分</p>

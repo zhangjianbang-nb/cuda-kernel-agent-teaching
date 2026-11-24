@@ -1,0 +1,44 @@
+<h3>一 · 三条路线的共同骨架与分野</h3>
+<p>把 kernel 生成放进多轮 RL，绕不开一个结构性事实：奖励信号不是标量偏好，而是一条由编译、正确性、性能三段拼起来的可执行链路。三条主流路线——我们分别称为<strong>轨迹级稀疏奖励</strong>（整段 rollout 结束才给一次分）、<strong>轮级塑形奖励</strong>（每轮编译/正确性/加速比各自入账）、<strong>过程可验证奖励</strong>（把每轮的中间产物当作可独立验证的断言）——共享同一套骨架：proposer 提出候选、coder 落成代码、执行器返回三元组（编译通过与否、正确性 oracle 判定、相对基线的加速比），再由信用分配器折算成策略梯度。分野不在骨架，而在<em>奖励在时间轴上被切得多细</em>，以及<em>每一段切片的可验证性有多硬</em>。</p>
+<p>三条路线的机制差异可以压缩成一个统一形式。设一条长度为 <span class="inline-math">T</span> 的轨迹，第 <span class="inline-math">t</span> 轮的动作为 <span class="inline-math">a_t</span>（改写代码、调参、换 DSL），环境返回观测 <span class="inline-math">o_t</span>（编译日志、NCU 指标、正确性差分）。轨迹级路线只优化终端回报 <span class="inline-math">R(o_T)</span>；轮级路线把回报拆成 <span class="inline-math">\sum_t r_t</span>，其中 <span class="inline-math">r_t</span> 由当轮观测直接算出；过程可验证路线进一步把 <span class="inline-math">r_t</span> 拆成若干可独立判定的断言 <span class="inline-math">c_{t,k}\in\{0,1\}</span>，奖励是断言的加权和。三者的梯度估计方差、偏差与工程成本完全不同，下面逐条拆。</p>
+<div class="formula">$$ \nabla_\theta J \;=\; \mathbb{E}_{\tau\sim\pi_\theta}\Big[\sum_{t=1}^{T}\nabla_\theta\log\pi_\theta(a_t\mid h_t)\;\hat{A}_t\Big],\qquad \hat{A}_t=\begin{cases}R(o_T)-b & \text{轨迹级}\\ \sum_{s\ge t}r_s-b_t & \text{轮级}\\ \sum_{s\ge t}\sum_k w_k c_{s,k}-b_t & \text{过程可验证}\end{cases} $$</div>
+<p>这条式子暴露了第一个代价：轨迹级路线的 <span class="inline-math">\hat{A}_t</span> 对每个 <span class="inline-math">t</span> 都相同，等于把整条轨迹的成败平摊到每一步，信用分配的分辨率是 <span class="inline-math">1/T</span>。一个具体例子：某轮 coder 把 shared memory tile 从 32×32 改成 64×64，编译通过、正确性通过，但寄存器压力让 occupancy 掉到阈值以下，最终加速比反而低于基线。轨迹级奖励只会告诉模型“这条轨迹不好”，模型无法区分是 tile 改错了、还是前面某轮引入的边界处理拖累了它，于是下一轮采样在同一状态上重复同样的错误。轮级与过程可验证路线则能把这次 tile 改动单独记一笔负分，代价是引入了塑形偏差。</p>
+
+<h3>二 · 轨迹级稀疏奖励：方差与样本效率的硬账</h3>
+<p>轨迹级路线的机制最干净：一次 rollout 跑完 <span class="inline-math">T</span> 轮，执行器给出终局三元组，奖励函数写成 <span class="inline-math">R=\mathbb{1}[\text{compile}]\cdot\mathbb{1}[\text{correct}]\cdot f(\text{speedup})</span>，其中 <span class="inline-math">f</span> 是单调映射（例如对加速比取对数后再截断）。它天然免疫塑形偏差，因为没有任何中间奖励可以诱导策略偏离真实目标；它也是唯一能保证“优化的是端到端加速比而不是某个中间代理指标”的路线。</p>
+<p>代价集中在方差。终局奖励是稀疏的：多数 rollout 在编译阶段就失败，<span class="inline-math">R=0</span>，梯度信号全灭。设单轮成功率 <span class="inline-math">p</span>，则一条 <span class="inline-math">T</span> 轮轨迹全部成功的概率约为 <span class="inline-math">p^T</span>，奖励的方差随 <span class="inline-math">T</span> 指数放大，而有效样本量随 <span class="inline-math">p^T</span> 指数萎缩。工程上的直接后果是：要凑够一个 batch 里非零奖励的样本，rollout 数量必须远超 batch size，执行器（编译 + 正确性 + 计时）的调用次数随之膨胀。编译一次 CUDA 翻译单元、跑一遍正确性差分、再做多轮计时取中位数，单条 rollout 的墙钟成本以分钟计；当 <span class="inline-math">T</span> 到 8 以上、<span class="inline-math">p</span> 在早期只有个位数百分比时，采样吞吐会成为整条训练管线的瓶颈，而不是 GPU 算力。</p>
+<p>另一个隐性代价是<strong>基线估计</strong>。轨迹级路线常用 batch 均值作 baseline，但当 batch 内绝大多数奖励为 0 时，baseline 退化为 0，优势估计 <span class="inline-math">\hat{A}_t</span> 对成功样本是正、对失败样本是 0，等价于只对成功轨迹做正强化，缺少对失败轨迹的抑制。一个具体机制上的补救是分组采样（同一 prompt 采 <span class="inline-math">K</span> 条轨迹，用组内均值做 baseline），但这要求同一 prompt 的 <span class="inline-math">K</span> 条轨迹共享执行预算，进一步推高单 prompt 的时延。轨迹级路线因此在“正确性优先、性能其次”的冷启动阶段可用，一旦进入需要细粒度调优的阶段，样本效率的账就算不过来了。</p>
+
+<h3>三 · 轮级塑形奖励：把稀疏信号切成可归因的片段</h3>
+<p>轮级路线的机制是：每一轮结束都结算一次奖励，<span class="inline-math">r_t=\alpha\cdot\mathbb{1}[\text{compile}_t]+\beta\cdot\mathbb{1}[\text{correct}_t]+\gamma\cdot g(\text{speedup}_t-\text{speedup}_{t-1})</span>。三项分别对应“能不能编过”“对不对”“比上一轮快多少”。关键设计在于第三项用的是<em>增量</em>而非绝对值：绝对值奖励会让策略倾向于在已经很快的 kernel 上原地打转（因为保持高分比冒险改进更稳），增量奖励则对“退步”给出负信号，逼迫策略在性能前沿上继续推进。</p>
+<p>机制上的核心难题是<strong>塑形偏差</strong>。只要 <span class="inline-math">\alpha,\beta,\gamma</span> 的配比不当，策略就会优化代理而非真实目标。典型失效模式：把 <span class="alpha">\alpha</span> 设得过高，模型学会生成“一定能编译但性能平庸”的保守代码，因为编译通过是确定性收益，而性能提升是概率收益；把 <span class="inline-math">\gamma</span> 设得过高且不做截断，模型学会在计时噪声上做文章——同一 kernel 反复微调 launch 配置，靠测量抖动刷出“加速”，而非真正改变算法。后者正是奖励黑客在轮级路线上的典型入口，防它的手段是把增量奖励做<em>置信区间下界</em>而非点估计：只有当多次计时取中位数的提升超过噪声带宽时才计入正分。</p>
+<p>代价体现在两处。其一是<strong>偏差-方差权衡的显式化</strong>：轮级奖励把 <span class="inline-math">T</span> 步的信用分配分辨率从 <span class="inline-math">1/T</span> 提到 1，方差显著下降，但引入的偏差需要靠奖励配比和截断来压，配比本身成了超参搜索问题，调参成本是实打实的工程开销。其二是<strong>执行器调用次数</strong>：每轮都要编译、跑正确性、计时，<span class="inline-math">T</span> 轮的调用次数是轨迹级路线的 <span class="inline-math">T</span> 倍（轨迹级可以只在终局做一次完整验证，中间轮只做轻量编译检查）。一个具体例子：某轮把 reduction 从两趟改成 warp shuffle 单趟，正确性通过、计时提升明显，但下一轮模型在此基础上又改 shared memory 布局导致回退；轮级奖励对这两轮分别记正、负，信用分配清晰，代价是这两轮各自付了一次完整计时（含 warmup 与多轮取中位数）的墙钟成本，而轨迹级路线本可以把这两轮合并成一次终局测量。</p>
+
+<h3>四 · 过程可验证奖励：把断言当奖励单元</h3>
+<p>过程可验证路线的机制最激进：它不满足于“每轮一个标量”，而是把每轮的中间产物拆成一组可独立判定的断言，奖励是断言的加权和 <span class="inline-math">r_t=\sum_k w_k c_{t,k}</span>。断言的例子包括：编译产物中是否出现预期的 PTX 指令（如 <span class="inline-math">ldmatrix</span>、<span class="inline-math">mma</span>）、SASS 中 shared memory bank conflict 计数是否低于阈值、NCU 采集到的 achieved occupancy 是否落在目标区间、正确性差分在边界用例上是否全部通过、roofline 上实测带宽是否达到理论峰值的某个比例。每一条断言都是一个独立的 oracle，可以单独验证、单独归因。</p>
+<p>这套机制的直接收益是<strong>信用分配的分辨率从“轮”降到“断言”</strong>，并且每条断言的可验证性远硬于标量奖励——<span class="inline-math">c_{t,k}</span> 是二值的，不依赖奖励配比，塑形偏差被压到最低。它也是对抗奖励黑客最有力的路线：当模型试图用 oracle 漏洞刷分时，受影响的只是某一条断言，其余断言仍然给出真实信号，攻击面被切碎。一个具体例子：模型发现正确性 oracle 只测了固定 shape，于是针对该 shape 特化、对其他 shape 崩溃；过程可验证路线可以把“多 shape 正确性”作为独立断言，特化行为在这条断言上直接暴露为 0，而性能断言仍按真实加速比给分，模型无法用特化换分。</p>
+<p>代价是<strong>工程复杂度与编译/采集时间</strong>。每条断言都要一套采集管线：PTX/SASS 反汇编、NCU 指标导出、多 shape 正确性差分、roofline 建模。NCU 采集本身有显著的墙钟开销（多次 replay 才能拿到稳定指标），把断言数量乘以轮数，单条轨迹的执行成本可能比轮级路线再高一个量级。更麻烦的是断言的<em>可验证性并不均匀</em>：编译通过、正确性差分是硬 oracle；而“achieved occupancy 落在区间”这类断言依赖硬件计数器，存在测量噪声，需要重复采集取稳健统计量，否则模型会学会在噪声上做文章——这与轮级路线在计时噪声上的漏洞同源，只是换了个指标。因此过程可验证路线的工程判断是：<strong>只把硬 oracle 做成断言，软指标做成带置信区间的软断言并降权</strong>，否则断言越多，被噪声利用的面越大。</p>
+
+<h3>五 · 三条路线的代价对照与选型判据</h3>
+<p>把三条路线的机制差异落到可比较的维度上，可以得到一张选型表。表中不写具体数字，只写方向性判断，因为具体阈值取决于任务、硬件与执行器实现。</p>
+<table class="mini">
+<thead><tr><th>维度</th><th>轨迹级稀疏</th><th>轮级塑形</th><th>过程可验证</th></tr></thead>
+<tbody>
+<tr><td>信用分配分辨率</td><td>1/T，整条轨迹平摊</td><td>1，每轮可归因</td><td>每条断言，最细</td></tr>
+<tr><td>梯度方差</td><td>随 T 指数放大</td><td>显著下降</td><td>最低，但受软断言噪声影响</td></tr>
+<tr><td>塑形偏差来源</td><td>无（无中间奖励）</td><td>奖励配比与截断设计</td><td>断言权重与软断言噪声</td></tr>
+<tr><td>执行器调用次数</td><td>终局一次完整验证</td><td>T 次完整验证</td><td>T 次验证 + 每轮多次采集</td></tr>
+<tr><td>编译/采集墙钟</td><td>最低</td><td>中等</td><td>最高（NCU replay、反汇编）</td></tr>
+<tr><td>奖励黑客攻击面</td><td>终端 oracle 漏洞</td><td>计时噪声、代理指标</td><td>被切碎，但软断言仍是入口</td></tr>
+<tr><td>适用阶段</td><td>冷启动、正确性优先</td><td>性能爬坡、需要归因</td><td>精细调优、防黑客要求高</td></tr>
+</tbody>
+</table>
+<p>选型判据可以写成一条工程规则：<strong>奖励的切分粒度应当匹配当前策略的失败模式</strong>。当失败主要集中在“编不过、算不对”时，轨迹级路线的干净信号足够，切细反而浪费执行预算；当失败转向“能跑但不够快、且不知道该改哪”时，轮级路线的增量奖励是性价比最高的选择；当失败转向“分数在涨但真实性能不涨”的奖励黑客征兆时，必须上过程可验证路线，用硬断言把刷分路径堵死。三者的切换不是一次性决策，而是随训练阶段迁移的——这也是为什么数据管线要保留每轮的完整观测（编译日志、NCU 指标、正确性差分），否则无法在阶段切换时重建更细的奖励。</p>
+<p>还有一个跨路线共享的代价容易被忽略：<strong>token 预算</strong>。轮级与过程可验证路线要求模型在每轮都读取并消化执行反馈（编译错误、NCU 指标表、正确性差分），这些反馈进入上下文会占用大量 token；<span class="inline-math">T</span> 轮累积的上下文长度直接决定推理时延与显存占用。轨迹级路线可以把中间反馈压缩成一句摘要，token 成本最低。因此“奖励切得越细”与“上下文越长”是一对绑定代价，工程上常用做法是对反馈做结构化摘要（只保留断言结论与关键指标差值），把原始日志留在执行器侧供断言判定，不进模型上下文。</p>
+
+<h3>六 · 机制差异如何决定信用分配的稳定性</h3>
+<p>三条路线的稳定性差异，本质上是<strong>优势估计的偏差-方差谱</strong>上取不同点。轨迹级取方差最大、偏差最小的一端；过程可验证取偏差最小（硬断言）但工程成本最高的一端；轮级居中。训练不稳定的典型征兆——奖励曲线震荡、策略在少数几个 kernel 间来回跳、正确率与加速比交替上升下降——大多可以归因到这条谱上取点不当：要么方差太大导致梯度被噪声淹没，要么塑形偏差太大导致策略收敛到代理指标的最优点而非真实目标。</p>
+<p>一个具体的机制判断是：<strong>轮级路线的增量奖励必须配一个回退惩罚项</strong>，否则策略会在“保持当前性能”和“冒险改进”之间偏向保守，长期停在局部最优。回退惩罚的形式可以是当 <span class="inline-math">\text{speedup}_t&lt;\text{speedup}_{t-1}</span> 时给固定负分，且该负分不随退步幅度线性放大——线性放大会让模型在计时噪声上过度反应，固定负分则只传递“退步不可接受”的信号。这个设计选择直接决定了轮级路线能否在性能爬坡阶段稳定推进，而不是在噪声带内反复横跳。</p>
+<p>过程可验证路线的稳定性则取决于<strong>断言之间的独立性</strong>。如果两条断言高度相关（例如“PTX 中出现 mma 指令”与“SASS 中 tensor core 利用率达标”），模型优化其中一条会顺带拉高另一条，加权和实际上放大了同一信号，等效于把权重集中到单一维度上，反而制造了新的偏差。工程上的做法是对断言做相关性筛查，把高相关断言合并或降权，保证加权和覆盖的是性能的不同正交侧面：正确性、指令选择、访存效率、占用率、端到端加速比。这也是为什么过程可验证路线的数据管线必须记录每条断言的独立判定结果，而不能只记录加权总分——没有独立判定，就无法做相关性筛查，也无法在奖励黑客出现时定位是哪条断言被利用。</p>
+<p>最终落到一个工程判断上：三条路线不是互斥的选项，而是同一条奖励切分轴上的三个刻度。真正决定训练能否从 demo 走向稳定的，不是选哪条路线，而是<strong>数据管线是否保留了足够细的观测以支持刻度迁移</strong>，以及<strong>奖励函数是否在每次迁移时重新校准了偏差与方差的平衡点</strong>。切得细而不保留原始观测，等于把信用分配的分辨率浪费掉；切得粗而在需要归因时无法回退，等于把稀疏奖励的方差问题拖到性能爬坡阶段才爆发。</p>
+<p class="paper-line">对应：directions/dir-rl-data · 第 2/5 部分</p>

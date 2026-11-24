@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2611-15506",
+ "_domain": "cuda",
+ "_title": "KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels",
+ "_abstract_only": true,
+ "title_zh": "KernelAudit: Contract-Aware Auditing of Validators for LLM-G",
+ "background": "这篇论文发表于 2026 年（arXiv:2611.15506），属于 正确性 oracle 与形式验证 方向。它要回答的问题是：The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or reject a generated ke",
+ "problem": "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or reject a generated kernel candidate against the contracts of the given kernel-generation task), whose",
+ "core_idea": "However, an existing validator suffers from various limitations, e.g., wrongly accepting a candidate due to missing its forbidden library use or wrongly rejecting a candidate due to determining its permitted library use as forbidden (constraints on library use",
+ "architecture": "To assess the quality of a validator against the given task contracts, we propose an independent-audit approach for the validator by (1) construction of audit oracle: labeling a candidate as PASS or FAIL based on three separate dimensions in our proposed contract model (i.e., semantic correctness, i",
+ "pipeline": [
+  "读取《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（However, an existing validator suffers from various limitati）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{FRR}=\\frac{\\#\\{\\text{correct}\\to\\text{reject}\\}}{\\#\\{\\text{correct}\\}},\\qquad \\text{FAR}=\\frac{\\#\\{\\text{wrong}\\to\\text{accept}\\}}{\\#\\{\\text{wrong}\\}}$$",
+ "training": "论文给出的优化/训练配方：For semantic correctness, reference-calibrated stress tests check output correctness on valid inputs for a candidate. For implementation integrity, reference and candidate execution traces are used to determine specific library uses.",
+ "walkthrough": "一次完整流程：先读取《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：To assess the quality of a validator against the given task contracts, we propose an independent-audit approach for the validator by (1) construction of audit oracle: labeling a candidate as PASS or FAIL based on three s",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "For implementation integrity, reference and candidate execution traces are used to determine specific library uses. For measurement integrity, timing checks assess whether the reported runtime reflects the full time needed to complete the candidate's computation.",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or r",
+  "However, an existing validator suffers from various limitations, e.g., wrongly accepting a candidate due to missing its forbidden library use or wrongly rejecti",
+  "To assess the quality of a validator against the given task contracts, we propose an independent-audit approach for the validator by (1) construction of audit o"
+ ],
+ "limitations": [
+  "《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "For semantic correctness, reference-calibrated stress tests check output correctness on valid inputs for a candidate. For implementation integrity, reference and candidate execution traces are used to determine specific ",
+ "summary": "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or reject a generated kernel candidate against the contracts of the given kernel-generation task), whose results inform reward assignment, candidate selection, and speedup claims during kernel generation. However, an existing validator suffers ",
+ "data_recipe": [
+  "评测负载：《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "The effectiveness of generating GPU kernels driven by a large language model (LLM) is highly dependent on the quality of the used validator (used to accept or reject a generated kernel candidate against the contracts of ",
+  "However, an existing validator suffers from various limitations, e.g., wrongly accepting a candidate due to missing its forbidden library use or wrongly rejecting a candidate due to determining its permitted library use ",
+  "To assess the quality of a validator against the given task contracts, we propose an independent-audit approach for the validator by (1) construction of audit oracle: labeling a candidate as PASS or FAIL based on three s",
+  "For semantic correctness, reference-calibrated stress tests check output correctness on valid inputs for a candidate.",
+  "For implementation integrity, reference and candidate execution traces are used to determine specific library uses.",
+  "For measurement integrity, timing checks assess whether the reported runtime reflects the full time needed to complete the candidate's computation.",
+  "We apply our approach to assess the quality of six validators and 716 candidates from seven corpora, including constructed controls.",
+  "The evaluation results show that our approach helps assess the existing six validators to have nontrivial false-reject rates."
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《KernelAudit: Contract-Aware Auditing of Validators for LLM-Generated GPU Kernels》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-oracle-formal"
+}

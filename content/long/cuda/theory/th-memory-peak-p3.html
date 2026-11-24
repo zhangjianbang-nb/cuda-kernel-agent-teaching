@@ -1,0 +1,40 @@
+<h3>一 · 公式成立的前提：静态单流、同步分配、无复用</h3>
+<p>峰值公式 $M_{\text{peak}}=M_{\text{in}}+M_{\text{out}}+\max_{\text{stage}}M_{\text{tmp}}(\text{stage})$ 之所以可写成闭式，依赖三个未言明的前提。第一，执行是单流串行的：任一时刻只有一个 stage 在分配临时缓冲，因此“各阶段取最大值”而非“各阶段求和”才是正确的聚合方式。第二，分配与释放是同步且确定的：临时缓冲在进入 stage 时分配、离开 stage 时释放，allocator 不保留空闲块，于是 $\max_{\text{stage}}$ 恰好对应真实的时间峰值。第三，输入输出张量在整个执行期间常驻，不与临时缓冲共享地址空间。</p>
+<p>这三条中任意一条被打破，公式的语义就从“峰值”退化为“峰值的一个下界或上界”。工程上最常见的破坏者是 allocator 的缓存行为：PyTorch caching allocator 在 free 之后并不把显存还给驱动，而是留在池中供后续复用。于是测量工具看到的 reserved 显存是历史高水位，而 allocated 显存是当前活跃量，两者之差正是被缓存掩盖的部分。若不做 <code>torch.cuda.reset_peak_memory_stats()</code> 并在测量前清空缓存池，单次测量得到的 $M_{\text{peak}}$ 会把上一次迭代的残留算进来，导致同一 kernel 在不同调用顺序下报出不同峰值。</p>
+<p>代价体现在测量可信度而非运行时延：一次错误的峰值读数会让调度器误判并发预算，把本可并行的请求串行化，直接损失吞吐。具体例子：某生成 kernel 在 stage 2 分配一块与 $M_{\text{in}}$ 同量级的临时缓冲做转置，若前一次调用的同尺寸缓冲仍在池中，allocator 直接复用而不新增 reserved，测量到的峰值比真实需求低一整块 $M_{\text{in}}$；反向情形则是池中碎片导致新分配触发 cudaMalloc，reserved 瞬间跳高。两种偏差方向相反，说明“测一次就信”在这个模型下不成立。</p>
+
+<h3>二 · 失效条件一：峰值随 shape 与 batch 漂移</h3>
+<p>$M_{\text{tmp}}$ 不是常量，它是 shape 的函数。以分块矩阵乘为例，临时缓冲通常正比于 tile 数量与每 tile 的累加器大小，而 tile 数量又随 $M,N,K$ 变化；某些实现为了减少同步会一次性物化全部 tile 的部分和，此时 $M_{\text{tmp}}\propto \lceil M/B_m\rceil\cdot\lceil N/B_n\rceil$，随 batch 线性增长。于是单 shape 测量得到的峰值只是该 shape 上的一个点，不能外推到其他 shape。</p>
+<div class="formula">$$M_{\text{tmp}}^{\text{worst}}=\max_{s\in\mathcal{S}}M_{\text{tmp}}(s),\quad \mathcal{S}=\{\text{线上实际出现的 shape 集合}\}$$</div>
+<p>正确的预算约束应当用 $\mathcal{S}$ 上的最坏值，而不是某个基准 shape 的测量值。这与 KernelBench 系基准的默认评测方式存在结构性冲突：基准通常固定一组 shape 逐条打分，而生产流量是长尾分布，尾部 shape 的峰值可能数倍于基准 shape。KernelBench-Verified 的发现——28% 的核增加了峰值内存——正是在这种“基准 shape 通过、生产 shape 挤压预算”的缝隙里产生的。</p>
+<p>代价是显存而非时延：一个在基准 shape 上峰值余量充足的 kernel，遇到长尾 shape 时可能直接 OOM，或在动态批处理下被迫降低并发度。具体例子：attention 类 kernel 在短序列上临时缓冲很小，但序列长度翻倍时若实现采用“一次性物化整条 score 矩阵”的策略，$M_{\text{tmp}}$ 随序列长度平方增长，峰值从可忽略跃升为主导项。这类 kernel 在固定短序列基准上得分很高，部署到长上下文服务时却成为并发预算的主要消耗者。工程判断是：峰值评测必须覆盖 shape 分布的尾部，或者至少报告 $M_{\text{tmp}}$ 随关键维度的增长阶，让调度侧知道预算随负载如何漂移。</p>
+
+<h3>三 · 失效条件二：多流并发下峰值叠加</h3>
+<p>单流假设一旦打破，$\max_{\text{stage}}$ 就不再是聚合算子。多流并发执行时，各流的临时缓冲在时间上重叠，总峰值接近各流峰值之和（减去可复用的公共部分）。若调度器按单流峰值乘以并发数估算预算，会系统性低估。</p>
+<div class="formula">$$M_{\text{peak}}^{\text{multi}}\approx\sum_{i=1}^{k}M_{\text{peak}}^{(i)}-\Delta_{\text{share}}$$</div>
+<p>其中 $\Delta_{\text{share}}$ 是流间可共享的输入输出张量部分，实践中往往远小于各流临时缓冲之和，因此近似为求和是保守但可用的上界。真正的风险在于 CUDA graph 与 stream capture：capture 期间 allocator 行为受限于 graph 的内存池语义，临时缓冲不能在 capture 边界外复用，峰值可能比 eager 模式更高。这意味着同一个 kernel 在 eager 下测得的峰值不能直接用于 graph 模式的预算规划。</p>
+<p>代价是并发度：低估峰值会让调度器在显存实际耗尽时才触发 OOM，而此时已无法优雅降级；高估则浪费预算、压低并发。具体例子：服务端把 decode 与 prefill 放在两条流上重叠执行，decode 的 KV cache 常驻、prefill 的临时缓冲巨大，两者峰值叠加后超过单流预算的估算值，导致原本设计的并发批次被迫减半。工程上的做法是把峰值预算拆成“常驻项 + 并发项”，常驻项按最坏 shape 计，并发项按流数线性放大并留出 graph 池的额外开销。</p>
+
+<h3>四 · 规模上限：临时缓冲的增长阶决定可用规模</h3>
+<p>公式本身不限制规模，但 $M_{\text{tmp}}$ 的增长阶决定了 kernel 在多大范围内可用。若 $M_{\text{tmp}}$ 对某个维度是线性的，则规模翻倍时峰值翻倍，预算约束 $M_{\text{peak}}\le M_{\text{budget}}$ 给出一个硬上限；若是平方增长，上限会低得多且对 shape 极其敏感。这就是“用更大中间缓冲换速度”这一策略的边界：它只在 $M_{\text{budget}}$ 尚有富余时成立。</p>
+<p>把预算约束改写为对规模的可解形式，可以得到一个粗略的规模上限估计：设 $M_{\text{tmp}}(n)=c\cdot n^{\alpha}$，则 $n\le\left((M_{\text{budget}}-M_{\text{in}}-M_{\text{out}})/c\right)^{1/\alpha}$。$\alpha=1$ 时上限随预算线性放宽，$\alpha=2$ 时上限随预算开方放宽，预算翻四倍才能让规模翻倍。这个指数就是工程判断的核心：它告诉你在给定显存下，这个 kernel 能服务多长的序列、多大的 batch。</p>
+<p>代价是编译期与运行期的双重约束：为降低 $\alpha$ 而引入分块流式实现，会增加循环层数与同步点，编译时间与指令数上升，单次迭代时延可能变差；而保持 $\alpha=2$ 的物化实现虽然快，却在规模上被预算卡死。具体例子：某归一化 kernel 为提速把整行统计量物化，$M_{\text{tmp}}$ 随行宽线性增长，在长行场景下峰值超过 KV cache 的剩余预算，服务端只能限制最大行宽，等于给模型能力加了硬上限。此时正确的优化方向不是继续压时延，而是把物化改为分块累加，用少量额外同步换取 $\alpha$ 从 1 降到接近常数。</p>
+
+<h3>五 · 何时该放弃公式：动态分配与外部碎片</h3>
+<p>还有一类失效不来自 shape 或流，而来自分配器状态。当 kernel 内部使用动态并行、设备端 malloc，或依赖框架的异步分配器时，临时缓冲的分配时机不由 host 侧代码决定，$\max_{\text{stage}}$ 无法在编译期或调度前算出。此时公式退化为事后测量工具，只能用于回归检测，不能用于预算规划。</p>
+<p>外部碎片是更隐蔽的失效源：即使总空闲显存足够，碎片化也会让一次大块临时分配失败。峰值公式只统计字节数，不建模地址空间连续性，因此它给出的“预算够用”判断在碎片场景下可能是错的。工程上的缓解是把大临时缓冲改为预分配的固定池，把峰值从“运行时才知道”变成“启动时即确定”，代价是池尺寸需要按最坏 shape 预留，牺牲了一部分弹性。</p>
+<p>具体例子：一个采用设备端动态分配的多阶段 kernel，在空载时峰值读数正常，但在长时间服务后由于反复分配释放不同尺寸的块，地址空间碎片化，同一 shape 的请求开始偶发分配失败。此时公式没有失效在数值上，而是失效在“字节数足够即安全”这一隐含假设上。判断标准很直接：若临时缓冲尺寸在编译期可知且可预分配，公式可用于预算；若尺寸依赖运行时数据或分配时机不可控，则必须改用池化或把峰值测量作为准入门槛而非规划依据。</p>
+
+<h3>边界不在公式里，而在 allocator 与并发拓扑里</h3>
+<p>把峰值内存写成 <span class="formula">$$M_{\text{peak}}=M_{\text{in}}+M_{\text{out}}+\max_{\text{stage}}M_{\text{tmp}}(\text{stage})\le M_{\text{budget}}$$</span> 之后，工程上最容易犯的错是把“max over stage”当成静态常量去填表。这个式子的成立前提其实有三条隐含假设：其一，临时缓冲的生命周期严格嵌套在单个 stage 内，stage 之间不复用同一块地址；其二，allocator 在测量窗口内不保留已释放的块；其三，被测流是唯一占用显存的执行体。任何一条被打破，公式给出的就不是上界而是下界——它系统性低估真实峰值。KernelBench-Verified 报告 28% 的核增加了峰值内存，这个比例本身就是“公式在多数生成样本上仍成立、但在相当一部分上失效”的直接证据：失效不是边缘情况，而是生成式优化的常见副作用。</p>
+<p>第一条假设的失效最隐蔽。生成 kernel 常用“更大的中间缓冲换速度”这一策略：把归约或转置拆成两段，中间落一块 <code>[B, H, S]</code> 量级的 fp32 暂存，换取合并访存与更少的同步。此时 <code>M_tmp</code> 不再是某个 stage 的瞬时峰值，而是跨 stage 的驻留量，<code>max_stage</code> 的取法必须改成“按地址区间求并集后的高水位”，即对每个分配区间做区间图着色，峰值等于最大团权重而非最大单区间。代价是可计算的：多一块 <code>B·H·S·4</code> 字节的驻留，在 decode 阶段直接等价于可容纳的 KV cache 页数下降，并发 batch 上限被压缩。一个具体例子：attention 融合核若为省一次 re-read 而落一份 <code>[B, H, S, D]</code> 的中间注意力分数，序列长度翻倍时这块缓冲按平方增长，而 <code>M_in + M_out</code> 只按线性增长——公式的 max 项从“常数”变成“主导项”，预算约束的可行域急剧收缩。</p>
+<p>第二条假设要求测量前重置 allocator 统计。CUDA caching allocator 在 <code>free</code> 后并不归还驱动，块留在 pool 里等待复用，因此 <code>torch.cuda.max_memory_allocated</code> 与 <code>max_memory_reserved</code> 会给出两个不同的数，前者看不到 pool 里的碎片，后者看不到跨流复用。真实峰值应当以 reserved 高水位为准，并在每次测量前清空 pool、关闭跨迭代复用，否则同一 shape 重复跑会得到单调下降的假峰值。这里的代价是测量时延：重置与冷启动使单次 profile 的墙钟时间上升，NCU 采集窗口变长，采样开销本身会扰动被测量的核；对短核而言，profile 的固定开销可能超过核的执行时间，测出来的“峰值”其实是测量工具的峰值。</p>
+<p>第三条假设在多流并发下彻底崩溃。各流独立测量得到的 <code>M_peak</code> 不能相加后直接与预算比较，因为流间存在时间重叠：真实峰值是各流分配区间在时间轴上的并集高水位，而不是各自峰值的算术和。工程判断应当落在“并发拓扑决定上界”：若两条流在时间上完全错开，峰值取 max；若完全重叠，峰值取 sum；实际调度介于两者之间，取决于 stream priority 与依赖图。规模上限也由此确定——<code>M_budget</code> 减去 <code>M_in + M_out</code> 后的余量必须同时覆盖最坏重叠窗口内的临时缓冲总和，而不是单个核的 <code>max_stage</code>。当 batch 与 shape 变化时，这个余量的可行区间随 <code>B</code> 线性收缩，超过某个 batch 后任何“用缓冲换速度”的改写都不再可行，此时优化方向必须从空间换时间转为重计算或分块流式处理。</p>
+<table class="mini"><thead><tr><th>假设</th><th>失效触发条件</th><th>观测到的偏差方向</th><th>系统代价</th></tr></thead><tbody><tr><td>stage 内嵌套生命周期</td><td>跨 stage 驻留中间缓冲</td><td>低估，max 项被当成常量</td><td>KV cache 页数与并发预算被挤压</td></tr><tr><td>allocator 不保留块</td><td>未重置 pool、跨迭代复用</td><td>低估，重复测量单调下降</td><td>profile 冷启动时延与采样扰动</td></tr><tr><td>单流独占</td><td>多流并发、依赖图重叠</td><td>低估，峰值应按区间并集计</td><td>最坏重叠窗口决定可行 batch 上限</td></tr></tbody></table>
+
+<h3>峰值预算公式的适用边界与失效条件</h3>
+<p>公式 $M_{\text{peak}}=M_{\text{in}}+M_{\text{out}}+\max_{\text{stage}}M_{\text{tmp}}(\text{stage})\le M_{\text{budget}}$ 成立的前提是：输入输出张量在整个执行期间常驻、临时缓冲按阶段串行复用、且测量时的 allocator 状态与线上一致。一旦生成 kernel 走的是“用更大中间缓冲换速度”的路线——例如把归约拆成两趟、把 attention 的 online softmax 换成先物化完整 score 矩阵再归一化——$M_{\text{tmp}}$ 就从可忽略的常数项变成主导项，此时公式的 max 算子必须按真实 stage 边界逐段测量，而不能用单个 kernel 的静态 shared memory 声明去估算。KernelBench-Verified 观察到 28% 的核增加了峰值内存，这类核在离线基准里往往因时延更优而被判为“更好”，但放到线上就是另一回事。</p>
+<p>失效的第一类条件是 shape 与 batch 依赖。$M_{\text{tmp}}$ 通常随 $B\cdot S\cdot H$ 或 $B\cdot H\cdot d$ 线性甚至二次增长，单 shape 测量会系统性低估：在小 batch 上测出的峰值余量，换到长序列或大 batch 时会被临时缓冲吃光。工程上应把预算判据写成对 shape 的函数而非标量，至少覆盖线上 P99 的序列长度与并发 batch，并对 $M_{\text{tmp}}$ 做解析上界推导（按 tile 数与流水级数相乘）再与实测交叉验证。</p>
+<p>第二类失效来自 allocator 缓存。PyTorch caching allocator 会保留已释放的 block，使 <code>max_memory_allocated</code> 与 <code>max_memory_reserved</code> 分离；若在测量前不重置统计、不执行 <code>empty_cache</code>，前一轮的碎片会把真实峰值掩盖成“看起来够用”。代价是显存驻留（reserved 高于 allocated）挤压 KV cache 与并发预算，即使 allocated 峰值达标，reserved 仍可能让并发度掉档。</p>
+<p>第三类是多流并发叠加。单流测得的 $M_{\text{peak}}$ 不能直接乘以流数当作上界，因为各流的临时缓冲生命周期可能重叠，也可能因同步点错开；正确做法是在目标并发配置下测聚合峰值，并把 $M_{\text{budget}}$ 按“每流预算 × 并发流数 + 共享池”拆分。规模上限由此确定：当 $\max_{\text{stage}}M_{\text{tmp}}$ 与 $M_{\text{in}}+M_{\text{out}}$ 同量级时，公式退化为对临时缓冲的精细管理问题，任何“先物化再裁剪”的写法都必须先证明其 stage 峰值不超过预算，否则优化收益会被并发度下降抵消。</p>
+<p class="paper-line">对应：theory/th-memory-peak · 第 3/5 部分</p>

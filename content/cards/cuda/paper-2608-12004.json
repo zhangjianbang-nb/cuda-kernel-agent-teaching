@@ -1,0 +1,74 @@
+{
+ "_paper_id": "paper-2608-12004",
+ "_domain": "cuda",
+ "_title": "RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks",
+ "_abstract_only": true,
+ "title_zh": "RealisticTritonBench: A Benchmark for Triton-Kernel Generati",
+ "background": "这篇论文发表于 2026 年（arXiv:2608.12004），属于 基准与可信评测 方向。它要回答的问题是：In modern AI frameworks, GPU kernels are key to overall system performance.",
+ "problem": "In modern AI frameworks, GPU kernels are key to overall system performance. Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels.",
+ "core_idea": "Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels. Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual eff",
+ "architecture": "Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert kernel developers. Several benchmarks evaluate LLM-generated Triton kernels.",
+ "pipeline": [
+  "读取《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》定义的输入、参考实现与评测口径",
+  "按论文方法生成或搜索候选 kernel（Combining usability, portability, and near-handwritten CUDA ）",
+  "编译候选并在论文给定的输入分布上做正确性检查",
+  "用统一基线测量时延、加速比与资源占用",
+  "按反馈筛选或改写候选，输出可复现的最优结果"
+ ],
+ "formula": "$$\\text{score}=\\frac{1}{N}\\sum_{i=1}^{N}\\mathbb{1}[s_i\\ge\\tau],\\qquad s_i=\\frac{T_{\\text{base},i}}{T_{\\text{cand},i}}$$",
+ "training": "论文给出的优化/训练配方：Several benchmarks evaluate LLM-generated Triton kernels. However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real-world Triton tasks; (2) they evaluate o",
+ "walkthrough": "一次完整流程：先读取《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》的参考实现与基准口径；再按论文方法生成候选；编译后在给定输入上做正确性检查；用统一基线测量时延与加速比；最后按反馈保留或回退候选。论文摘要强调：Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert kernel developers. Several benchmarks evaluate LLM-generated Tr",
+ "pseudocode": "读取参考实现 到 生成候选 到 编译 到 正确性检查 到 profile 到 保留/回退",
+ "experiments": {
+  "datasets": [
+   "《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》使用的基准/算子集合（摘要级，详见论文）"
+  ],
+  "baselines": [
+   "PyTorch eager / torch.compile / 论文指定的库实现"
+  ],
+  "results": "However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real-world Triton tasks; (2) they evaluate only individual-kernel performance rather than end-to-end performance, the core criterion for real-",
+  "limits": "仅摘要级，未读全文；具体实验细节与消融未核验",
+  "ablations": "摘要未给出完整消融"
+ },
+ "innovation": [
+  "In modern AI frameworks, GPU kernels are key to overall system performance.",
+  "Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels.",
+  "Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert ker"
+ ],
+ "limitations": [
+  "《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》的结论只在论文给定的硬件、基线与输入分布上成立",
+  "仅摘要级，未读全文；数字为论文声称，未独立复现",
+  "跨硬件、跨 dtype、跨框架迁移未验证"
+ ],
+ "impact": "Several benchmarks evaluate LLM-generated Triton kernels. However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real",
+ "summary": "In modern AI frameworks, GPU kernels are key to overall system performance. Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels. Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert kernel developers. Several benchmarks e",
+ "data_recipe": [
+  "评测负载：《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》的基准题/算子集合",
+  "基线：PyTorch eager、torch.compile 与论文指定库",
+  "输入分布：按论文口径（摘要未给出全部 shape）",
+  "指标：正确率、加速比、资源占用（按论文口径）"
+ ],
+ "train_recipe": [
+  "工具链：按论文（CUDA / Triton / CuTe / PTX）",
+  "反馈：编译、运行与 profile 结果回灌",
+  "验证：正确性门 + 性能门",
+  "部署：先在离线基准复现，再做端到端回归"
+ ],
+ "facts": [
+  "In modern AI frameworks, GPU kernels are key to overall system performance.",
+  "Combining usability, portability, and near-handwritten CUDA performance, Triton is widely adopted for implementing GPU kernels.",
+  "Recent advances show the potential of large language models (LLMs) to automatically generate Triton kernels, reducing the manual effort required from expert kernel developers.",
+  "Several benchmarks evaluate LLM-generated Triton kernels. However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real",
+  "However, they suffer from three key limitations: (1) they restrict tasks to PyTorch-to-Triton translation, failing to reflect the diversity and complexity of real-world Triton tasks; (2) they evaluate only individual-ker",
+  "To address these limitations, we introduce RealisticTritonBench, the first benchmark to derive Triton kernel generation tasks from real-world pull requests in popular AI frameworks, enabling realistic, production-like ev",
+  "RealisticTritonBench systematically extracts PRs that modify Triton kernels from popular open-source AI frameworks and transforms them into generation tasks with concrete engineering contexts.",
+  "Each task takes a natural language requirement as input and requires a corresponding Triton kernel implementation, with a complete and reproducible evaluation environment."
+ ],
+ "anchors": [],
+ "pitfalls": [
+  "《RealisticTritonBench: A Benchmark for Triton-Kernel Generation in Real-World AI Frameworks》的基线若未开 TF32/未用最强库，加速比会被高估",
+  "shape 特化与隐藏输入分布会让离线分数在生产上崩塌",
+  "reward hacking / fallback 会让正确率虚高"
+ ],
+ "direction": "dir-bench-trust"
+}

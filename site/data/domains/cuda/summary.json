@@ -1,0 +1,100 @@
+{
+ "external_review": "内容由本地模型按论文事实卡生成，经脚本断言与人工抽样复核；未做外部同行评审",
+ "sections": [
+  {
+   "title": "基准与可信评测",
+   "body": "如何构建能区分「能跑」与「真快、真对、真可迁移」的 GPU kernel 评测基准，并量化评测器自身的误判率？ KernelBench 系基准普遍存在正确性 oracle 过松、基线选择随意、测速口径不统一的问题；若不先校准评测器，后续 RL 奖励与 agent 反馈都会被污染，整个领域的结论不可复现。 近两年进展：2026 年出现 KernelBenchX、AgentKernelArena 等扩展基准，把泛化性与 agent 行为纳入评测；KernelBench-Verified 与 Measuring the Checker 用变异分析暴露 oracle 假阳性，SOL-ExecBench 引入硬件极限归一化，评测从「通过率」转向「可信度+可迁移性」双口径。"
+  },
+  {
+   "title": "Agent 脚手架与执行反馈",
+   "body": "agent 如何组织多轮编译-运行-profile-改写循环，把硬件执行反馈转化为可执行的优化决策而非盲目试错？ kernel 优化是搜索问题，反馈信号稀疏且噪声大（计时抖动、编译失败、寄存器溢出）；脚手架设计直接决定样本效率与最终性能，是工程落地的核心瓶颈。 近两年进展：CudaForge 与 Kernel Forge 把硬件反馈做成 agent 一等公民；微剖面工具作为专家代理（Micro-Profiling）替代人工调参；Warpline 用二进制级追踪统一证据链；DSL 约束与预算感知搜索显著降低无效编译次数。"
+  },
+  {
+   "title": "多轮 RL 与可验证奖励",
+   "body": "如何设计多轮 RL 的奖励函数与数据管线，使 kernel 生成在正确性约束下持续提升性能，而非奖励黑客或退化？ kernel 奖励天然可验证（编译+正确性+加速比），但奖励稀疏、多轮信用分配困难、易被 oracle 漏洞利用；这是把 agent 能力从 demo 推向稳定的关键。 近两年进展：Kevin 与 CUDA-L1/L2 证明多轮 RL 可超越 cuBLAS；Dr. Kernel 修正 Triton RL 的奖励设计缺陷；CUDA Agent 做大规模 agentic RL；LEAP 用自适应剪枝降低环境反馈成本；KernelZero 让 proposer 与 coder 协同演化。"
+  },
+  {
+   "title": "正确性 oracle 与形式验证",
+   "body": "如何为 LLM 生成的 GPU kernel 提供超越随机测试的正确性保证，覆盖边界条件、批不变性与数值误差？ 「正确性幻觉」普遍存在：随机测试通过但边界/批组合下出错；生产部署要求可审计的正确性契约，否则性能收益不可信。 近两年进展：Correctness Illusion 系统揭示随机测试的盲区；KernelAudit 对验证器做契约感知审计；God Does Not Play Dice 强制批不变性；KernelBench-Verified 复核「超越 PyTorch」的真实性，正确性从通过率转向可审计契约。"
+  },
+  {
+   "title": "生产端到端部署",
+   "body": "LLM 生成的 kernel 在真实模型与真实负载中能带来多少端到端收益，如何跨越微基准与生产之间的鸿沟？ 微基准加速比常被调度开销、内存布局、框架集成吞掉；只有 trace 驱动、端到端闭环的评测才能回答「是否值得部署」，这是产业落地的最后一公里。 近两年进展：FastKernels 与 trace 驱动基准把评测搬到生产负载；How Much of a Real Workload 量化微基准到端到端的收益衰减；LLM4LLM 建立基准到部署的闭环；KernelOPT 引入分发感知搜索，端到端收益成为核心指标。"
+  },
+  {
+   "title": "硬件感知 DSL 与 profile",
+   "body": "如何用 Triton/CuTe/PTX 等硬件感知 DSL 与 NCU/SASS profile 把架构特性（tensor core、TMA、warp 调度）编码进生成与优化流程？ 性能上限由硬件细节决定，而 LLM 缺乏架构感知；DSL 提供可组合抽象，profile 提供证据，二者结合才能逼近 SOL，而非停留在高层 API 调参。 近两年进展：CuTeGen 用 agent 生成高性能 CuTe kernel；PTXBench 评测架构特定 PTX 优化；RealisticTritonBench 把 Triton 生成放进真实框架；TileBench 做受控瓶颈诊断；KernelFoundry 做硬件感知演化搜索。"
+  },
+  {
+   "title": "kernel agent 主线",
+   "body": "把六个方向的共同动作抽出来：基准决定「什么算快」，oracle 决定「什么算对」，反馈决定「下一轮怎么改」，搜索/RL 决定「能走多远」，生产评测决定「值不值得上线」。任何一个环节的口径变化，都会在正确率、加速比、token 成本与端到端曲线上留下可观测的拐点。"
+  }
+ ],
+ "comparisons": [
+  {
+   "headers": [
+    "方向",
+    "核心问题",
+    "代表论文数"
+   ],
+   "rows": [
+    [
+     "基准与可信评测",
+     "如何构建能区分「能跑」与「真快、真对、真可迁移」的 GPU kernel 评测基准，并量化评测器自身的误判率？",
+     "5"
+    ],
+    [
+     "Agent 脚手架与执行反馈",
+     "agent 如何组织多轮编译-运行-profile-改写循环，把硬件执行反馈转化为可执行的优化决策而非盲目试错？",
+     "5"
+    ],
+    [
+     "多轮 RL 与可验证奖励",
+     "如何设计多轮 RL 的奖励函数与数据管线，使 kernel 生成在正确性约束下持续提升性能，而非奖励黑客或退化？",
+     "5"
+    ],
+    [
+     "正确性 oracle 与形式验证",
+     "如何为 LLM 生成的 GPU kernel 提供超越随机测试的正确性保证，覆盖边界条件、批不变性与数值误差？",
+     "5"
+    ],
+    [
+     "生产端到端部署",
+     "LLM 生成的 kernel 在真实模型与真实负载中能带来多少端到端收益，如何跨越微基准与生产之间的鸿沟？",
+     "5"
+    ],
+    [
+     "硬件感知 DSL 与 profile",
+     "如何用 Triton/CuTe/PTX 等硬件感知 DSL 与 NCU/SASS profile 把架构特性（tenso",
+     "5"
+    ]
+   ]
+  }
+ ],
+ "trends": [
+  "基准与可信评测：2026 年出现 KernelBenchX、AgentKernelArena 等扩展基准，把泛化性与 agent 行为纳入评测；KernelBench-Veri",
+  "Agent 脚手架与执行反馈：CudaForge 与 Kernel Forge 把硬件反馈做成 agent 一等公民；微剖面工具作为专家代理（Micro-Profiling）替代人工调参；W",
+  "多轮 RL 与可验证奖励：Kevin 与 CUDA-L1/L2 证明多轮 RL 可超越 cuBLAS；Dr. Kernel 修正 Triton RL 的奖励设计缺陷；CUDA Agent"
+ ],
+ "open_problems": [
+  "基准与可信评测：正确性 oracle 的假阴/假阳难以同时压低，变异测试成本高",
+  "基准与可信评测：不同 GPU 架构与测速工具导致跨论文数字不可比",
+  "Agent 脚手架与执行反馈：profile 数据到改写动作的映射缺乏可学习中间表示",
+  "Agent 脚手架与执行反馈：编译失败与计时噪声使反馈信号信噪比低"
+ ],
+ "future": [
+  "可信评测会成为 agent 的准入门槛，而不是论文附录",
+  "可验证奖励与形式/合约验证会合流，reward hacking 的空间被压缩"
+ ],
+ "learning_order": [
+  "基准与可信评测",
+  "Agent 脚手架与执行反馈",
+  "多轮 RL 与可验证奖励",
+  "正确性 oracle 与形式验证",
+  "生产端到端部署",
+  "硬件感知 DSL 与 profile",
+  "Roofline 可达上界",
+  "SOL 归一化评分口径",
+  "Launch 开销与批量摊销"
+ ]
+}

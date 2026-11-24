@@ -1,0 +1,46 @@
+<h3>一 · 奖励公式的逐项拆解与量纲对齐</h3>
+<p>公式的第一项是编译奖励 <span class="formula-inline">\(r_t^{\text{compile}}\)</span>，它只取两个离散值：本轮代码被 nvcc 或 Triton 编译器接受则记正，否则记零或负。这一项的关键不在取值，而在它与后续项的量纲对齐。若编译奖励取 1.0，而性能项 <span class="formula-inline">\(\alpha\cdot(T_{t-1}-T_t)/T_{\text{ref}}\)</span> 在典型加速比下只有 0.05 量级，则策略梯度几乎全部被编译信号占据，模型会学到“只要能编译就停手”的退化解。量纲对齐的做法是把编译奖励压到与单轮性能增益同阶：设 <span class="formula-inline">\(\alpha\)</span> 使得一次典型轮次的加速比贡献约为 0.3～0.5，则编译奖励取 0.2 左右，正确性奖励取 0.5 左右，三者之和在单轮内不超过 1，使折扣因子 <span class="formula-inline">\(\gamma\)</span> 的作用不被某一项淹没。</p>
+<p>正确性项 <span class="formula-inline">\(r_t^{\text{correct}}\)</span> 是稀疏的布尔信号，但它必须与编译项解耦：编译通过而正确性失败是长程修复行为的主要来源，若把二者合并为单一“成功”奖励，模型就失去了“编译过了但算错了”这一中间状态的梯度。工程上把正确性判定做成三态——通过、数值不符、未执行（因编译失败）——未执行态记零而非负，避免在编译失败时叠加双重惩罚导致梯度爆炸。</p>
+<p>性能项的分母 <span class="formula-inline">\(T_{\text{ref}}\)</span> 是归一化锚点，分子是相邻两轮的时延差。这里有一个容易忽略的推导关键步：用 <span class="formula-inline">\(T_{t-1}-T_t\)</span> 而非 <span class="formula-inline">\(T_{\text{base}}-T_t\)</span>，意味着奖励度量的是<strong>边际改进</strong>而非绝对水平。若用绝对水平，一个已经接近 SOL 的 kernel 在后续轮次无论怎么微调都拿不到奖励，模型学不到“收敛后停止扰动”的行为；用边际差则天然鼓励持续改进，但也引入一个问题：当 <span class="formula-inline">\(T_t > T_{t-1}\)</span>（本轮变慢）时该项为负，若负值过大，模型会学到“不敢改”的保守策略。裁剪该项到 <span class="formula-inline">\([-c, +c]\)</span> 是必要的，<span class="formula-inline">\(c\)</span> 取典型单轮加速比上限的一半。</p>
+<div class="formula">$$R(\tau)=\sum_{t=1}^{T}\gamma^{t-1}\left(r_t^{\text{compile}}+r_t^{\text{correct}}+\alpha\cdot\frac{T_{t-1}-T_t}{T_{\text{ref}}}\right)$$</div>
+<p>折扣因子 <span class="formula-inline">\(\gamma\)</span> 的取值直接决定“长程”的边界。若 <span class="formula-inline">\(\gamma=0.99\)</span>，第 10 轮的奖励权重约为 0.9，第 30 轮降到 0.74；若 <span class="formula-inline">\(\gamma=0.95\)</span>，第 10 轮只剩 0.6，第 30 轮不足 0.21。多轮 kernel 优化的典型轨迹长度在 5～20 轮，<span class="formula-inline">\(\gamma\)</span> 取 0.95～0.98 使末端轮次仍有可感知的梯度，同时让早期编译失败不至于主导整条轨迹。代价是：<span class="formula-inline">\(\gamma\)</span> 越接近 1，回报的方差越大，因为长轨迹上的随机编译波动被完整累加，需要更大的 batch 才能稳定估计梯度，直接抬升 rollout 的 GPU 时延与 token 开销。</p>
+<p>具体例子：某轨迹第 3 轮编译失败（<span class="formula-inline">\(r^{\text{compile}}=0\)</span>，正确性未执行记 0），第 4 轮修复后编译通过且正确（0.2+0.5），时延从 1.8ms 降到 1.2ms，<span class="formula-inline">\(T_{\text{ref}}=1.0\)</span>ms、<span class="formula-inline">\(\alpha=0.4\)</span>，性能项为 <span class="formula-inline">\(0.4\times0.6=0.24\)</span>。第 4 轮单轮奖励 0.94，经 <span class="formula-inline">\(\gamma^3\)</span> 折扣后仍是轨迹回报的主要贡献——这正是把修复行为纳入梯度的机制所在。</p>
+
+<h3>二 · 目标函数中 KL 项的位置与梯度推导</h3>
+<p>目标函数写作 <span class="formula-inline">\(\mathcal{L}=-\mathbb{E}_{\tau\sim\pi_\theta}[R(\tau)]+\beta\,\text{KL}(\pi_\theta\|\pi_{\text{ref}})\)</span>，注意 KL 项在期望之外、以显式正则形式出现，而非塞进奖励里做逐 token 惩罚。这一写法对应的是“轨迹级”KL：对整条轨迹的分布做约束，而不是对每个生成 token 单独约束。推导的关键一步在于把 <span class="formula-inline">\(\mathbb{E}_{\tau\sim\pi_\theta}[R(\tau)]\)</span> 对 <span class="formula-inline">\(\theta\)</span> 求梯度时使用 log-derivative trick：</p>
+<div class="formula">$$\nabla_\theta\mathbb{E}_{\tau\sim\pi_\theta}[R(\tau)]=\mathbb{E}_{\tau\sim\pi_\theta}\left[R(\tau)\nabla_\theta\log\pi_\theta(\tau)\right]$$</div>
+<p>而 <span class="formula-inline">\(\log\pi_\theta(\tau)=\sum_t\log\pi_\theta(a_t\mid s_t)\)</span>，于是梯度落到每个轮次的动作上，乘以该轮之后所有奖励的折扣和——这正是 <span class="formula-inline">\(R(\tau)\)</span> 作为轨迹级标量进入逐 token 梯度的桥梁。工程实现上不会真的对整条轨迹做一次大梯度，而是用 GAE 或回报-to-go 把轨迹回报分解到每个动作，避免方差随轨迹长度线性增长。</p>
+<p>KL 项的梯度是 <span class="formula-inline">\(\beta\nabla_\theta\text{KL}(\pi_\theta\|\pi_{\text{ref}})\)</span>，它把策略拉向参考策略。这里有一个必须说清的代价：<span class="formula-inline">\(\beta\)</span> 过大时，策略几乎不动，多轮 RL 退化为对参考模型的采样评估，分量奖励学不到；<span class="formula-inline">\(\beta\)</span> 过小时，策略在少数高奖励轨迹上过拟合，出现“刷编译通过”的退化解。判别 <span class="formula-inline">\(\beta\)</span> 是否合适的信号不是 KL 数值本身，而是 held-out 算子上的迭代效率——若训练算子上回报上升而 held-out 上轮次不降，说明策略在记忆特定算子的修复套路而非学到通用调试行为。</p>
+<p>另一个推导细节：KL 项与奖励项的量纲必须匹配。若 <span class="formula-inline">\(R(\tau)\)</span> 的量级在 1～3，KL 的典型值在 0.01～0.1 量级，则 <span class="formula-inline">\(\beta\)</span> 取 0.01～0.1 才能使两项在同一数量级上博弈。若不做量纲匹配，<span class="formula-inline">\(\beta\)</span> 的调参就变成盲调。具体例子：某轮策略在编译失败后倾向于生成极短的补丁（token 数骤降），这是典型的 KL 崩坏前兆——策略分布急剧偏离参考分布以规避长输出的编译风险，此时 KL 项会快速上升，若 <span class="formula-inline">\(\beta\)</span> 不足以压制，后续轮次的正确率会系统性下滑。</p>
+
+<h3>三 · 伪代码：从轨迹采集到分量奖励落盘</h3>
+<p>可实现的多轮 rollout 循环必须把“生成—编译—运行—判定—记奖励”五步做成一个原子轮次，任何一步失败都不能中断轨迹，而是以零奖励继续下一轮。伪代码思路如下：</p>
+<ul>
+<li>初始化状态 <span class="formula-inline">\(s_0\)</span> 为算子规格与参考实现，<span class="formula-inline">\(T_0\)</span> 设为基线时延或无穷大（首轮无上轮可比，性能项记零）。</li>
+<li>对 <span class="formula-inline">\(t=1\ldots T\)</span>：策略采样动作 <span class="formula-inline">\(a_t\)</span>（代码补丁或整段 kernel），记录 log-prob。</li>
+<li>编译 <span class="formula-inline">\(a_t\)</span>：成功则 <span class="formula-inline">\(r^{\text{compile}}=c_1\)</span>，失败则记 0 并跳过运行，<span class="formula-inline">\(T_t=T_{t-1}\)</span>（时延不变，性能项为零）。</li>
+<li>运行正确性 oracle：通过则 <span class="formula-inline">\(r^{\text{correct}}=c_2\)</span>，否则记 0；无论通过与否都测时延（错误 kernel 的时延不可信，仅在通过时更新 <span class="formula-inline">\(T_t\)</span>）。</li>
+<li>性能项按 <span class="formula-inline">\(\alpha\cdot\text{clip}((T_{t-1}-T_t)/T_{\text{ref}},-c,c)\)</span> 计算，仅在正确性通过时非零。</li>
+<li>把 <span class="formula-inline">\((s_t,a_t,\text{logprob},r_t)\)</span> 追加到轨迹缓冲；轨迹结束（达到轮次上限或连续若干轮无改进）后计算折扣回报。</li>
+</ul>
+<p>这里有一个实现上的关键取舍：正确性未通过时是否更新 <span class="formula-inline">\(T_t\)</span>。若更新，一个数值错误的 kernel 可能因为“跑得快”而拿到正性能奖励，直接诱导模型生成不检查正确性的快速错误实现。因此性能项必须以正确性为门控，这是防作弊合约校验在奖励层的对应物。代价是：门控使错误轨迹的性能信号完全丢失，修复轮次的梯度只能来自编译与正确性两项，收敛更慢，需要更多 rollout 才能覆盖“先修错再提速”的行为模式。</p>
+<p>轨迹缓冲的显存代价不可忽略：每轮存代码 token、编译日志摘要、正确性判定、时延，一条 20 轮轨迹的文本量在数千 token 量级，batch 取数十条时缓冲占用与一次前向的激活量同阶。工程上对编译日志只存结构化摘要（错误码、行号、错误类型），不存全文，否则日志文本会淹没代码 token 的梯度。</p>
+
+<h3>四 · 误差来源分解与方差控制</h3>
+<p>多轮 RL 的回报估计误差有三个来源，必须分开处理。第一是<strong>时延测量噪声</strong>：单次运行的时延受 GPU 频率、缓存状态、其他进程干扰，同一 kernel 重复测量的标准差可达均值的百分之几。若性能项直接用单次测量，<span class="formula-inline">\(T_{t-1}-T_t\)</span> 的符号可能在噪声内翻转，模型学到的是噪声而非改进。做法是每轮取多次运行的中位数，并把 <span class="formula-inline">\(T_{\text{ref}}\)</span> 设为该算子基线的稳定测量值，使性能项的分辨率高于噪声。</p>
+<p>第二是<strong>回报方差随轨迹长度增长</strong>。折扣回报是 T 个随机项的和，方差近似随 T 线性增长，而梯度估计的信噪比随方差平方根下降。缓解手段是回报-to-go 加基线：用同 batch 内同轮次位置的平均回报做基线，减去后只保留优势项。这一步不改变期望，但显著降低方差，代价是需要更大的 batch 来估计基线，rollout 的 GPU 时延成比例上升。</p>
+<p>第三是<strong>正确性 oracle 的假阴/假阳</strong>。浮点比较的容差设置不当会让接近正确的 kernel 被判错，奖励信号出现系统性偏移。若容差过松，错误 kernel 拿到正确性奖励，模型学到“差不多就行”；若过紧，合法优化（如改变累加顺序）被判错，模型学到“不敢重排计算”。这一项的误差不体现在单条轨迹上，而体现在策略分布的漂移方向上，只能靠变异测试审计 checker 来定位。</p>
+<p>具体例子：某轨迹连续三轮时延测量为 1.20、1.19、1.21ms，噪声水平约 0.02ms。若性能项不做中位数平滑，第二轮拿到正奖励、第三轮拿到负奖励，模型在这两轮上学到的是相互矛盾的信号；平滑后三轮视为持平，性能项为零，梯度只来自编译与正确性，行为更稳定。代价是平滑需要每轮多跑数次 kernel，单轮 wall-clock 时延上升，训练吞吐下降。</p>
+
+<h3>五 · 分量权重的敏感性分析与工程判据</h3>
+<p>三个分量奖励的权重 <span class="formula-inline">\((c_1,c_2,\alpha)\)</span> 不是超参装饰，而是直接决定策略收敛到哪个行为模式。做敏感性分析时不必扫全网格，只需看两个比值：编译奖励与正确性奖励之比 <span class="formula-inline">\(c_1/c_2\)</span>，以及正确性奖励与单轮性能上限之比 <span class="formula-inline">\(c_2/(\alpha c)\)</span>。前者小于 1 时，模型倾向于“先保证编译过再谈正确”；前者大于 1 时，模型倾向于生成语法正确但语义可疑的代码以快速拿分。后者决定模型是否愿意在正确性通过后继续调优：若性能上限远小于正确性奖励，模型在通过正确性后就失去改进动力，轨迹在第 2～3 轮就停滞。</p>
+<table class="mini"><thead><tr><th>权重比值</th><th>策略倾向</th><th>可观测代价</th></tr></thead><tbody><tr><td><span class="formula-inline">\(c_1/c_2&lt;1\)</span></td><td>先修编译再修正确性</td><td>轨迹变长，rollout 时延上升</td></tr><tr><td><span class="formula-inline">\(c_1/c_2>1\)</span></td><td>刷编译通过，正确性滞后</td><td>held-out 正确率下滑</td></tr><tr><td><span class="formula-inline">\(c_2/(\alpha c)\gg1\)</span></td><td>通过即停，不调优</td><td>终态时延接近基线，SOL 利用率低</td></tr><tr><td><span class="formula-inline">\(c_2/(\alpha c)\ll1\)</span></td><td>冒险提速，正确性不稳</td><td>错误轨迹增多，负样本占比上升</td></tr></tbody></table>
+<p>工程判据是：在训练早期监控每条轨迹的“首次正确轮次”与“末轮时延”两个统计量。若首次正确轮次下降但末轮时延不降，说明权重把模型推向了快速通过而非持续优化，应调高 <span class="formula-inline">\(\alpha\)</span> 或降低 <span class="formula-inline">\(c_2\)</span>；若末轮时延下降但首次正确轮次上升，说明模型在冒险，应反向调整。这两个统计量比总回报更能反映行为模式，因为总回报可以被单一分量主导而掩盖另一分量的退化。</p>
+<p>具体例子：某配置下 <span class="formula-inline">\(c_1=0.5,c_2=0.5,\alpha=0.1\)</span>，模型在 3 轮内普遍编译通过，但末轮时延只比基线快一成，SOL 阈值从未触及。把 <span class="formula-inline">\(\alpha\)</span> 提到 0.4 后，末轮时延改进明显，但错误轨迹占比上升——这正是权重敏感性的直接体现，调参不是找最优点而是找行为模式的平衡点。</p>
+
+<h3>六 · 失败轨迹的负样本利用与裁剪边界</h3>
+<p>失败轨迹保留用于负样本学习，但“保留”不等于“等权使用”。一条全程编译失败的轨迹，其回报接近零或为负，若直接进入梯度，会以较大幅度压低产生该轨迹的动作概率，可能把模型推向另一个极端——过度保守、只生成模板化代码。裁剪的作用就在这里：对每条轨迹的回报做 <span class="formula-inline">\(\text{clip}(R(\tau),-R_{\max},R_{\max})\)</span>，限制单条轨迹对梯度的最大贡献，使失败轨迹提供方向性信号而非毁灭性惩罚。</p>
+<p>裁剪边界的选取有一个推导依据：<span class="formula-inline">\(R_{\max}\)</span> 应不小于一条“全成功且持续改进”轨迹的回报，否则成功轨迹也被裁剪，正负样本的区分度丢失。同时 <span class="formula-inline">\(R_{\max}\)</span> 不应远大于该值，否则失败轨迹的负回报被过度压缩，负样本学不到东西。工程上取 <span class="formula-inline">\(R_{\max}\)</span> 为理论最大回报的八成左右，留出头部空间给罕见的高回报轨迹。</p>
+<p>负样本的另一个用途是诊断而非训练：统计失败轨迹的失败类型分布（编译错误、数值不符、超时），若某一类占比异常上升，说明奖励权重把模型推向了该失败模式。这一步不进入梯度，但为权重调整提供依据。代价是诊断需要额外解析编译日志与正确性输出，增加每轮的后处理时延；若日志只存摘要，诊断粒度受限，只能看到错误类型而看不到具体行号。</p>
+<p>具体例子：某 batch 中一条轨迹在第 1 轮编译失败后连续 5 轮重复同类错误，回报被裁剪到负边界。若不做裁剪，这条轨迹的梯度会把“生成该类代码”的概率压到接近零，连带压制了相邻的正确写法；裁剪后它只提供温和的负信号，模型仍保留探索空间。这正是多轮 RL 与单轮 RL 在信用分配上的分野：单轮只看终态，失败轨迹只有一条；多轮里失败轨迹的每一轮都是一个可归因的决策点，裁剪保护的是这些决策点上的探索多样性。</p>
+<p class="paper-line">对应：algorithms/alg-multi-turn-rl-kernel · 第 3/8 部分</p>

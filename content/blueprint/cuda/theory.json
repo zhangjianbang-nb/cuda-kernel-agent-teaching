@@ -1,0 +1,455 @@
+{
+ "theory": [
+  {
+   "id": "th-roofline-attainable",
+   "title": "Roofline 可达上界",
+   "direction": "dir-hw-dsl-profile",
+   "plain": "一个 kernel 的实测吞吐不会超过两条斜线中的较小者：带宽受限时被 HBM 字节数卡住，算力受限时被峰值 FLOPS 卡住，二者交点决定算术强度门槛。",
+   "formula": "$$P_{\\text{att}}(I)=\\min\\left(P_{\\text{peak}},\\; I\\cdot B_{\\text{eff}}\\right),\\qquad I=\\frac{\\text{FLOP}}{\\text{Byte}},\\; \\text{attain}=\\frac{P_{\\text{meas}}}{P_{\\text{att}}(I_{\\text{meas}})}\\in[0,1]$$",
+   "limits": [
+    "算术强度 I 必须按实际 DRAM 流量（含写回、padding、重复读）计算，用逻辑字节数会高估上界",
+    "P_peak 需取该指令组合（如 FP32 FMA 与 INT 混合）的实测峰值，而非规格书标称值"
+   ],
+   "variables": [
+    {
+     "sym": "P_att",
+     "meaning": "给定算术强度下的可达性能上界（FLOP/s 或 Byte/s）"
+    },
+    {
+     "sym": "I",
+     "meaning": "算术强度，每字节 DRAM 流量对应的浮点运算数"
+    },
+    {
+     "sym": "B_eff",
+     "meaning": "实测可持续 HBM 带宽（GB/s）"
+    },
+    {
+     "sym": "P_peak",
+     "meaning": "该指令组合的实测峰值算力（TFLOP/s）"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-sol-normalized",
+   "title": "SOL 归一化评分口径",
+   "direction": "dir-bench-trust",
+   "plain": "把实测时间除以硬件 Speed-of-Light 时间得到 SOL 分数，跨 kernel、跨形状可比；但 SOL 时间本身依赖一个“最优实现”假设，口径不同分数不可比。",
+   "formula": "$$\\text{SOL}=\\frac{T_{\\text{SOL}}}{T_{\\text{meas}}},\\qquad T_{\\text{SOL}}=\\max\\left(\\frac{\\text{Byte}_{\\text{min}}}{B_{\\text{eff}}},\\;\\frac{\\text{FLOP}_{\\text{min}}}{P_{\\text{peak}}}\\right)$$",
+   "limits": [
+    "Byte_min 与 FLOP_min 的计数规则（是否计中间张量、是否允许融合）必须固定，否则 SOL 分数不可跨论文比较",
+    "T_SOL 未计入不可消除的 launch 与同步开销，小 kernel 上 SOL 可超过 1"
+   ],
+   "variables": [
+    {
+     "sym": "T_SOL",
+     "meaning": "硬件 Speed-of-Light 下界时间"
+    },
+    {
+     "sym": "T_meas",
+     "meaning": "实测 kernel 时间（含 launch 摊销口径需声明）"
+    },
+    {
+     "sym": "Byte_min",
+     "meaning": "算法必需的最小 DRAM 字节数"
+    },
+    {
+     "sym": "FLOP_min",
+     "meaning": "算法必需的最小浮点运算数"
+    }
+   ],
+   "prereq": [
+    "th-roofline-attainable"
+   ]
+  },
+  {
+   "id": "th-launch-overhead",
+   "title": "Launch 开销与批量摊销",
+   "direction": "dir-hw-dsl-profile",
+   "plain": "单次 kernel launch 有固定 CPU/驱动侧开销，当单 kernel 计算时间接近该开销时，吞吐由 launch 频率而非计算决定；批量化或 CUDA Graph 才能摊薄。",
+   "formula": "$$T_{\\text{step}}=T_{\\text{launch}}+\\max\\left(T_{\\text{kernel}},\\;T_{\\text{queue}}\\right),\\qquad \\eta_{\\text{launch}}=\\frac{T_{\\text{kernel}}}{T_{\\text{launch}}+T_{\\text{kernel}}}$$",
+   "limits": [
+    "CUDA Graph 或 persistent kernel 可把 T_launch 降到微秒级以下，此时公式退化为纯计算界",
+    "多流并发下 T_launch 可被隐藏，单流串行模型失效"
+   ],
+   "variables": [
+    {
+     "sym": "T_launch",
+     "meaning": "单次 launch 的端到端固定开销（CPU 提交+驱动+启动）"
+    },
+    {
+     "sym": "T_kernel",
+     "meaning": "kernel 在 GPU 上的实际执行时间"
+    },
+    {
+     "sym": "T_queue",
+     "meaning": "前序工作造成的排队等待时间"
+    },
+    {
+     "sym": "eta_launch",
+     "meaning": "launch 开销占比下的有效利用率"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-occupancy-latency",
+   "title": "占用率与延迟隐藏",
+   "direction": "dir-hw-dsl-profile",
+   "plain": "每个 SM 上驻留的 warp 数乘以每 warp 可重叠的访存延迟，必须覆盖一次全局访存的延迟，否则流水线出现气泡；占用率不是越高越好，受寄存器与共享内存约束。",
+   "formula": "$$N_{\\text{warp}}^{\\text{res}}=\\min\\left(\\left\\lfloor\\frac{R_{\\text{SM}}}{R_{\\text{thread}}\\cdot 32}\\right\\rfloor,\\;\\left\\lfloor\\frac{M_{\\text{SM}}}{M_{\\text{blk}}}\\right\\rfloor N_{\\text{warp}}^{\\text{blk}},\\;N_{\\text{warp}}^{\\max}\\right),\\qquad \\text{hide}:\\;N_{\\text{warp}}^{\\text{res}}\\cdot L_{\\text{mem}}\\ge L_{\\text{lat}}$$",
+   "limits": [
+    "仅适用于延迟受限（latency-bound）kernel；带宽受限时增加占用率不提升吞吐",
+    "L_mem 依赖访问模式（合并度、L2 命中率），用标称延迟会误判"
+   ],
+   "variables": [
+    {
+     "sym": "R_SM",
+     "meaning": "每 SM 寄存器文件容量（个 32-bit 寄存器）"
+    },
+    {
+     "sym": "R_thread",
+     "meaning": "每线程寄存器用量"
+    },
+    {
+     "sym": "M_SM",
+     "meaning": "每 SM 可用共享内存字节数"
+    },
+    {
+     "sym": "L_lat",
+     "meaning": "目标访存延迟（cycle）"
+    },
+    {
+     "sym": "N_warp^res",
+     "meaning": "每 SM 实际驻留 warp 数"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-warp-stall-taxonomy",
+   "title": "Warp Stall 归因分解",
+   "direction": "dir-hw-dsl-profile",
+   "plain": "把 warp 未发射的周期按原因（访存依赖、执行依赖、屏障、指令取指、not-selected）分类，各类占比之和近似总 stall 周期，用于定位瓶颈而非猜测。",
+   "formula": "$$C_{\\text{stall}}=\\sum_{k\\in\\mathcal{K}}C_k,\\qquad \\mathcal{K}=\\{\\text{long\\_scoreboard},\\text{short\\_scoreboard},\\text{wait},\\text{barrier},\\text{imc},\\text{not\\_selected},\\dots\\},\\qquad f_k=\\frac{C_k}{C_{\\text{stall}}}$$",
+   "limits": [
+    "not_selected 高说明占用率充足而非真瓶颈，不能与访存 stall 同等归因",
+    "采样型 profiler 的 stall 计数存在统计误差，小 kernel 上需多次采样取中位数"
+   ],
+   "variables": [
+    {
+     "sym": "C_stall",
+     "meaning": "warp 未发射的总周期数"
+    },
+    {
+     "sym": "C_k",
+     "meaning": "第 k 类 stall 原因的周期数"
+    },
+    {
+     "sym": "f_k",
+     "meaning": "该类 stall 的占比"
+    }
+   ],
+   "prereq": [
+    "th-occupancy-latency"
+   ]
+  },
+  {
+   "id": "th-fp-error-bound",
+   "title": "浮点误差累积界",
+   "direction": "dir-oracle-formal",
+   "plain": "n 项求和的舍入误差上界随 n 与单位舍入 u 线性增长（朴素求和）或对数增长（成对/树形求和），这决定 kernel 重排归约后能否通过容差 oracle。",
+   "formula": "$$\\left|\\hat{s}-s\\right|\\le \\gamma_{n}\\sum_{i=1}^{n}|x_i|,\\qquad \\gamma_n=\\frac{nu}{1-nu},\\qquad u=\\frac{\\epsilon_{\\text{mach}}}{2}$$",
+   "limits": [
+    "仅对无溢出、无次正规数的情形成立；FP16/BF16 累加需改用混合精度误差模型",
+    "条件数大的输入（正负相消）使相对误差远超该界，需改用相对-绝对混合容差"
+   ],
+   "variables": [
+    {
+     "sym": "u",
+     "meaning": "单位舍入误差（FP32 约 2^-24）"
+    },
+    {
+     "sym": "gamma_n",
+     "meaning": "n 次运算的累积舍入放大因子"
+    },
+    {
+     "sym": "x_i",
+     "meaning": "第 i 个求和项"
+    },
+    {
+     "sym": "epsilon_mach",
+     "meaning": "机器精度"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-batch-invariance",
+   "title": "批不变性定义",
+   "direction": "dir-oracle-formal",
+   "plain": "同一请求在 batch size 变化时输出必须逐位一致（或落在声明容差内），否则 agent 优化出的 kernel 在服务端会因动态 batching 产生不可复现的结果漂移。",
+   "formula": "$$\\Delta_{\\text{BI}}=\\max_{b_1,b_2}\\;\\left\\|f(x;b_1)-f(x;b_2)\\right\\|_{\\infty},\\qquad \\text{pass}\\iff \\Delta_{\\text{BI}}\\le \\tau_{\\text{bit}}\\;\\text{or}\\;\\Delta_{\\text{BI}}\\le\\tau_{\\text{num}}$$",
+   "limits": [
+    "归约顺序随 batch 改变（split-K、不同 tile 数）必然引入非零 Delta，逐位一致要求往往不可达",
+    "tau_num 需按任务声明；对 logits 类输出，微小差异经 softmax 后可放大"
+   ],
+   "variables": [
+    {
+     "sym": "b_1,b_2",
+     "meaning": "两个不同的 batch size 配置"
+    },
+    {
+     "sym": "Delta_BI",
+     "meaning": "批不变性偏差（无穷范数）"
+    },
+    {
+     "sym": "tau_bit",
+     "meaning": "逐位一致容差（通常为 0）"
+    },
+    {
+     "sym": "tau_num",
+     "meaning": "数值容差阈值"
+    }
+   ],
+   "prereq": [
+    "th-fp-error-bound"
+   ]
+  },
+  {
+   "id": "th-timing-ci",
+   "title": "计时噪声与置信区间",
+   "direction": "dir-bench-trust",
+   "plain": "kernel 计时受时钟抖动、DVFS、缓存状态影响，单次测量不可信；需用重复测量的中位数与自助法置信区间，并声明是否剔除首轮冷启动。",
+   "formula": "$$\\bar{t}=\\operatorname{median}\\{t_1,\\dots,t_n\\},\\qquad CI_{1-\\alpha}=\\left[t_{(k_1)},t_{(k_2)}\\right],\\qquad \\text{rel\\_err}=\\frac{\\text{half\\_width}}{\\bar{t}}$$",
+   "limits": [
+    "自助法置信区间假设样本近似独立同分布，DVFS 漂移造成的系统性偏移不会被区间覆盖",
+    "n 过小（<10）时中位数与区间都不稳定，需报告原始样本"
+   ],
+   "variables": [
+    {
+     "sym": "t_i",
+     "meaning": "第 i 次重复测量的 kernel 时间"
+    },
+    {
+     "sym": "n",
+     "meaning": "有效重复次数（剔除预热后）"
+    },
+    {
+     "sym": "CI",
+     "meaning": "置信区间上下界"
+    },
+    {
+     "sym": "rel_err",
+     "meaning": "区间半宽相对中位数的比例"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-reward-hacking",
+   "title": "奖励黑客的激励不相容",
+   "direction": "dir-rl-data",
+   "plain": "当奖励只看加速比、不检查是否真的实现了目标算子时，复制 torch、恒等映射、fallback 或计时作弊就能拿高分；奖励设计必须让作弊的期望收益低于真做。",
+   "formula": "$$R_{\\text{true}}=\\begin{cases}r_{\\text{speed}},&\\text{pass}_{\\text{oracle}}\\land\\neg\\text{fallback}\\land\\neg\\text{identity}\\\\-1,&\\text{otherwise}\\end{cases}$$",
+   "limits": [
+    "oracle 本身漏检时，pass 门形同虚设",
+    "fallback 检测只能覆盖已知模式，新作弊路径仍可绕过",
+    "奖励尺度随硬件与基线漂移，跨环境不可直接复用"
+   ],
+   "variables": [
+    {
+     "sym": "R",
+     "meaning": "实际发放的奖励"
+    },
+    {
+     "sym": "r_speed",
+     "meaning": "按加速比归一化的原始奖励"
+    },
+    {
+     "sym": "pass",
+     "meaning": "oracle 是否正确性通过"
+    },
+    {
+     "sym": "fallback",
+     "meaning": "是否退化为调用 PyTorch/库"
+    },
+    {
+     "sym": "identity",
+     "meaning": "是否用恒等映射等退化实现"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-multiturn-credit",
+   "title": "多轮信用分配",
+   "direction": "dir-rl-data",
+   "plain": "多轮 agent 的最终加速比由每一轮编辑共同决定；若只给最后一轮奖励，前面「修对但没提速」的轮次拿不到信号，策略会退化成保守复制。",
+   "formula": "$$R_t=\\sum_{k=t}^{T}\\gamma^{k-t}r_k,\\qquad r_k=\\Delta\\text{speed}_k\\cdot\\mathbb{1}[\\text{pass}_k]$$",
+   "limits": [
+    "折扣因子过小只看短期，过大会放大远端噪声",
+    "轮数 T 很大时方差累积，需要 baseline 或 TRLOO 降方差",
+    "中间轮 pass 变化不等于最终 pass，奖励可能误判"
+   ],
+   "variables": [
+    {
+     "sym": "R_t",
+     "meaning": "第 t 轮拿到的聚合奖励"
+    },
+    {
+     "sym": "γ",
+     "meaning": "折扣因子"
+    },
+    {
+     "sym": "r_k",
+     "meaning": "第 k 轮的即时奖励"
+    },
+    {
+     "sym": "Δspeed",
+     "meaning": "该轮相对上一轮的加速变化"
+    },
+    {
+     "sym": "pass",
+     "meaning": "该轮是否通过正确性门"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-transfer-gain",
+   "title": "跨域迁移增益界",
+   "direction": "dir-bench-trust",
+   "plain": "在源任务上学到的 kernel 知识迁到目标任务，增益不是单调的；MetaKernelBench 实测双向迁移为 −19%~+29%，且每个模型/方向仍有 16%–45% 的题退化。",
+   "formula": "$$G_{\\text{transfer}}=\\frac{s_{\\text{target}}^{\\text{after}}-s_{\\text{target}}^{\\text{before}}}{s_{\\text{target}}^{\\text{before}}},\\qquad G\\in[-1,+\\infty)$$",
+   "limits": [
+    "源/目标任务分布差异大时增益为负",
+    "硬件或 dtype 变化会破坏迁移，需要重新验证",
+    "样本量小时置信区间很宽，不能只看均值"
+   ],
+   "variables": [
+    {
+     "sym": "G",
+     "meaning": "迁移带来的相对增益"
+    },
+    {
+     "sym": "s_after",
+     "meaning": "迁移后的目标任务得分"
+    },
+    {
+     "sym": "s_before",
+     "meaning": "迁移前的目标任务得分"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-energy-pareto",
+   "title": "能耗-性能帕累托",
+   "direction": "dir-hw-dsl-profile",
+   "plain": "更快的 kernel 不一定更省电；功耗随 occupancy、频率与访存模式变化，存在「提速但能耗更高」的帕累托前沿。",
+   "formula": "$$E=\\int_0^T P(t)\\,dt\\approx\\bar P\\cdot T,\\qquad \\text{Pareto}:\\ \\min\\ (\\text{latency},E)$$",
+   "limits": [
+    "瞬时功耗采样成本高，常用平均功耗近似",
+    "DVFS 与温度会让同一 kernel 的能耗漂移",
+    "不同硬件的能效曲线不可直接比较"
+   ],
+   "variables": [
+    {
+     "sym": "E",
+     "meaning": "一次执行的总能耗"
+    },
+    {
+     "sym": "P",
+     "meaning": "瞬时功率"
+    },
+    {
+     "sym": "T",
+     "meaning": "执行时间"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-memory-peak",
+   "title": "峰值内存约束",
+   "direction": "dir-prod-e2e",
+   "plain": "生成的 kernel 可能用更大的中间缓冲换速度；KernelBench-Verified 发现 28% 的核增加峰值内存，生产上会挤压 KV cache 与并发预算。",
+   "formula": "$$M_{\\text{peak}}=M_{\\text{in}}+M_{\\text{out}}+\\max_{\\text{stage}}M_{\\text{tmp}}(\\text{stage})\\le M_{\\text{budget}}$$",
+   "limits": [
+    "峰值依赖 shape 与 batch，单 shape 测量会低估",
+    "allocator 缓存会掩盖真实峰值，需重置统计",
+    "多流并发时各流峰值叠加，不能只看单流"
+   ],
+   "variables": [
+    {
+     "sym": "M_peak",
+     "meaning": "执行期间的峰值显存"
+    },
+    {
+     "sym": "M_in/M_out",
+     "meaning": "输入/输出张量占用"
+    },
+    {
+     "sym": "M_tmp",
+     "meaning": "各阶段临时缓冲"
+    },
+    {
+     "sym": "M_budget",
+     "meaning": "线上显存预算"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-search-budget",
+   "title": "搜索预算的收益递减",
+   "direction": "dir-agent-harness",
+   "plain": "采样/搜索轮数增加带来的 best-of-n 提升服从幂律或对数收益；超过某个预算后，边际收益低于 GPU 成本，继续加轮数不划算。",
+   "formula": "$$\\mathbb{E}\\left[\\max_{i\\le n}s_i\\right]\\approx s_\\infty-c\\,n^{-\\alpha},\\qquad \\text{marginal}=\\frac{\\partial}{\\partial n}\\mathbb{E}\\left[\\max_{i\\le n}s_i\\right]$$",
+   "limits": [
+    "任务难度分布不均匀，单一幂律拟合不够",
+    "采样之间相关，独立同分布假设失效",
+    "best-of-n 会放大 reward hacking，分数越高越要审计"
+   ],
+   "variables": [
+    {
+     "sym": "n",
+     "meaning": "采样/搜索轮数"
+    },
+    {
+     "sym": "s_inf",
+     "meaning": "预算无穷大时的渐近得分"
+    },
+    {
+     "sym": "c,α",
+     "meaning": "拟合常数与衰减指数"
+    }
+   ],
+   "prereq": []
+  },
+  {
+   "id": "th-verifier-false-reject",
+   "title": "验证器误拒率",
+   "direction": "dir-oracle-formal",
+   "plain": "验证器把正确 kernel 判错（false reject）会浪费搜索预算并误导 agent；KernelAudit 发现 6 个 validator 存在不可忽视的 false-reject。",
+   "formula": "$$\\text{FRR}=\\frac{\\#\\{\\text{correct}\\to\\text{reject}\\}}{\\#\\{\\text{correct}\\}},\\qquad \\text{FAR}=\\frac{\\#\\{\\text{wrong}\\to\\text{accept}\\}}{\\#\\{\\text{wrong}\\}}$$",
+   "limits": [
+    "正确性标签本身依赖参考实现，参考错则 FRR/FAR 都失真",
+    "容差选择会同时改变 FRR 与 FAR",
+    "对抗样本可以同时推高两种错误率"
+   ],
+   "variables": [
+    {
+     "sym": "FRR",
+     "meaning": "正确实现被误拒的比例"
+    },
+    {
+     "sym": "FAR",
+     "meaning": "错误实现被误放的比例"
+    }
+   ],
+   "prereq": []
+  }
+ ]
+}
