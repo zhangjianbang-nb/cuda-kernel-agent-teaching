@@ -1,0 +1,37 @@
+{
+ "searched": {
+  "google_scholar": {
+   "status": "partial",
+   "note": "以 arXiv API 标题/全文检索为主",
+   "fallback": "未逐条查 Google Scholar"
+  },
+  "chatgpt": {
+   "status": "blocked",
+   "fallback": "本轮未接入 ChatGPT 评审"
+  },
+  "youtube": {
+   "status": "blocked",
+   "fallback": "未做视频调研"
+  }
+ },
+ "covered_directions": [
+  "dir-bench-trust",
+  "dir-agent-harness",
+  "dir-rl-data",
+  "dir-oracle-formal",
+  "dir-prod-e2e",
+  "dir-hw-dsl-profile"
+ ],
+ "gaps": [
+  {
+   "item": "非 arXiv 工业报告",
+   "reason": "本轮以 arXiv API 与既有精读卡为准，未纳入厂商技术报告"
+  },
+  {
+   "item": "部分论文仅摘要级",
+   "reason": "只读到摘要与公开元数据，未逐节核验实验细节"
+  }
+ ],
+ "limitations": "论文元数据来自 arXiv API；摘要级条目已在页面自曝，不当作全文机制分析。",
+ "verified_at": "2026-11-24"
+}
