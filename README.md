@@ -1,5 +1,10 @@
 # CUDA Kernel Agent 工程全书
 
+**在线打开（GitHub Pages）：<https://zhangjianbang-nb.github.io/cuda-kernel-agent-teaching/>**
+
+> 站点是 hash 路由的单页应用，入口就是上面这个地址；论文/算法/理论/故事/全书等页面从左侧导航进入，
+> 也可以直接访问 `#/cuda/home`、`#/cuda/papers`、`#/cuda/book` 等路由。
+
 一个**纯静态、零后端、零外部请求**的教学站：讲清楚「可信的 GPU kernel agent」是怎么被造出来、
 怎么被评测、怎么被反馈修正、怎么被验证、又怎么被送上线的。
 
